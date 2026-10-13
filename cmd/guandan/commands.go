@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 // 子命令都在容器里用 docker exec 或 docker run --rm 执行（§13.6）：
 //
 //	guandan healthcheck [--ready]                 请求本机 /healthz（或 /readyz），200 退出 0
+//	guandan metrics                               打印本机 /metrics
 //	guandan backup [now]                          立刻做一次备份（快照 + 加密上传）
 //	guandan backup list                           列出本地快照和异地备份
 //	guandan backup keygen                         生成 age 密钥对
@@ -37,6 +39,7 @@ import (
 const usage = `用法：guandan [子命令]
   不带子命令          启动服务
   healthcheck [--ready]
+  metrics
   backup [now|list|keygen]
   restore [-i 私钥文件] <本地快照路径 | 异地对象名 | latest>
   seed [--force]
@@ -72,6 +75,18 @@ func (c cmdIO) run(name string, args []string) int {
 			path = "/readyz"
 		}
 		return healthcheck(os.Getenv("GUANDAN_ADDR"), path)
+	case "metrics":
+		// /metrics 只听容器内的 127.0.0.1，从宿主机看用 docker exec guandan /guandan metrics。
+		addr := os.Getenv("GUANDAN_METRICS_ADDR")
+		if addr == "" {
+			addr = config.DefaultMetricsAddr
+		}
+		url, perr := probeURL(addr, "/metrics")
+		if perr != nil {
+			err = perr
+			break
+		}
+		err = fetchTo(c.out, url)
 	case "backup":
 		err = c.backup(ctx, args)
 	case "restore":
@@ -392,6 +407,20 @@ func (c cmdIO) admin(ctx context.Context, args []string) error {
 		return nil
 	}
 	return usageError{"不认识的 admin 命令：" + strings.Join(args, " ")}
+}
+
+func fetchTo(w io.Writer, url string) error {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s 返回 %d", url, resp.StatusCode)
+	}
+	_, err = io.Copy(w, resp.Body)
+	return err
 }
 
 // parseSince 解析 7d、24h、30m 这样的时长。

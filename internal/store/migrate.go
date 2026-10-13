@@ -65,7 +65,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// migrationNames 返回按文件名排序的迁移文件名。
+// migrationNames 返回按文件名排序的迁移文件名，并检查编号唯一。
 func migrationNames() ([]string, error) {
 	entries, err := fs.ReadDir(migrations.FS, ".")
 	if err != nil {
@@ -78,7 +78,32 @@ func migrationNames() ([]string, error) {
 		}
 	}
 	sort.Strings(names)
+	if err := checkUniqueNumbers(names); err != nil {
+		return nil, err
+	}
 	return names, nil
+}
+
+// checkUniqueNumbers 要求每个迁移文件都以数字编号开头（如 0002_bans.sql），且编号互不相同。
+// 编号由 coord 统一分配；两个分支各自加了同号迁移、合并后一起进来时，这里直接拒绝启动，
+// 不让「同一个版本号对应两份内容」的状态悄悄进入生产。
+func checkUniqueNumbers(names []string) error {
+	seen := make(map[string]string, len(names))
+	for _, name := range names {
+		i := 0
+		for i < len(name) && name[i] >= '0' && name[i] <= '9' {
+			i++
+		}
+		if i == 0 || i >= len(name) || name[i] != '_' {
+			return fmt.Errorf("迁移文件 %s 的名字应为「编号_说明.sql」，如 0002_bans.sql", name)
+		}
+		num := strings.TrimLeft(name[:i], "0")
+		if prev, ok := seen[num]; ok {
+			return fmt.Errorf("迁移 %s 和 %s 的编号重复；编号由 coord 分配，请改名", prev, name)
+		}
+		seen[num] = name
+	}
+	return nil
 }
 
 func appliedNames(ctx context.Context, db *sql.DB) (map[string]bool, error) {

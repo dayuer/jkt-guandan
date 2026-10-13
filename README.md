@@ -63,20 +63,14 @@ make docker     # 镜像 guandan:local
 
 ## 部署
 
-上线、发布、备份恢复、管理命令见 [docs/runbook.md](docs/runbook.md)。发布用 `scripts/deploy.sh <SHA>`，就绪检查失败时会自动回滚。
+生产环境 https://guandan.synon.ai ：nginx（宿主机）负责 TLS 和静态前端，容器只听 `127.0.0.1:18200`。拓扑、上线准备、发布、备份恢复和管理命令见 [docs/runbook.md](docs/runbook.md)，nginx 站点模板在 [deploy/nginx/](deploy/nginx/)。
 
 ```bash
-docker run -d --name guandan --restart unless-stopped \
-  --read-only --cap-drop ALL --stop-timeout 30 \
-  --log-opt max-size=10m --log-opt max-file=5 \
-  -p 80:8080 -p 443:8443 -v guandan-data:/data \
-  -e GUANDAN_DOMAIN=example.com -e GUANDAN_ADMIN_EMAIL=you@example.com \
-  ghcr.io/dayuer/jkt-guandan:<tag>
+scripts/deploy.sh          # 构建 → 传镜像和静态文件 → 换容器 → 等 /readyz → 切 current；失败自动回滚
 ```
 
-nonroot 用户不能监听 1024 以下的端口，所以容器内听 8080 和 8443，由端口映射到 80 和 443。
-启动时依次：锁数据目录 → 检查可写和剩余空间 → `quick_check` → 迁移（§12.1）；数据库里有本程序不认识的迁移（降级）时拒绝启动。
-`/healthz` 返回 200 说明进程活着，`/readyz` 返回 200 说明写事务、后台任务心跳和磁盘空间都正常；两者都不占并发名额。
+启动时依次执行：锁数据目录 → 检查目录可写和剩余空间 → `quick_check` → 迁移（§12.1）。数据库里有本程序不认识的迁移（降级）时拒绝启动。
+`/healthz` 返回 200 说明进程活着，`/readyz` 返回 200 说明写事务、后台任务心跳、磁盘空间和备份都正常；两者都不占并发名额。
 镜像自带 `HEALTHCHECK`，调用 `/guandan healthcheck` 子命令请求本机的 `/healthz`（distroless 里没有 curl）。
 
 ## 关于 Go 版本

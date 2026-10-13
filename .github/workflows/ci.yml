@@ -87,7 +87,7 @@ jobs:
           echo "health=$health"
           test "$health" = healthy
 
-      # §13.4：发布脚本在就绪检查失败时自动回滚。
+      # §13.4：服务器端的发布逻辑（deploy-remote.sh）：换容器、切 current、三种失败的回滚。
       - name: 发布与回滚测试
         run: scripts/test-deploy.sh guandan:ci
 
@@ -103,24 +103,3 @@ jobs:
         if: always()
         run: docker rm -f guandan-ci 2>/dev/null || true
 
-  # §13.4：main 上构建镜像推送到 GHCR，tag 用提交 SHA，同时更新 :main。
-  release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 登录 GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: 构建并推送
-        run: |
-          set -euo pipefail
-          image=ghcr.io/${{ github.repository }}
-          docker build --build-arg BUILD=${{ github.sha }} -t "$image:${{ github.sha }}" -t "$image:main" .
-          docker push "$image:${{ github.sha }}"
-          docker push "$image:main"

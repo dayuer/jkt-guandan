@@ -179,3 +179,22 @@ func TestHealthcheckReadyChecksReadyz(t *testing.T) {
 		t.Fatalf("/readyz 503 时应退出 1，实际 %d", code)
 	}
 }
+
+func TestMetricsCommandPrintsLocalMetrics(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte("guandan_build_info{build=\"x\"} 1\n"))
+	}))
+	defer srv.Close()
+	t.Setenv("GUANDAN_METRICS_ADDR", srv.Listener.Addr().String())
+	var out, errOut strings.Builder
+	if code := (cmdIO{out: &out, errOut: &errOut}).run("metrics", nil); code != 0 {
+		t.Fatalf("退出码 %d：%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "guandan_build_info") {
+		t.Fatalf("输出 %q", out.String())
+	}
+}

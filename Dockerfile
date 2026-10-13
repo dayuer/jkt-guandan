@@ -6,8 +6,11 @@
 #   2) 1.27.1 的标准库有 6 个可达的 http2 漏洞（GO-2026-6603/6609/6611/6612/6613/6617），1.27.2 才修掉；
 # 所以这里用 golang:1.27-alpine，go.mod 里是 go 1.27.2。govulncheck 现在干净。
 
-# 1) 前端：Preact + Vite，产物是 web/dist
-FROM node:22-alpine AS web
+# 前两个阶段固定在构建机的平台上跑（$BUILDPLATFORM），Go 交叉编译到目标平台：
+# 在 Apple Silicon 上为 amd64 服务器构建时（scripts/deploy.sh），不用走 QEMU 模拟。
+
+# 1) 前端：Preact + Vite，产物是 web/dist（scripts/deploy.sh 用 --target web 单独取出来交给 nginx）
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -15,7 +18,7 @@ COPY web/ ./
 RUN npm run build
 
 # 2) Go：CGO_ENABLED=0，因为 modernc.org/sqlite 是纯 Go 驱动，所以运行时镜像能用 distroless/static
-FROM golang:1.27-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -23,7 +26,9 @@ COPY . .
 COPY --from=web /src/web/dist ./web/dist
 # 构建号（§13.4）：CI 传提交 SHA，响应头 X-App-Build 和 /metrics 的 guandan_build_info 用它。
 ARG BUILD=dev
-RUN CGO_ENABLED=0 go build -trimpath \
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -ldflags="-s -w -X github.com/dayuer/jkt-guandan/internal/buildinfo.Build=${BUILD}" \
       -o /out/guandan ./cmd/guandan
 # 让运行时的 /data 属于 nonroot，这样挂上 named volume 后进程写得进去（--read-only 时只有 /data 可写）

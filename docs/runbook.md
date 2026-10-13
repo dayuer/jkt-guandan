@@ -1,35 +1,46 @@
 # 运维手册
 
-适用于单台 VPS 上用 Docker 跑的「随时掼掼蛋」服务。设计依据见 [server-design.md](server-design.md) §12、§13。
-下面的命令都在服务器上执行。容器名默认是 `guandan`，数据卷默认是 `guandan-data`。
+适用于「随时掼掼蛋」的生产环境 https://guandan.synon.ai 。设计依据见 [server-design.md](server-design.md) §12、§13；生产拓扑以 #12 下 coord 的说明为准（和设计文档 §8「单容器自带 autocert」不同）。
+
+## 0. 生产拓扑
+
+```
+浏览器 ──HTTPS──▶ nginx（宿主机，TLS、静态前端）
+                   ├─ /                 → /var/www/guandan/current → <短 SHA>/   （符号链接，发布时原子切换）
+                   └─ /api/ /ws /g/ /healthz /readyz → 127.0.0.1:18200 → 容器 guandan（:8080）
+```
+
+- **服务器**：新加坡 `root@43.156.128.95`，Debian 12，Docker 26，nginx 1.22。**同机跑着很多其他生产服务**：可用内存约 1.4 GB，磁盘已用 67%。
+- **容器**：`guandan`，镜像 `guandan:<短 SHA>`，只映射到 `127.0.0.1:18200`（宿主机的 8080、8443 被别的服务占着，**绝不能映射到这两个端口**）。参数：`--read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m`。数据卷 `guandan-data`。不设 `GUANDAN_DOMAIN`，容器内只走 HTTP；`GUANDAN_PUBLIC_URL=https://guandan.synon.ai`。
+- **nginx 站点**：`/etc/nginx/sites-available/guandan.synon.ai` 加片段 `/etc/nginx/snippets/guandan-security.conf`，由 coord 维护。仓库里的模板是 [deploy/nginx/](../deploy/nginx/)，两边要保持一致。站点里关掉了 `open_file_cache`，所以切换 `current` 后**不需要 reload nginx**。
+- **客户端 IP**：DNS 只做解析，不走 Cloudflare 代理。nginx 用 `$remote_addr` 覆盖设置 `X-Real-IP`，用 `$proxy_add_x_forwarded_for` 设置 `X-Forwarded-For`。应用只在对端属于 `GUANDAN_TRUSTED_PROXIES`（默认 127.0.0.1 和 docker 网桥）时才看这两个头。
+- **不要在服务器上改别的站点、别的服务，也不要改全局 nginx 配置。**
 
 ## 1. 上线前准备
 
 ### 1.1 环境变量文件
 
-把配置写进 `/etc/guandan/guandan.env`，`scripts/deploy.sh` 会用 `--env-file` 读它：
+备份相关的配置写进服务器上的 `/etc/guandan/guandan.env`（`chmod 600`，属主 root）。`scripts/deploy-remote.sh` 启动容器时会用 `--env-file` 读它；`GUANDAN_PUBLIC_URL` 由脚本直接传入，不用写在这里。
 
 ```bash
-GUANDAN_DOMAIN=example.com,backup.example.com
-GUANDAN_ADMIN_EMAIL=you@example.com
 # 异地备份（上线前必须配置，§13.3）
 GUANDAN_BACKUP_URL=https://<S3 endpoint>/<bucket>/<前缀>
 GUANDAN_BACKUP_KEY=age1…
-AWS_REGION=ap-southeast-3
+AWS_REGION=ap-southeast-1
 AWS_ACCESS_KEY_ID=…
 AWS_SECRET_ACCESS_KEY=…
 ```
 
-- 这个文件里有凭据，权限设成 `chmod 600`，属主设成 root。
-- `GUANDAN_BACKUP_URL` 使用 path-style 地址。AWS S3、Cloudflare R2、Backblaze B2、MinIO 都支持这种写法，例如 `https://s3.ap-southeast-3.amazonaws.com/guandan-backup/prod`。
-- 也可以写成 `file:///某个目录`，把备份放到挂载进容器的网络盘上。
-- 给 bucket 用的凭据只开放 `PutObject`、`GetObject`、`ListBucket`、`DeleteObject` 这四项权限，只作用于这个 bucket（最好限定到这个前缀）。
-- 超过 30 天的远端备份，服务每小时会自己删除一次。bucket 上另外配一条 35 天过期的生命周期规则作为兜底。
+- `GUANDAN_BACKUP_URL` 用 path-style 地址，AWS S3、Cloudflare R2、Backblaze B2、MinIO 都支持，例如 `https://s3.ap-southeast-1.amazonaws.com/guandan-backup/prod`。也可以写 `file:///某个目录`，把备份放到挂进容器的网络盘上。
+- bucket 凭据只给这一个 bucket（最好限定到这个前缀）的 `PutObject`、`GetObject`、`ListBucket`、`DeleteObject` 四项权限。
+- 远端超过 30 天的备份，服务每小时会自己删除。bucket 上另外配一条 35 天过期的生命周期规则兜底。
 
 ### 1.2 生成备份密钥
 
+在任意一台装了 Docker 的机器上执行：
+
 ```bash
-docker run --rm ghcr.io/dayuer/jkt-guandan:<tag> backup keygen
+docker run --rm guandan:<短 SHA> backup keygen
 ```
 
 - 输出里 `# age1…` 那一行是公钥，填进 `GUANDAN_BACKUP_KEY`。
@@ -38,7 +49,7 @@ docker run --rm ghcr.io/dayuer/jkt-guandan:<tag> backup keygen
 
 ### 1.3 外部探活
 
-用任意一个免费的探活服务，每 1–5 分钟请求一次 `https://<域名>/readyz`，连续失败就通知仓库所有者（§13.7）。`/readyz` 会在以下任一情况失败：
+用任意一个免费的探活服务，每 1–5 分钟请求一次 `https://guandan.synon.ai/readyz`，连续失败就通知仓库所有者（§13.7）。`/readyz` 会在以下任一情况失败：
 
 - 写事务提交不了；
 - 某个后台任务的心跳超过 2 个周期（备份 2 小时、清理 20 分钟）；
@@ -50,36 +61,60 @@ docker run --rm ghcr.io/dayuer/jkt-guandan:<tag> backup keygen
 
 ## 2. 发布
 
+在本机（需要 Docker、git，并且能 `ssh root@43.156.128.95`）执行：
+
 ```bash
-scripts/deploy.sh <提交 SHA>
+scripts/deploy.sh            # 发布当前 HEAD；也可以写成 scripts/deploy.sh <git 引用>
 ```
 
-CI 在 `main` 上为每个提交构建镜像，推送到 `ghcr.io/dayuer/jkt-guandan:<SHA>`，同时更新 `:main` 标签。脚本依次执行：
+**本机部分**（`scripts/deploy.sh`）：
 
-1. 拉取镜像；
-2. 在旧容器里做一次 `guandan backup now`，留一个最新的恢复点；
-3. `docker stop -t 30` 停掉旧容器，触发优雅关闭，然后把它改名为 `guandan-prev`；
-4. 用同样的参数启动新容器：`--read-only --cap-drop ALL`、日志大小限制、`--env-file`；
-5. 每秒执行一次 `docker exec guandan /guandan healthcheck --ready`。60 秒内就绪就删掉 `guandan-prev`，发布完成；
-6. 新容器退出、崩溃重启或 60 秒内没有就绪时：打印最近的日志，删掉新容器，把 `guandan-prev` 改回原名并启动。脚本退出码为 1。
+1. 用 `git worktree` 取出这个提交的干净副本，未提交的改动不会被发布出去；
+2. 按服务器的 CPU 架构交叉编译镜像 `guandan:<短 SHA>`，构建号写进 `X-App-Build`；
+3. 用 `docker build --target web` 取出前端产物 `web/dist`，取完立刻删掉构建镜像；
+4. 用 `docker save | gzip | ssh docker load` 把镜像传上去。镜像只有十几 MB，服务器不用登录镜像仓库，也不用在服务器上构建（构建过程要占 350 MB，那台机器磁盘紧张）。服务器上已经有同名镜像就跳过；
+5. 把静态文件打包传到 `/var/www/guandan/<短 SHA>/`，先解压到临时目录再改名，不会出现解到一半的目录。
 
-在本机可以用 `make deploy-test` 验证回滚逻辑：它先发布一个好镜像，再发布一个起不来的镜像，确认能回滚。CI 每次都会跑这个测试。
+**服务器部分**（`scripts/deploy-remote.sh`，通过 ssh 执行）：
 
-### 2.1 回滚失败：旧版本拒绝新迁移
+0. 预检：镜像和静态目录都在；`current` 要么不存在，要么是符号链接。**如果 `current` 是一个真目录就停下**，因为 `ln -sfn` 会把链接建到目录里面去。任何东西都还没动；
+1. 在旧容器里做一次 `guandan backup now`，留一个最新的恢复点；
+2. `docker stop -t 30` 优雅停掉旧容器，改名为 `guandan-prev`；
+3. 用上面第 0 节的参数启动新容器，最多等 60 秒 `/readyz`。新容器退出或崩溃重启时立刻判为失败；
+4. 用 `rename(2)` 原子地把 `current` 切到新版本；
+5. 经 nginx 确认 `https://guandan.synon.ai/readyz` 和首页都正常；
+6. 成功：删掉 `guandan-prev`，只保留最近 5 个版本的静态目录和镜像。当前版本和上一个版本无论如何都保留。
 
-迁移只做向前兼容的修改，但旧版本的程序发现库里有它不认识的迁移时，会拒绝启动（防止降级把数据写坏）。所以，如果新版本已经执行了新迁移，之后才没能就绪，自动回滚时旧容器就起不来，日志里会出现「不认识的迁移」。这时按以下步骤处理：
+**第 3–5 步任何一步失败**：删掉新容器，把 `guandan-prev` 改回原名并启动，`current` 指回原来的版本。脚本退出码为 1，并打印新容器最近的日志。
+
+可以用环境变量覆盖的项：`SSH_HOST`、`WEB_ROOT`、`PORT`、`MEMORY`、`PUBLIC_URL`、`SITE_URL`、`READY_TIMEOUT`、`KEEP`。
+
+`make deploy-test` 会在本机用 Docker 验证服务器部分（不需要 nginx 和 ssh），覆盖以下场景：首次发布、升级并清理旧版本、新版本起不来、`current` 是真目录、切换后站点检查失败。CI 每次都会跑这个测试。
+
+### 2.1 手动回滚到更早的版本
+
+服务器上保留着最近几个版本的镜像和静态目录，直接用服务器部分的脚本切回去：
+
+```bash
+ssh root@43.156.128.95 'ls -t /var/www/guandan; docker image ls guandan'
+ssh root@43.156.128.95 'env SHA=<旧短 SHA> sh -s' < scripts/deploy-remote.sh
+```
+
+### 2.2 回滚失败：旧版本拒绝新迁移
+
+迁移只做向前兼容的修改，但旧版本的程序发现库里有它不认识的迁移时，会拒绝启动（防止降级把数据写坏）。所以，如果新版本已经执行了新迁移，之后才没能就绪，回滚时旧容器就起不来，日志里会出现「不认识的迁移」。这时在服务器上执行：
 
 ```bash
 docker rm -f guandan                       # 确保没有容器在用数据卷
-# 用发布前那份快照恢复（deploy.sh 第 2 步做的，在本地快照目录里）
-docker run --rm --env-file /etc/guandan/guandan.env -v guandan-data:/data \
-  ghcr.io/dayuer/jkt-guandan:<旧 SHA> backup list
-docker run --rm --env-file /etc/guandan/guandan.env -v guandan-data:/data \
-  ghcr.io/dayuer/jkt-guandan:<旧 SHA> restore /data/backup/guandan-<发布前的时间>.db
-scripts/deploy.sh <旧 SHA>
+# 用发布前那份快照恢复（第 1 步做的，在本地快照目录里，未加密）
+docker run --rm -v guandan-data:/data -e GUANDAN_PUBLIC_URL=https://guandan.synon.ai \
+  guandan:<旧短 SHA> backup list
+docker run --rm -v guandan-data:/data -e GUANDAN_PUBLIC_URL=https://guandan.synon.ai \
+  guandan:<旧短 SHA> restore /data/backup/guandan-<发布前的时间>.db
+env SHA=<旧短 SHA> sh deploy-remote.sh     # 或者在本机按 2.1 执行
 ```
 
-恢复的是本地快照，未加密，不需要私钥。从发布前备份到回滚之间写入的数据会丢失，通常只有几十秒。
+从发布前备份到回滚之间写入的数据会丢失，通常只有几十秒。
 
 ## 3. 备份
 
@@ -109,13 +144,13 @@ docker stop guandan
 install -m 600 -o 65532 /dev/stdin /root/guandan-key.txt   # 粘贴 AGE-SECRET-KEY-… 后按 Ctrl-D
 
 # 3. 恢复。参数可以是 latest（异地最新一份）、异地对象名或本地快照路径
-docker run --rm --env-file /etc/guandan/guandan.env -v guandan-data:/data \
-  -v /root/guandan-key.txt:/key.txt:ro \
-  ghcr.io/dayuer/jkt-guandan:<SHA> restore -i /key.txt latest
+docker run --rm --env-file /etc/guandan/guandan.env -e GUANDAN_PUBLIC_URL=https://guandan.synon.ai \
+  -v guandan-data:/data -v /root/guandan-key.txt:/key.txt:ro \
+  guandan:<当前短 SHA> restore -i /key.txt latest
 
 # 4. 删掉私钥，启动服务
 shred -u /root/guandan-key.txt
-docker start guandan        # 或 scripts/deploy.sh <SHA>
+docker start guandan
 docker exec guandan /guandan healthcheck --ready && echo ready
 ```
 
@@ -128,7 +163,7 @@ docker exec guandan /guandan healthcheck --ready && echo ready
 
 确认恢复后的数据没问题，再删除这些 `before-restore` 文件。
 
-在一台全新的机器上恢复，步骤完全相同：先建好环境变量文件，数据卷是空的也没关系。
+换一台全新的机器：先按第 0 节装好 nginx 站点、按 1.1 建好环境变量文件，再执行 `scripts/deploy.sh`（会建出一个空库），然后按上面的步骤恢复。数据卷是空的也没关系。
 
 ### 4.1 恢复演练
 
@@ -172,7 +207,7 @@ guandan seed [--force]                     # 写入设计稿里的示例数据�
 
 ## 6. 监控和日志
 
-- **`/metrics`** 默认只监听容器内的 `127.0.0.1:9090`，外部访问不到。要从宿主机抓取，在环境变量文件里加 `GUANDAN_METRICS_ADDR=:9090`，再给 deploy.sh 设 `EXTRA_ARGS="-p 127.0.0.1:9090:9090"`，只映射到宿主机的回环地址。内容包括：
+- **`/metrics`** 只监听容器内的 `127.0.0.1:9090`，外部访问不到，nginx 也不转发。查看方式是 `docker exec guandan /guandan metrics`。内容包括：
   - 请求数（按 2xx/4xx/5xx 分类）和请求耗时；
   - 写锁等待时间；
   - outbox 积压量和放弃数；
@@ -180,7 +215,7 @@ guandan seed [--force]                     # 写入设计稿里的示例数据�
   - 构建号。
 
   WebSocket 连接数由 #18 补上。
-- **日志**：JSON 格式，输出到 stdout，用 `docker logs guandan` 查看；Docker 只保留 5 个 10 MB 的日志文件。每个请求都有一行日志，包含 `request_id`、`status`、`ms`、`write_wait_ms`。写锁等待超过 100ms、出现 panic、备份失败时，都会记 warn 或 error。
+- **日志**：JSON 格式，输出到 stdout，用 `docker logs guandan` 查看；Docker 只保留 5 个 10 MB 的日志文件。每个请求都有一行日志，包含 `request_id`、`ip`（经可信代理解析后的客户端 IP）、`status`、`ms`、`write_wait_ms`。写锁等待超过 100ms、出现 panic、备份失败时，都会记 warn 或 error。
 - **构建号**：每个响应都带 `X-App-Build: <提交 SHA>` 头，用来确认线上跑的是哪个版本。
 
 ## 7. 清理任务（§13.1）
