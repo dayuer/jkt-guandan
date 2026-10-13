@@ -1,0 +1,27 @@
+/* 视觉语言取自 design/guandan-offline：米白暖色底、掼蛋红主色、衬线大字号时间。 */
+:root {
+  --red: #b3352c;
+  --red-dark: #8e2a23;
+  --red-soft: #f6e2df;
+  --ink: #2a1c17;
+  --ink-2: #5c4a3a;
+  --muted: #7a6a5c;
+  --muted-2: #9a8a7c;
+  --line: #e8dccb;
+  --line-2: #e3d6c3;
+  --bg: #fff7ec;
+  --card: #fffcf7;
+  --chip: #f6efe4;
+  --green: #3e7c4f;
+  --serif: "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+  --sans: "Noto Sans SC", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body { background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px; }
+body { min-height: 100vh; -webkit-text-size-adjust: 100%; }
+button, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; border: 0; background: none; }
+#app { max-width: 480px; margin: 0 auto; min-height: 100vh; }
