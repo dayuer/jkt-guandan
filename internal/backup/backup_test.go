@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/backup"
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/store"
+	"github.com/dayuer/jkt-guandan/migrations"
 )
 
 var t0 = time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
@@ -352,6 +354,23 @@ func gameCount(t *testing.T, dataDir string) int {
 	return n
 }
 
+// embeddedMigrations 按文件名顺序列出打进二进制的迁移。
+func embeddedMigrations(t *testing.T) []string {
+	t.Helper()
+	entries, err := migrations.FS.ReadDir(".")
+	if err != nil {
+		t.Fatalf("读迁移目录: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 func TestRestoreFromLocalPlainAndEncrypted(t *testing.T) {
 	plain, encrypted, identity := makeSnapshot(t)
 	for _, src := range []backup.Source{
@@ -363,8 +382,9 @@ func TestRestoreFromLocalPlainAndEncrypted(t *testing.T) {
 		if err != nil {
 			t.Fatalf("从 %s 恢复: %v", src.Path, err)
 		}
-		if n := len(res.Migrations); len(res.MovedAside) != 0 || n < 2 || res.Migrations[n-1] != "0003_bans.sql" {
-			t.Fatalf("结果 %+v", res)
+		// 迁移记录要跟内嵌的迁移对得上（不写死文件名，以后加迁移这行不用改）。
+		if want := embeddedMigrations(t); len(res.MovedAside) != 0 || !reflect.DeepEqual(res.Migrations, want) {
+			t.Fatalf("结果 %+v，期望迁移 %v", res, want)
 		}
 		if n := gameCount(t, dataDir); n != 5 {
 			t.Fatalf("恢复后应有 5 局，实际 %d", n)

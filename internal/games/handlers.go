@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/identity"
+	"github.com/dayuer/jkt-guandan/internal/moderate"
 	"github.com/dayuer/jkt-guandan/internal/store"
 )
 
@@ -392,6 +393,18 @@ func writeGameError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not_in_game", "这个人不在这一局里")
 	case errors.Is(err, ErrHostCantKickSelf):
 		writeError(w, http.StatusBadRequest, "kick_self", "局头不能移出自己，退出会触发转让")
+	case errors.Is(err, moderate.ErrSensitive):
+		// 422：请求本身没毛病，是内容不能收（§14）。带上字段名，前端把提示放到
+		// 对应的输入框下面，并且不清空用户已经写好的内容（原型 X1）。
+		var hit *moderate.Hit
+		errors.As(err, &hit)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": map[string]any{
+				"code":    "sensitive_word",
+				"message": "请勿涉及金钱：这里只约纯娱乐局",
+				"field":   hit.Field,
+			},
+		})
 	case errors.Is(err, ErrQuota):
 		writeError(w, http.StatusConflict, "quota_exceeded", err.Error())
 	case errors.Is(err, ErrRateLimited):

@@ -691,6 +691,22 @@ button:disabled {
   font-size: var(--fs-13);
 }
 
+/* 命中敏感词的那个输入框（原型 X1）：边框和底色变红，提示就在它下面，
+   用户已经写好的内容一个字都不动。 */
+.field input.err,
+.field textarea.err {
+  border-color: var(--red);
+  background: var(--red-tint);
+}
+
+.errmsg {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--red);
+  font-size: var(--fs-small);
+}
+
 .empty {
   text-align: center;
   color: var(--ink-3);

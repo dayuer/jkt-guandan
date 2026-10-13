@@ -147,6 +147,8 @@ func run() error {
 		Build: buildinfo.Get(),
 	})
 	gamesSvc := games.NewService(st, clk, gamesPublisher{hub})
+	// 注销（§14）要同时清身份侧和牌局侧的数据，两边在各自的包里，这里接起来。
+	identitySvc.SetGameCleaner(gamesSvc)
 
 	// §12.4 第 1 步：开始关闭后 /readyz 立刻返回 503。
 	checks = append(checks, httpapi.ReadinessCheck{Name: "关闭中", Fn: func(context.Context) error {

@@ -32,6 +32,15 @@ export class ApiError extends Error {
   get isClosed(): boolean {
     return this.status === 409 && this.code === "game_closed";
   }
+
+  /**
+   * 内容是敏感词时，服务端告诉我们命中的是哪个字段（venue / note），
+   * 用来把提示放到对应的输入框下面（原型 X1）。其他错误返回空串。
+   */
+  get field(): string {
+    const field = this.body?.error?.field;
+    return typeof field === "string" ? field : "";
+  }
 }
 
 interface RequestOptions {
