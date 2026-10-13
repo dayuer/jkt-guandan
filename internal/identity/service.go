@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
@@ -60,11 +61,17 @@ type Identity struct {
 	Device Device
 }
 
+// Publisher 把实时事件发给订阅者（internal/realtime 的 Hub）。只在写事务提交后调用。
+type Publisher interface {
+	Publish(topic, eventType string, data any)
+}
+
 // Service 是身份系统的业务入口。
 type Service struct {
 	st      *store.Store
 	clk     clock.Clock
 	cookies CookiePolicy
+	pub     Publisher // 可以为 nil：不发实时事件
 
 	createLimiter *Limiter // POST /api/me：每 IP 每小时 20 次（§12.3）
 	issueLimiter  *Limiter // POST /api/claim：每用户每小时 5 次（§5.2 修订）
@@ -86,6 +93,37 @@ func NewService(st *store.Store, clk clock.Clock, dev bool) *Service {
 		codeLimiter:   NewLimiter(10, 10, clk),
 		codeBudget:    newCodeFailureBudget(clk),
 	}
+}
+
+// SetPublisher 接上实时事件（§5.5）。启动时调用一次；不调用就不发事件。
+func (s *Service) SetPublisher(p Publisher) { s.pub = p }
+
+// publishClaimRedeemed 登记一个提交后回调：认领成功后通知 user:{ownerID} 的订阅者，
+// 发起认领的那一页（比如微信里的 12 屏）随即显示「✓ 已在浏览器中打开」（原型 H1）。
+// 事务回滚时回调不执行，所以不会发出没真正成功的认领。
+func (s *Service) publishClaimRedeemed(tx *store.Tx, ownerID string, device Device) {
+	if s.pub == nil {
+		return
+	}
+	tx.AfterCommit(func(context.Context) {
+		s.pub.Publish("user:"+ownerID, "claim.redeemed", map[string]any{
+			"device_id": device.ID,
+			"ua":        device.UserAgent,
+		})
+	})
+}
+
+// FromRequest 用请求里的设备 cookie 认出身份；没有或无效时返回 nil。
+func (s *Service) FromRequest(r *http.Request) *Identity {
+	token, ok := s.cookies.Read(r)
+	if !ok {
+		return nil
+	}
+	ident, err := s.Current(r.Context(), token)
+	if err != nil {
+		return nil
+	}
+	return ident
 }
 
 // Cookies 让接口层用同一份 cookie 策略读写（§10.3）。
@@ -326,6 +364,7 @@ func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentDe
 				return err
 			}
 			result = Identity{User: user, Device: device}
+			s.publishClaimRedeemed(tx, ownerID, device)
 			return nil
 		}
 
@@ -343,6 +382,7 @@ func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentDe
 			return err
 		}
 		result = Identity{User: user, Device: device}
+		s.publishClaimRedeemed(tx, ownerID, device)
 		return nil
 	})
 	if err != nil {
@@ -433,6 +473,7 @@ func (s *Service) RedeemByCode(ctx context.Context, code, clientNet, userAgent s
 			return err
 		}
 		result = Identity{User: user, Device: device}
+		s.publishClaimRedeemed(tx, userID, device)
 		return nil
 	})
 	if err != nil {

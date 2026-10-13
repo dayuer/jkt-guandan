@@ -114,17 +114,7 @@ func requireIdentity(w http.ResponseWriter, r *http.Request) (*Identity, bool) {
 }
 
 // current 从 cookie 解析身份，没有或无效时返回 nil（不算错误）。
-func (h *handler) current(r *http.Request) *Identity {
-	token, ok := h.svc.Cookies().Read(r)
-	if !ok {
-		return nil
-	}
-	ident, err := h.svc.Current(r.Context(), token)
-	if err != nil {
-		return nil
-	}
-	return ident
-}
+func (h *handler) current(r *http.Request) *Identity { return h.svc.FromRequest(r) }
 
 // createMe 处理「首次填称呼」（§5.2）。
 func (h *handler) createMe(w http.ResponseWriter, r *http.Request) {

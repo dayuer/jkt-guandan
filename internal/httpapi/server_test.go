@@ -12,10 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/dayuer/jkt-guandan/internal/clientip"
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/config"
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
+	"github.com/dayuer/jkt-guandan/internal/realtime"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
 	"github.com/dayuer/jkt-guandan/web"
@@ -329,19 +332,42 @@ func TestUnknownPathFallsBackToIndex(t *testing.T) {
 }
 
 // 256 个并发名额全部占满时，新的业务请求返回 503，
-// 但 /healthz 和 /readyz 不排队，照常返回 200（§12.3、§12.5；PR #25 复审第 4 条）。
+// 但 /healthz、/readyz 和 /ws 不排队，照常可用（§12.3、§12.5；PR #25 复审第 4 条）。
 func TestProbesBypassConcurrencyLimit(t *testing.T) {
 	const limit = 256 // 与 maxConcurrentRequests 一致
 	var entered sync.WaitGroup
 	entered.Add(limit)
 	release := make(chan struct{})
+	hub := realtime.NewHub()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = hub.Shutdown(ctx)
+	})
 	f := newFixture(t, config.Config{}, func(mux *http.ServeMux) {
 		mux.HandleFunc("GET /api/slow", func(w http.ResponseWriter, r *http.Request) {
 			entered.Done()
 			<-release
 			w.WriteHeader(http.StatusNoContent)
 		})
+		mux.Handle("GET /ws", realtime.Handler(realtime.Options{
+			Hub: hub, AllowOrigin: func(string) bool { return true },
+		}))
 	})
+	dialWS := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(f.srv.URL, "http")+"/ws",
+			&websocket.DialOptions{HTTPHeader: http.Header{"Origin": {"http://x"}}})
+		if err == nil {
+			t.Cleanup(func() { _ = c.CloseNow() })
+		}
+		return err
+	}
+	// 先开一条 WebSocket 长连接：如果它占名额，下面就占不满 256 个，entered.Wait 会卡住。
+	if err := dialWS(); err != nil {
+		t.Fatalf("连 /ws: %v", err)
+	}
 
 	client := &http.Client{Transport: &http.Transport{}}
 	defer client.CloseIdleConnections()
@@ -374,6 +400,10 @@ func TestProbesBypassConcurrencyLimit(t *testing.T) {
 	}
 	if got := status("/readyz"); got != http.StatusOK {
 		t.Fatalf("名额满时 /readyz 应返回 200，实际 %d", got)
+	}
+	// /ws 不占名额，名额满时照样能握手（#25 复审留下的待办）。
+	if err := dialWS(); err != nil {
+		t.Fatalf("名额满时 /ws 应能握手：%v", err)
 	}
 }
 

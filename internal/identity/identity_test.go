@@ -19,6 +19,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/config"
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/internal/identity"
+	"github.com/dayuer/jkt-guandan/internal/realtime"
 	"github.com/dayuer/jkt-guandan/internal/store"
 )
 
@@ -47,6 +48,12 @@ type fixture struct {
 
 func newFixture(t *testing.T, dev bool) *fixture {
 	t.Helper()
+	return newFixtureWithHub(t, dev, nil)
+}
+
+// newFixtureWithHub 和 newFixture 一样，另外在 hub 非空时挂上 GET /ws，并把身份事件接到 hub 上。
+func newFixtureWithHub(t *testing.T, dev bool, hub *realtime.Hub) *fixture {
+	t.Helper()
 
 	dir := t.TempDir()
 	st, err := store.Open(dir)
@@ -62,16 +69,32 @@ func newFixture(t *testing.T, dev bool) *fixture {
 
 	clk := clock.NewFake(time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC))
 	svc := identity.NewService(st, clk, dev)
+	cfg := config.Config{DataDir: dir, Dev: dev, PublicURL: testOrigin}
+	if hub != nil {
+		svc.SetPublisher(hubPublisher{hub})
+	}
 
 	// 必须用 TLS：生产环境的 cookie 名带 __Host- 前缀、带 Secure，
 	// 而 cookie jar 不会把 Secure cookie 发回普通 http 的地址，
 	// 用 NewServer 的话测试里根本认不出身份。
 	srv := httptest.NewTLSServer(httpapi.New(httpapi.Options{
-		Config: config.Config{DataDir: dir, Dev: dev, PublicURL: testOrigin},
+		Config: cfg,
 		Store:  st,
 		Clock:  clk,
 		RegisterRoutes: func(mux *http.ServeMux) {
 			identity.Register(mux, svc)
+			if hub != nil {
+				mux.Handle("GET /ws", realtime.Handler(realtime.Options{
+					Hub:         hub,
+					AllowOrigin: cfg.AllowsOrigin,
+					Identify: func(r *http.Request) (string, error) {
+						if ident := svc.FromRequest(r); ident != nil {
+							return ident.User.ID, nil
+						}
+						return "", nil
+					},
+				}))
+			}
 		},
 	}))
 	t.Cleanup(srv.Close)
