@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/store"
+	"github.com/dayuer/jkt-guandan/migrations"
 )
 
 func openTest(t *testing.T) *store.Store {
@@ -104,12 +107,24 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	_ = openDir(t, dir).Close()
 	second := openDir(t, dir)
 
+	// 期望条数按内嵌的迁移文件数算，别写死——加一个迁移文件就会过时。
+	entries, err := fs.ReadDir(migrations.FS, ".")
+	if err != nil {
+		t.Fatalf("列出迁移: %v", err)
+	}
+	want := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			want++
+		}
+	}
+
 	var count int
 	if err := second.Read().QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("读迁移记录: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("迁移记录应为 1 条，实际 %d 条", count)
+	if count != want {
+		t.Fatalf("迁移记录应为 %d 条（迁移文件数），实际 %d 条", want, count)
 	}
 }
 

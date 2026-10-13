@@ -19,7 +19,7 @@ func (s *Server) assets() http.Handler {
 	index, indexErr := fs.ReadFile(dist, "index.html")
 	files := http.FileServer(http.FS(dist))
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return referrerPolicyForClaim(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if name == "." || name == "" {
 			name = "index.html"
@@ -37,5 +37,5 @@ func (s *Server) assets() http.Handler {
 			return
 		}
 		files.ServeHTTP(w, r)
-	})
+	}))
 }
