@@ -1,7 +1,8 @@
 import { render } from "preact";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GameDetail, GamePatch } from "../api";
 import { Detail } from "./Detail";
+import { installFakeSocket } from "../fakeSocket";
 
 function detail(version: number, over: Partial<GameDetail["game"]> = {}): GameDetail {
   return {
@@ -88,6 +89,10 @@ async function editVenue(container: HTMLElement, venue: string) {
   const form = container.querySelector("form.sheet") as HTMLFormElement;
   form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 }
+
+beforeEach(() => {
+  installFakeSocket();
+});
 
 afterEach(() => {
   document.body.innerHTML = "";

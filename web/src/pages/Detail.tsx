@@ -15,6 +15,7 @@ import {
 import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
 import { dayLabel, kindLabel, timeHM } from "../format";
+import { OfflineDot, useRealtime } from "../useRealtime";
 import { useRetrying } from "../useRetrying";
 
 interface Props {
@@ -63,6 +64,16 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 这一局的实时（#49）：座位有人坐上、有人退出、局头改了时间……服务端都发到 game:{code} 上，
+  // 我们只当「有事发生」的信号，一律重新拉 REST。座位的落座动画由 GameTable 比对前后座位自己播，
+  // 所以这里不需要关心事件里带的是什么。
+  useRealtime({
+    topics: [`game:${code}`],
+    poll: true,
+    onEvent: () => void load(),
+    refresh: () => void load(),
+  });
 
   /** 把错误翻成人话。 */
   const explain = (err: unknown): string => {
@@ -223,7 +234,9 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         <div class={`when${closed ? " dim" : ""}`}>
           <div class="d">{dayLabel(game.starts_at)}</div>
           <div class="t">{timeHM(game.starts_at)}</div>
-          <div class="s">雅加达时间 WIB · {kindLabel(game.kind)}</div>
+          <div class="s">
+            雅加达时间 WIB · {kindLabel(game.kind)} <OfflineDot />
+          </div>
         </div>
 
         <GameTable detail={detail} meID={me?.id} onSeat={onSeatClick} />
