@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { GameDetail, Seat } from "../api";
 
-/** 座位在牌桌上的方位。1 号在下方（自己这边），顺时针排过去。 */
-const POSITIONS = ["bottom", "right", "top", "left"] as const;
+/** 座位在牌桌上的方位。按设计稿 B1：1 号在上，顺时针排过去（上 / 右 / 下 / 左）。 */
+const POSITIONS = ["top", "right", "bottom", "left"] as const;
 
 function positionFor(seatNo: number) {
   return POSITIONS[(seatNo - 1) % POSITIONS.length];
@@ -48,8 +48,10 @@ export function GameTable({ detail, meID, onSeat }: Props) {
     <div class="table-wrap">
       <div class={`table${closed ? " closed" : ""}`}>
         <div class="count">
-          <div class="n">{detail.seats.length}</div>
-          <div class="l">/ {detail.game.capacity} 人</div>
+          <div class="n">
+            {detail.seats.length}/{detail.game.capacity}
+          </div>
+          <div class="l">对家为搭档</div>
         </div>
       </div>
 
@@ -72,6 +74,8 @@ export function GameTable({ detail, meID, onSeat }: Props) {
         if (justSat.has(seat.user.id)) classes.push("drop");
 
         const label = `${seat.user.nickname}${isHost ? "（局头）" : ""}${isMe ? "（我）" : ""}`;
+        // 皇冠只在「我本人就是局头」时挂上，和原型一致（访客看到的局头座位没有皇冠）。
+        const showCrown = isHost && isMe;
         return (
           <button
             class={at}
@@ -82,7 +86,7 @@ export function GameTable({ detail, meID, onSeat }: Props) {
           >
             <span class={classes.join(" ")}>
               {initial(seat.user.nickname)}
-              {isHost && <span class="crown">局头</span>}
+              {showCrown && <span class="crown">局头</span>}
             </span>
           </button>
         );

@@ -14,11 +14,30 @@ const hm = new Intl.DateTimeFormat("zh-CN", {
   timeZone: WIB,
 });
 
+// month 用 long 才是「10月17日」；numeric 在 zh-CN 下会变成「10/17」。
 const md = new Intl.DateTimeFormat("zh-CN", {
-  month: "numeric",
+  month: "long",
   day: "numeric",
   timeZone: WIB,
 });
+
+// 设计稿的写法是「10/13」，不是「10月13日」。
+const slash = new Intl.DateTimeFormat("en-US", {
+  month: "2-digit",
+  day: "2-digit",
+  timeZone: WIB,
+});
+
+const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+/** WIB 下的「周几」，用数组而不是 Intl——设计稿要的是「周二」这种紧凑写法。 */
+function weekdayCompact(unixSeconds: number): string {
+  const name = new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone: WIB }).format(
+    new Date(unixSeconds * 1000),
+  );
+  const map: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return weekdays[map[name] ?? 0];
+}
 
 const wd = new Intl.DateTimeFormat("zh-CN", { weekday: "short", timeZone: WIB });
 
@@ -30,6 +49,21 @@ export function timeHM(unixSeconds: number): string {
 /** 「周四」 */
 export function weekday(unixSeconds: number): string {
   return wd.format(new Date(unixSeconds * 1000));
+}
+
+/** 「10/13」，和设计稿一致。 */
+export function slashDate(unixSeconds: number): string {
+  return slash.format(new Date(unixSeconds * 1000));
+}
+
+/** 「周二」 */
+export function weekday2(unixSeconds: number): string {
+  return weekdayCompact(unixSeconds);
+}
+
+/** 「经典掼蛋」/「不升级」/「带新手」 */
+export function kindLabel(kind: string): string {
+  return { classic: "经典掼蛋", "no-level": "不升级", teaching: "带新手" }[kind] ?? kind;
 }
 
 /** 「10月18日」 */
@@ -57,9 +91,10 @@ export function dayLabel(unixSeconds: number, now: number = Math.floor(Date.now(
   const today = dayKey(now);
   const tomorrow = dayKey(now + 24 * 3600);
 
-  if (target === today) return `今天 · ${weekday(unixSeconds)}`;
-  if (target === tomorrow) return `明天 · ${weekday(unixSeconds)}`;
-  return `${monthDay(unixSeconds)} · ${weekday(unixSeconds)}`;
+  const stamp = `${slashDate(unixSeconds)} ${weekday2(unixSeconds)}`;
+  if (target === today) return `今天 ${stamp}`;
+  if (target === tomorrow) return `明天 ${stamp}`;
+  return stamp;
 }
 
 /** 「差 2 人」/「已满」 */

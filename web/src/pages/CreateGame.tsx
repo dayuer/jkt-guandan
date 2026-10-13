@@ -3,7 +3,7 @@ import { ApiError, createGame, newIdempotencyKey, type UserRef } from "../api";
 import { weekday } from "../format";
 
 /** 允许的片区，和 internal/games 里的白名单一致（§12.2：不接受任意字符串）。 */
-const AREAS = ["SCBD", "PIK", "Kuningan", "Senayan", "Kelapa Gading", "BSD", "Other"];
+const AREAS = ["SCBD", "PIK", "Central Park", "Kemang", "Kuningan", "Senayan", "Kelapa Gading", "BSD", "Other"];
 const KINDS: { value: string; label: string }[] = [
   { value: "classic", label: "经典" },
   { value: "no-level", label: "不升级" },
@@ -154,7 +154,7 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated }: Pr
             />
           </div>
 
-          <p class="disclaimer">只约牌，不涉及任何金钱输赢</p>
+          <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
           {error && <p class="error">{error}</p>}
         </form>
       </div>

@@ -11,8 +11,8 @@ import {
   type Seat,
   type UserRef,
 } from "../api";
-import { GameTable, initial } from "../components/Table";
-import { dayLabel, missingLabel, timeHM } from "../format";
+import { GameTable } from "../components/Table";
+import { dayLabel, kindLabel, timeHM } from "../format";
 
 interface Props {
   code: string;
@@ -102,7 +102,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   if (!detail) {
     return (
       <div class="body">
-        <Nav title="牌局" onBack={onBack} />
+        <Nav title="牌局详情" onBack={onBack} />
         {error ? <p class="error">{error}</p> : <p class="empty">正在打开…</p>}
       </div>
     );
@@ -114,7 +114,17 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   return (
     <>
       <div class="body">
-        <Nav title="牌局" onBack={onBack} />
+        <Nav title="牌局详情" onBack={onBack} />
+
+        {myWait && !closed && (
+          <div class="strip">
+            <span class="dot" />
+            <span class="tx">
+              你是候补第 {myWait.position} 位
+              <small>有人退出会自动补上你，并推送通知</small>
+            </span>
+          </div>
+        )}
 
         {closed && (
           <div class="banner red">
@@ -125,7 +135,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         <div class={`when${closed ? " dim" : ""}`}>
           <div class="d">{dayLabel(game.starts_at)}</div>
           <div class="t">{timeHM(game.starts_at)}</div>
-          <div class="s">{game.venue}</div>
+          <div class="s">雅加达时间 WIB · {kindLabel(game.kind)}</div>
         </div>
 
         <GameTable detail={detail} meID={me?.id} onSeat={onSeatClick} />
@@ -146,22 +156,16 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
 
         <div class="info">
           <div class="r">
-            <span>时间</span>
-            <div>
-              {dayLabel(game.starts_at)} {timeHM(game.starts_at)}
-            </div>
-          </div>
-          <div class="r">
             <span>地点</span>
-            <div>
-              {game.area} · {game.venue}
-            </div>
+            <div>{game.venue}</div>
           </div>
           <div class="r">
-            <span>人数</span>
-            <div>
-              {seats.length}/{game.capacity} · {missingLabel(missing)}
-            </div>
+            <span>商圈</span>
+            <div>{game.area}</div>
+          </div>
+          <div class="r">
+            <span>局头</span>
+            <div>{host.nickname}</div>
           </div>
           {game.note && (
             <div class="r">
@@ -171,7 +175,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
           )}
         </div>
 
-        <p class="disclaimer">只约牌，不涉及任何金钱输赢</p>
+        <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
         {error && <p class="error">{error}</p>}
       </div>
 
@@ -200,14 +204,14 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         />
       )}
 
-      <div class={`actionbar${myRole.role === "none" ? "" : " single"}`}>
+      <div class="actionbar">
         {myRole.role !== "none" && (
           <button
             class="btn ghost"
             disabled={busy || closed}
             onClick={() => void run(() => leaveGame(code))}
           >
-            {myRole.role === "waitlist" ? "退出候补" : "退出"}
+            {myRole.role === "waitlist" ? "候补中 · 退出候补" : "已报名 · 退出"}
           </button>
         )}
         {isHost && !closed && (
@@ -234,7 +238,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         )}
         {myRole.role === "none" && (
           <button class="btn primary" disabled={busy || closed} onClick={() => void onJoin()}>
-            {busy ? "稍等…" : missing > 0 ? "报名占座" : "排候补"}
+            {busy ? "稍等…" : missing > 0 ? "报名占座" : `排候补 · 第 ${waitlist.length + 1} 位`}
           </button>
         )}
         {myWait && (

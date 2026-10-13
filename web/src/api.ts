@@ -130,6 +130,8 @@ export interface GameSummary {
   venue: string;
   kind: string;
   status: Game["status"];
+  /** 已坐下的座位（首页卡片的座位圆点要用首字）。 */
+  seat_list: Seat[];
   seats: number;
   missing: number;
   host: UserRef;

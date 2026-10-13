@@ -173,7 +173,12 @@ export function App() {
           onCreated={(code) => navigate(`/g/${code}`)}
         />
       ) : (
-        <Home me={me} onOpen={(code) => navigate(`/g/${code}`)} onCreate={() => navigate("/new")} />
+        <Home
+          me={me}
+          toast={toast}
+          onOpen={(code) => navigate(`/g/${code}`)}
+          onCreate={() => navigate("/new")}
+        />
       )}
 
       {sheetOpen && <NicknameSheet onDone={onSheetDone} onCancel={onSheetCancel} />}

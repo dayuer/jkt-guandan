@@ -346,6 +346,13 @@ func toDetailJSON(d *Detail) map[string]any {
 func toSummariesJSON(items []Summary) []map[string]any {
 	out := make([]map[string]any, 0, len(items))
 	for _, s := range items {
+		seats := make([]seatJSON, 0, len(s.Seats))
+		for _, seat := range s.Seats {
+			seats = append(seats, seatJSON{
+				SeatNo: seat.SeatNo,
+				User:   userRefJSON{ID: seat.UserID, Nickname: seat.Nickname},
+			})
+		}
 		out = append(out, map[string]any{
 			"short_code": s.Game.ShortCode,
 			"starts_at":  s.Game.StartsAt.Unix(),
@@ -353,7 +360,8 @@ func toSummariesJSON(items []Summary) []map[string]any {
 			"venue":      s.Game.Venue,
 			"kind":       s.Game.Kind,
 			"status":     s.Game.Status,
-			"seats":      s.SeatsLen,
+			"seat_list":  seats,
+			"seats":      len(seats),
 			"missing":    s.Missing,
 			"host":       userRefJSON{ID: s.Game.HostID, Nickname: s.HostName},
 		})
