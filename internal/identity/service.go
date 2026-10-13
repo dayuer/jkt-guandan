@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
+	"github.com/dayuer/jkt-guandan/internal/ratelimit"
 	"github.com/dayuer/jkt-guandan/internal/store"
 )
 
@@ -66,9 +67,9 @@ type Service struct {
 	clk     clock.Clock
 	cookies CookiePolicy
 
-	createLimiter *Limiter // POST /api/me：每 IP 每小时 20 次（§12.3）
-	issueLimiter  *Limiter // POST /api/claim：每用户每小时 5 次（§5.2 修订）
-	codeLimiter   *Limiter // 凭码兑换：每 IP 每分钟 10 次（§12.3）
+	createLimiter *ratelimit.Limiter // POST /api/me：每 IP 每小时 20 次（§12.3）
+	issueLimiter  *ratelimit.Limiter // POST /api/claim：每用户每小时 5 次（§5.2 修订）
+	codeLimiter   *ratelimit.Limiter // 凭码兑换：每 IP 每分钟 10 次（§12.3）
 	codeBudget    *codeFailureBudget
 }
 
@@ -81,9 +82,9 @@ func NewService(st *store.Store, clk clock.Clock, dev bool) *Service {
 		st:            st,
 		clk:           clk,
 		cookies:       CookiePolicyFor(dev),
-		createLimiter: NewLimiter(20.0/60, 20, clk),
-		issueLimiter:  NewLimiter(5.0/60, 5, clk),
-		codeLimiter:   NewLimiter(10, 10, clk),
+		createLimiter: ratelimit.New(20.0/60, 20, clk),
+		issueLimiter:  ratelimit.New(5.0/60, 5, clk),
+		codeLimiter:   ratelimit.New(10, 10, clk),
 		codeBudget:    newCodeFailureBudget(clk),
 	}
 }

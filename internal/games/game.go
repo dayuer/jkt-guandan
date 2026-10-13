@@ -1,0 +1,124 @@
+// Package games 管牌局和报名（docs/server-design.md §5.1）。
+//
+// 每一个操作都是**一个写事务**：读牌局、判断、改数据、写提醒、登记提交后回调，
+// 全部在 store.Write 里完成，所以并发报名天然串行，应用层不需要任何锁（§11.2）。
+// 事务里不做任何网络 I/O（§11.1）。
+package games
+
+import (
+	"errors"
+	"time"
+)
+
+// 牌局状态（§4）。
+const (
+	StatusOpen      = "open"
+	StatusFull      = "full"
+	StatusCancelled = "cancelled"
+	StatusDone      = "done"
+)
+
+// Capacity 是一局的座位数；§4 的 CHECK 约束也是这个值。
+const Capacity = 4
+
+// Kind 的取值（§4）。
+var Kinds = []string{"classic", "no-level", "teaching"}
+
+// Areas 是允许的片区。§12.2 要求片区只接受固定列表里的值。
+var Areas = []string{"SCBD", "PIK", "Kuningan", "Senayan", "Kelapa Gading", "BSD", "Other"}
+
+// 配额（§10.8）。
+const (
+	// MaxConcurrentHolds 是一个人同时能占的座位或候补位数。
+	MaxConcurrentHolds = 5
+	// MaxGamesPerDay 是一个人每天能开的局数。
+	MaxGamesPerDay = 10
+)
+
+// Jakarta 是算「今天」用的时区（§13.2：在服务端按 Asia/Jakarta 计算）。
+var jakarta = mustLoadJakarta()
+
+func mustLoadJakarta() *time.Location {
+	loc, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		// 时区数据由 time/tzdata 编进二进制（§13.2），正常不会失败。
+		panic("加载 Asia/Jakarta: " + err.Error())
+	}
+	return loc
+}
+
+// Game 是一局牌。
+type Game struct {
+	ID        string
+	ShortCode string
+	HostID    string
+	StartsAt  time.Time
+	Area      string
+	Venue     string
+	Kind      string
+	Note      string
+	Status    string
+	Version   int64
+	CreatedAt time.Time
+}
+
+// Open 表示这局还能报名。
+func (g Game) Open() bool { return g.Status == StatusOpen || g.Status == StatusFull }
+
+// Seat 是座位上的人。
+type Seat struct {
+	SeatNo    int
+	UserID    string
+	Nickname  string
+	CreatedAt time.Time
+}
+
+// WaitEntry 是候补里的人。
+type WaitEntry struct {
+	UserID    string
+	Nickname  string
+	CreatedAt time.Time
+	Position  int // 从 1 开始
+}
+
+// Detail 是 03 屏需要的全部数据。
+type Detail struct {
+	Game     Game
+	HostName string
+	Seats    []Seat
+	Waitlist []WaitEntry
+	// Missing 是还差几个人成局。
+	Missing int
+	// Me 是当前用户在这一局里的位置；「seat」「waitlist」「none」。
+	Me string
+	// MySeatNo / MyPosition 只在 Me 不是 none 时有意义。
+	MySeatNo   int
+	MyPosition int
+}
+
+// Summary 是 02 屏列表里的条目。
+type Summary struct {
+	Game     Game
+	HostName string
+	SeatsLen int
+	Missing  int
+}
+
+// 业务错误。接口层把它们映射成 §6 的状态码。
+var (
+	ErrNotFound         = errors.New("牌局不存在")
+	ErrClosed           = errors.New("牌局已经结束或取消")
+	ErrBanned           = errors.New("你被移出过这一局")
+	ErrNotHost          = errors.New("只有局头能做这件事")
+	ErrVersionConflict  = errors.New("牌局已经被改过")
+	ErrQuota            = errors.New("超出配额")
+	ErrRateLimited      = errors.New("操作太频繁")
+	ErrInvalidInput     = errors.New("输入不合法")
+	ErrHostCantKickSelf = errors.New("局头不能移出自己")
+)
+
+// VersionConflict 带上最新的牌局，让前端能提示「局已被修改，请确认」（§5.1）。
+type VersionConflict struct{ Latest Detail }
+
+func (e *VersionConflict) Error() string { return ErrVersionConflict.Error() }
+func (e *VersionConflict) Unwrap() error { return ErrVersionConflict }
