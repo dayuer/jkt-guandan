@@ -25,6 +25,8 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 	h = s.limitConcurrency(h)
 	h = s.securityHeaders(h)
 	h = s.recoverAndLog(h)
+	// 最外层：先把 RemoteAddr 换成真实的客户端 IP，日志和按 IP 的限流看到的都是它（§12.3）。
+	h = s.cfg.TrustedProxies.Middleware(h)
 	return h
 }
 
@@ -53,6 +55,7 @@ func (s *Server) recoverAndLog(next http.Handler) http.Handler {
 			slog.Info("http",
 				"request_id", requestID,
 				"method", r.Method,
+				"ip", clientHost(r.RemoteAddr),
 				"path", r.URL.Path,
 				"status", rec.status,
 				"ms", elapsed.Milliseconds(),
@@ -182,6 +185,14 @@ func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		r.wrote = true
 	}
 	return conn, rw, err
+}
+
+// clientHost 去掉 RemoteAddr 里的端口，日志里只记 IP。
+func clientHost(remote string) string {
+	if host, _, err := net.SplitHostPort(remote); err == nil {
+		return host
+	}
+	return remote
 }
 
 func newRequestID() string {

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dayuer/jkt-guandan/internal/clientip"
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/config"
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
@@ -460,5 +461,40 @@ func TestBuildHeaderAndRequestMetrics(t *testing.T) {
 	if !strings.Contains(out.String(), `guandan_http_requests_total{code="2xx"} 3`) ||
 		!strings.Contains(out.String(), "guandan_http_request_duration_seconds_count 3") {
 		t.Fatalf("请求指标不对：\n%s", out.String())
+	}
+}
+
+// 经过中间件后，下游 handler 看到的 RemoteAddr 是真实客户端：只有对端是可信代理时才采用转发头。
+func TestClientIPFromTrustedProxyOnly(t *testing.T) {
+	seen := make(chan string, 1)
+	routes := func(mux *http.ServeMux) {
+		mux.HandleFunc("GET /api/whoami", func(w http.ResponseWriter, r *http.Request) {
+			seen <- r.RemoteAddr
+			w.WriteHeader(http.StatusNoContent)
+		})
+	}
+	get := func(f *fixture) string {
+		req, _ := http.NewRequest(http.MethodGet, f.srv.URL+"/api/whoami", nil)
+		req.Header.Set("X-Real-IP", "198.51.100.9")
+		req.Header.Set("X-Forwarded-For", "6.6.6.6, 198.51.100.9")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return <-seen
+	}
+
+	// httptest 的对端是 127.0.0.1：把它设为可信代理，模拟 nginx。
+	trusted, err := clientip.Parse("127.0.0.1/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := get(newFixture(t, config.Config{TrustedProxies: trusted}, routes)); got != "198.51.100.9:0" {
+		t.Fatalf("可信代理转发时 RemoteAddr = %q", got)
+	}
+	// 不信任任何代理：客户端自己带的头不能改变它的 IP。
+	if got := get(newFixture(t, config.Config{}, routes)); !strings.HasPrefix(got, "127.0.0.1:") {
+		t.Fatalf("不可信时应保持对端地址，实际 %q", got)
 	}
 }

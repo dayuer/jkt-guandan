@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -17,6 +18,7 @@ func clearEnv(t *testing.T) {
 	} {
 		t.Setenv(k, "")
 	}
+	t.Setenv("GUANDAN_TRUSTED_PROXIES", "")
 	// GUANDAN_METRICS_ADDR 设成空字符串表示关闭 /metrics，所以这里要真的删掉它。
 	t.Setenv("GUANDAN_METRICS_ADDR", "")
 	os.Unsetenv("GUANDAN_METRICS_ADDR")
@@ -189,5 +191,39 @@ func TestMetricsAddrDefaultsToLoopback(t *testing.T) {
 	}
 	if cfg.MetricsAddr != "127.0.0.1:9090" {
 		t.Fatalf("MetricsAddr = %q", cfg.MetricsAddr)
+	}
+}
+
+// 默认不信任任何代理；生产拓扑（nginx → docker 网桥 → 容器）显式设置网桥网关。
+func TestTrustedProxies(t *testing.T) {
+	clientIP := func(cfg config.Config) string {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = "172.17.0.1:40000"
+		req.Header.Set("X-Real-IP", "198.51.100.9")
+		return cfg.TrustedProxies.ClientIP(req).String()
+	}
+
+	clearEnv(t)
+	t.Setenv("GUANDAN_DEV", "1")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := clientIP(cfg); got != "172.17.0.1" {
+		t.Fatalf("默认不该信任任何代理，得到 %s", got)
+	}
+
+	t.Setenv("GUANDAN_TRUSTED_PROXIES", "172.17.0.1/32")
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := clientIP(cfg); got != "198.51.100.9" {
+		t.Fatalf("显式信任网桥网关后应采用 X-Real-IP，得到 %s", got)
+	}
+
+	t.Setenv("GUANDAN_TRUSTED_PROXIES", "not-a-cidr")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("不合法的网段应报错")
 	}
 }

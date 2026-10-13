@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/dayuer/jkt-guandan/internal/clientip"
 )
 
 // DefaultTLSAddr 是启用 autocert 时的 TLS 监听地址。容器里监听 8443，
@@ -13,7 +15,7 @@ import (
 const DefaultTLSAddr = ":8443"
 
 // DefaultMetricsAddr 是 /metrics 的默认监听地址：只有本机能访问（§13.7）。
-// 要从宿主机抓取，设 GUANDAN_METRICS_ADDR=:9090，并且只映射到宿主机的 127.0.0.1。
+// 生产上用 docker exec guandan /guandan metrics 查看，不映射端口（runbook §6）。
 const DefaultMetricsAddr = "127.0.0.1:9090"
 
 type Config struct {
@@ -42,6 +44,10 @@ type Config struct {
 	BackupSecretKey string
 	// MetricsAddr 是 /metrics 的监听地址，默认只听本机（§13.7）。设为空字符串关闭。
 	MetricsAddr string
+	// TrustedProxies 是可信的反向代理网段：只有对端在这里面时，才采用 X-Real-IP / X-Forwarded-For
+	// 里的客户端地址（按 IP 限流要用）。读 GUANDAN_TRUSTED_PROXIES，默认为空：不信任任何代理。
+	// 只有前面有反向代理、并且代理会覆盖 X-Real-IP 时才设置（生产：172.17.0.1/32，见 runbook）。
+	TrustedProxies clientip.Resolver
 	// AnthropicKey 为空时蛋蛋不可用（phase:3）。
 	AnthropicKey string
 }
@@ -124,6 +130,13 @@ func Load() (Config, error) {
 	if v, ok := os.LookupEnv("GUANDAN_METRICS_ADDR"); ok {
 		c.MetricsAddr = strings.TrimSpace(v)
 	}
+
+	// 默认不信任任何代理（clientip 包注释说明了为什么）。
+	resolver, err := clientip.Parse(os.Getenv("GUANDAN_TRUSTED_PROXIES"))
+	if err != nil {
+		return Config{}, fmt.Errorf("GUANDAN_TRUSTED_PROXIES: %w", err)
+	}
+	c.TrustedProxies = resolver
 
 	if c.PublicURL == "" && c.Domain != "" {
 		c.PublicURL = "https://" + c.Domains()[0]
