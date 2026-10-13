@@ -13,3 +13,4 @@ web/dist/*
 
 .DS_Store
 *.log
+.claude/worktrees/
