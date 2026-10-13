@@ -204,7 +204,8 @@ func (s *Service) Create(ctx context.Context, hostID string, in CreateInput, ide
 		}
 
 		tx.Touch(gameID)
-		s.publishAfterCommit(tx, code, EventFeedAdded, 1, false)
+		// 新开一局是「首页列表多了一条」，所以发到片区主题（§5.5）。
+		s.publishFeedAfterCommit(tx, in.Area, EventFeedAdded, 1)
 
 		// 记下这次的结果，下次同一个键直接用（§11.4）。
 		if idemKey != "" {
@@ -793,7 +794,7 @@ func (s *Service) Update(ctx context.Context, code, hostID string, patch Patch, 
 			area = *patch.Area
 		}
 		s.publishAfterCommit(tx, code, EventGameUpdated, version, true)
-		s.publishFeedAfterCommit(tx, area, version)
+		s.publishFeedAfterCommit(tx, area, EventFeedChanged, version)
 
 		detail, err = loadDetailTx(ctx, tx, code, hostID)
 		return err
@@ -819,24 +820,28 @@ func (s *Service) publishAfterCommit(tx *store.Tx, code, eventType string, versi
 			slog.Error("推实时事件前读牌局失败", "code", code, "err", err)
 			return
 		}
-		s.pub.Publish(GameTopic(code), Message{
-			Type: eventType,
-			V:    version,
-			Data: seatData(detail),
+		s.pub.Publish(Event{
+			Topic: GameTopic(code),
+			Type:  eventType,
+			V:     version,
+			Data:  seatData(detail),
 		})
 		if includeFeed {
-			s.pub.Publish(FeedTopic(detail.Game.Area), Message{
-				Type: EventFeedChanged,
-				V:    version,
-				Data: seatData(detail),
+			s.pub.Publish(Event{
+				Topic: FeedTopic(detail.Game.Area),
+				Type:  EventFeedChanged,
+				V:     version,
+				Data:  seatData(detail),
 			})
 		}
 	})
 }
 
-func (s *Service) publishFeedAfterCommit(tx *store.Tx, area string, version int64) {
+// publishFeedAfterCommit 只通知片区主题（首页列表）。eventType 是 feed.game_added
+// 或者 feed.game_changed。
+func (s *Service) publishFeedAfterCommit(tx *store.Tx, area, eventType string, version int64) {
 	tx.AfterCommit(func(context.Context) {
-		s.pub.Publish(FeedTopic(area), Message{Type: EventFeedChanged, V: version})
+		s.pub.Publish(Event{Topic: FeedTopic(area), Type: eventType, V: version})
 	})
 }
 

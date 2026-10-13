@@ -11,28 +11,28 @@ const (
 	EventFeedAdded   = "feed.game_added"
 )
 
-// Message 是一条实时消息里除了 topic 之外的部分。
-//
-// 线格式是 {"topic":"game:8K2","type":"seat.taken","v":7,"data":{…}}（§5.5），
-// topic 由 Hub 按订阅关系补上，所以这里不带。
-type Message struct {
-	Type string `json:"type"`
-	V    int64  `json:"v"`
-	Data any    `json:"data,omitempty"`
+// Event 是推给客户端的一条消息，字段和 realtime.Event 一一对应（topic/type/v/data）。
+// V 是牌局版本号，客户端丢弃不比本地新的消息，所以乱序和重复都不会出错。
+type Event struct {
+	Topic string `json:"topic"`
+	Type  string `json:"type"`
+	V     int64  `json:"v,omitempty"`
+	Data  any    `json:"data,omitempty"`
 }
 
 // Publisher 是实时事件的出口。
 //
-// #18 的 Hub（internal/realtime）合并之前，这里挂的是 NopPublisher；
-// 两边都合进 main 之后，后合并的一方负责把 realtime.Hub 接到这个接口上。
+// #40 的 Hub（internal/realtime）合并之前挂 NopPublisher。合并之后由 main 接上：
+// 业务包不依赖 realtime，所以 main 里放一个几行的适配器，把 games.Event 转成
+// realtime.Event 再交给 Hub.Publish。
 type Publisher interface {
-	Publish(topic string, msg Message)
+	Publish(ev Event)
 }
 
 // NopPublisher 什么也不做。
 type NopPublisher struct{}
 
-func (NopPublisher) Publish(string, Message) {}
+func (NopPublisher) Publish(Event) {}
 
 // GameTopic 是某一局的订阅主题。
 func GameTopic(code string) string { return "game:" + code }
