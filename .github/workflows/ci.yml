@@ -50,7 +50,7 @@ jobs:
         run: cd web && npm audit --omit=dev
 
       - name: docker build
-        run: docker build -t guandan:ci .
+        run: docker build --build-arg BUILD=${{ github.sha }} -t guandan:ci .
 
       # 按 §8 的部署参数跑：只读根文件系统、去掉全部 capability；
       # 非开发模式必须告诉它本站地址（config.Load 会检查）。
@@ -76,6 +76,8 @@ jobs:
           echo "内嵌页面已提供"
           echo "--- 安全响应头"
           curl -fsSI http://127.0.0.1:8080/ | grep -i 'content-security-policy'
+          echo "--- 构建号（§13.4）"
+          curl -fsSI http://127.0.0.1:8080/healthz | grep -i "x-app-build: ${{ github.sha }}"
           echo "--- Docker HEALTHCHECK（guandan healthcheck 子命令）"
           for _ in $(seq 1 30); do
             health=$(docker inspect -f '{{.State.Health.Status}}' guandan-ci)
@@ -85,6 +87,14 @@ jobs:
           echo "health=$health"
           test "$health" = healthy
 
+      # §13.4：发布脚本在就绪检查失败时自动回滚。
+      - name: 发布与回滚测试
+        run: scripts/test-deploy.sh guandan:ci
+
+      # §13.3：加密备份到「异地」，在全新数据卷上恢复，服务起来后数据都在。
+      - name: 恢复演练
+        run: scripts/restore-drill.sh guandan:ci
+
       - name: 容器日志
         if: always()
         run: docker logs guandan-ci 2>&1 || true
@@ -92,3 +102,25 @@ jobs:
       - name: 清理
         if: always()
         run: docker rm -f guandan-ci 2>/dev/null || true
+
+  # §13.4：main 上构建镜像推送到 GHCR，tag 用提交 SHA，同时更新 :main。
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 登录 GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: 构建并推送
+        run: |
+          set -euo pipefail
+          image=ghcr.io/${{ github.repository }}
+          docker build --build-arg BUILD=${{ github.sha }} -t "$image:${{ github.sha }}" -t "$image:main" .
+          docker push "$image:${{ github.sha }}"
+          docker push "$image:main"

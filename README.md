@@ -10,6 +10,7 @@
 
 ```bash
 make run        # 开发模式：GUANDAN_DEV=1，监听 http://localhost:8080 ，数据写在 ./.data
+make seed       # 往 ./.data 写入设计稿里的示例数据（老王、Lily……，牌局短码 SEED01–SEED05）
 ```
 
 改前端时开着 Vite 的热更新，API 仍然走上面那个 Go 进程：
@@ -54,11 +55,15 @@ make docker     # 镜像 guandan:local
 | `GUANDAN_PUBLIC_URL` | 按域名推导 | 生成分享链接和 OG 图 URL 时用，也是 CSRF 校验认的本站来源；非开发模式下它和 `GUANDAN_DOMAIN` 至少要设一个，否则拒绝启动 |
 | `GUANDAN_ADMIN_EMAIL` | 空 | Let's Encrypt 通知地址，也是 VAPID 的 subject |
 | `GUANDAN_DEV` | 空 | 设为 `1` 进入开发模式：不启用 TLS，cookie 不加 `Secure`，文本日志 |
-| `GUANDAN_BACKUP_URL` | 空 | 异地备份目标（S3 兼容） |
-| `GUANDAN_BACKUP_KEY` | 空 | 备份加密的 age 公钥；填了备份地址就必须填它 |
+| `GUANDAN_BACKUP_URL` | 空 | 异地备份目标：`https://<endpoint>/<bucket>[/<前缀>]`（S3 兼容，path-style）或 `file:///<目录>` |
+| `GUANDAN_BACKUP_KEY` | 空 | 备份加密的 age 公钥（`guandan backup keygen` 生成）；填了备份地址就必须填它 |
+| `AWS_REGION`、`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY` | `us-east-1`、空、空 | S3 备份的区域和凭据 |
+| `GUANDAN_METRICS_ADDR` | `127.0.0.1:9090` | `/metrics` 的监听地址，默认只有本机能访问；设为空字符串关闭 |
 | `ANTHROPIC_API_KEY` | 空 | 蛋蛋用（phase:3） |
 
 ## 部署
+
+上线、发布、备份恢复、管理命令见 [docs/runbook.md](docs/runbook.md)。发布用 `scripts/deploy.sh <SHA>`，就绪检查失败时会自动回滚。
 
 ```bash
 docker run -d --name guandan --restart unless-stopped \

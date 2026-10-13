@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"os"
 	"testing"
 
 	"github.com/dayuer/jkt-guandan/internal/config"
@@ -12,16 +13,20 @@ func clearEnv(t *testing.T) {
 		"GUANDAN_DATA", "GUANDAN_ADDR", "GUANDAN_DOMAIN", "GUANDAN_PUBLIC_URL",
 		"GUANDAN_ADMIN_EMAIL", "GUANDAN_DEV", "GUANDAN_BACKUP_URL",
 		"GUANDAN_BACKUP_KEY", "ANTHROPIC_API_KEY",
+		"AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
 	} {
 		t.Setenv(k, "")
 	}
+	// GUANDAN_METRICS_ADDR 设成空字符串表示关闭 /metrics，所以这里要真的删掉它。
+	t.Setenv("GUANDAN_METRICS_ADDR", "")
+	os.Unsetenv("GUANDAN_METRICS_ADDR")
 }
 
 // §12.1 第 1 步：值不合法就直接退出。
 func TestLoadRejectsBackupURLWithoutKey(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("GUANDAN_PUBLIC_URL", "https://guandan.id")
-	t.Setenv("GUANDAN_BACKUP_URL", "s3://bucket/backup")
+	t.Setenv("GUANDAN_BACKUP_URL", "https://s3.example.com/bucket/backup")
 
 	if _, err := config.Load(); err == nil {
 		t.Fatal("设置了备份地址却没有加密公钥，应当报错")
@@ -144,5 +149,45 @@ func TestDevAllowsLocalOrigins(t *testing.T) {
 	}
 	if cfg.AllowsOrigin("https://evil.example") {
 		t.Error("开发模式也不该接受外站来源")
+	}
+}
+
+func TestLoadValidatesBackupTarget(t *testing.T) {
+	cases := []struct {
+		url, access string
+		ok          bool
+	}{
+		{"file:///backup-remote", "", true},
+		{"https://s3.ap-southeast-1.amazonaws.com/guandan/prod", "AKID", true},
+		{"https://s3.example.com/guandan", "", false},           // 缺凭据
+		{"https://s3.example.com/", "AKID", false},              // 缺 bucket
+		{"https://AKID:secret@s3.example.com/b", "AKID", false}, // 凭据不能放 URL 里
+		{"s3://bucket/backup", "AKID", false},
+	}
+	for _, c := range cases {
+		clearEnv(t)
+		t.Setenv("GUANDAN_DEV", "1")
+		t.Setenv("GUANDAN_BACKUP_URL", c.url)
+		t.Setenv("GUANDAN_BACKUP_KEY", "age1example")
+		if c.access != "" {
+			t.Setenv("AWS_ACCESS_KEY_ID", c.access)
+			t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+		}
+		_, err := config.Load()
+		if (err == nil) != c.ok {
+			t.Errorf("%s：期望 ok=%v，实际 err=%v", c.url, c.ok, err)
+		}
+	}
+}
+
+func TestMetricsAddrDefaultsToLoopback(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("GUANDAN_DEV", "1")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsAddr != "127.0.0.1:9090" {
+		t.Fatalf("MetricsAddr = %q", cfg.MetricsAddr)
 	}
 }

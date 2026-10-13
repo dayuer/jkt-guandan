@@ -21,7 +21,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/guandan ./cmd/guandan
+# 构建号（§13.4）：CI 传提交 SHA，响应头 X-App-Build 和 /metrics 的 guandan_build_info 用它。
+ARG BUILD=dev
+RUN CGO_ENABLED=0 go build -trimpath \
+      -ldflags="-s -w -X github.com/dayuer/jkt-guandan/internal/buildinfo.Build=${BUILD}" \
+      -o /out/guandan ./cmd/guandan
 # 让运行时的 /data 属于 nonroot，这样挂上 named volume 后进程写得进去（--read-only 时只有 /data 可写）
 RUN mkdir -p /out/data
 

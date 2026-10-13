@@ -108,8 +108,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := second.Read().QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("读迁移记录: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("迁移记录应为 1 条，实际 %d 条", count)
+	if count != 2 {
+		t.Fatalf("迁移记录应为 2 条（0001、0002），实际 %d 条", count)
 	}
 }
 

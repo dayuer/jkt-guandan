@@ -47,13 +47,15 @@ func (s *Server) recoverAndLog(next http.Handler) http.Handler {
 					writeError(rec, http.StatusInternalServerError, "internal", "服务器内部错误")
 				}
 			}
+			elapsed := s.clk.Since(start)
+			s.stats.Observe(rec.status, elapsed)
 			// 只记 path，不记查询串：claim token 会出现在 ?claim= 里（§10.11）。
 			slog.Info("http",
 				"request_id", requestID,
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", rec.status,
-				"ms", s.clk.Since(start).Milliseconds(),
+				"ms", elapsed.Milliseconds(),
 				"write_wait_ms", stats.Total().Milliseconds(),
 			)
 		}()
@@ -74,6 +76,10 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		// 先不加 includeSubDomains 和 preload，等域名定下来再说（§10.7）。
 		if s.cfg.TLSEnabled() {
 			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		// 前端发现构建号和自己的不一致时，提示「有新版本，点我刷新」（§13.4）。
+		if s.build != "" {
+			h.Set("X-App-Build", s.build)
 		}
 		next.ServeHTTP(w, r)
 	})
