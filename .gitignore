@@ -1,2 +1,16 @@
+# 前端依赖与构建产物。dist 里留一个 .gitkeep，Go 的 embed 需要这个目录存在。
+node_modules/
+web/dist/*
+!web/dist/.gitkeep
+
+# 二进制与本地数据
+/bin/
+/.data/
+/data/
+*.db
+*.db-wal
+*.db-shm
+
 .DS_Store
+*.log
 .claude/worktrees/

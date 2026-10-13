@@ -1,0 +1,3 @@
+# Netlify：测试页不缓存，避免改版后真机看到旧页面。
+/*
+  Cache-Control: no-store

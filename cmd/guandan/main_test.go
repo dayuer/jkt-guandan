@@ -1,0 +1,160 @@
+package main
+
+import (
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/dayuer/jkt-guandan/internal/store"
+	"github.com/dayuer/jkt-guandan/internal/supervise"
+)
+
+// §12.4：先排空 HTTP（第 3 步），再停后台任务（第 4 步），然后关库、放锁。
+// 请求还没做完时，后台任务的 ctx 不能被取消（PR #25 复审第 5 条）。
+func TestShutdownDrainsHTTPBeforeStoppingBackground(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := store.LockDataDir(dir)
+	if err != nil {
+		t.Fatalf("加锁: %v", err)
+	}
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("打开数据库: %v", err)
+	}
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("迁移: %v", err)
+	}
+
+	var (
+		mu     sync.Mutex
+		events []string
+	)
+	record := func(e string) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e)
+	}
+
+	bgCtx, stopBackground := context.WithCancel(context.Background())
+	defer stopBackground()
+	group := supervise.New(nil)
+	group.Go(bgCtx, "probe", time.Minute, func(ctx context.Context, beat func()) error {
+		<-ctx.Done()
+		record("后台任务停止")
+		return nil
+	})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		record("请求做完")
+		w.WriteHeader(http.StatusNoContent)
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("监听: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+
+	reqDone := make(chan error, 1)
+	go func() {
+		resp, err := http.Get("http://" + ln.Addr().String() + "/")
+		if err == nil {
+			resp.Body.Close()
+		}
+		reqDone <- err
+	}()
+	<-entered
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		shutdown(srv, stopBackground, group, st, lock)
+		close(shutdownDone)
+	}()
+
+	// 排空期间：shutdown 卡在第 3 步，后台任务还在跑。
+	time.Sleep(200 * time.Millisecond)
+	if err := bgCtx.Err(); err != nil {
+		t.Fatalf("请求还没做完，后台任务的 ctx 就被取消了: %v", err)
+	}
+	select {
+	case <-shutdownDone:
+		t.Fatal("请求还没做完，shutdown 就返回了")
+	default:
+	}
+
+	close(release)
+	if err := <-reqDone; err != nil {
+		t.Fatalf("进行中的请求应当正常完成: %v", err)
+	}
+	select {
+	case <-shutdownDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown 没有结束")
+	}
+
+	mu.Lock()
+	got := append([]string(nil), events...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != "请求做完" || got[1] != "后台任务停止" {
+		t.Fatalf("关闭顺序不对: %v", got)
+	}
+
+	// 第 6 步：锁已经释放，下一个实例能拿到。
+	again, err := store.LockDataDir(dir)
+	if err != nil {
+		t.Fatalf("shutdown 之后应能重新加锁: %v", err)
+	}
+	_ = again.Release()
+}
+
+func TestHealthzURL(t *testing.T) {
+	for addr, want := range map[string]string{
+		"":               "http://127.0.0.1:8080/healthz",
+		":8080":          "http://127.0.0.1:8080/healthz",
+		"0.0.0.0:9000":   "http://127.0.0.1:9000/healthz",
+		"[::]:9000":      "http://127.0.0.1:9000/healthz",
+		"127.0.0.1:8081": "http://127.0.0.1:8081/healthz",
+	} {
+		got, err := healthzURL(addr)
+		if err != nil || got != want {
+			t.Errorf("healthzURL(%q) = %q, %v；期望 %q", addr, got, err, want)
+		}
+	}
+	if _, err := healthzURL("8080"); err == nil {
+		t.Error("没有冒号的地址应当报错")
+	}
+}
+
+func TestHealthcheckExitCode(t *testing.T) {
+	var status atomic.Int32
+	status.Store(http.StatusOK)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(int(status.Load()))
+	}))
+	defer srv.Close()
+	addr := srv.Listener.Addr().String()
+
+	if code := healthcheck(addr); code != 0 {
+		t.Fatalf("/healthz 返回 200 时退出码应为 0，实际 %d", code)
+	}
+	status.Store(http.StatusServiceUnavailable)
+	if code := healthcheck(addr); code != 1 {
+		t.Fatalf("/healthz 返回 503 时退出码应为 1，实际 %d", code)
+	}
+	srv.Close()
+	if code := healthcheck(addr); code != 1 {
+		t.Fatalf("连不上时退出码应为 1，实际 %d", code)
+	}
+}

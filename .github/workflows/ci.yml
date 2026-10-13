@@ -1,0 +1,94 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # 分支保护要求的必过检查，job 名必须是 test（docs/server-design.md §9）。
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - name: 安装前端依赖
+        run: cd web && npm ci
+
+      - name: 前端类型检查与构建
+        run: cd web && npm run build
+
+      # 放在构建之后，这样 httpapi 的用例能验证真的被打进二进制的前端页面。
+      # -race 需要 CGO，只在测试里打开，发布构建仍然是 CGO_ENABLED=0。
+      - name: go test -race
+        run: go test -race ./...
+
+      - name: 前端测试
+        run: cd web && npm test
+
+      - name: 前端依赖审计
+        run: cd web && npm audit --omit=dev
+
+      - name: docker build
+        run: docker build -t guandan:ci .
+
+      # 按 §8 的部署参数跑：只读根文件系统、去掉全部 capability；
+      # 非开发模式必须告诉它本站地址（config.Load 会检查）。
+      - name: 容器冒烟测试
+        run: |
+          set -euo pipefail
+          docker run -d --name guandan-ci --read-only --cap-drop ALL \
+            --health-interval 2s --health-start-period 5s \
+            -e GUANDAN_PUBLIC_URL=http://127.0.0.1:8080 \
+            -p 8080:8080 -v guandan-data:/data guandan:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz > /dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          echo "--- /healthz"
+          curl -fsS http://127.0.0.1:8080/healthz
+          echo
+          echo "--- /readyz"
+          curl -fsS http://127.0.0.1:8080/readyz
+          echo
+          echo "--- /"
+          curl -fsS http://127.0.0.1:8080/ | grep -q 'id="app"'
+          echo "内嵌页面已提供"
+          echo "--- 安全响应头"
+          curl -fsSI http://127.0.0.1:8080/ | grep -i 'content-security-policy'
+          echo "--- Docker HEALTHCHECK（guandan healthcheck 子命令）"
+          for _ in $(seq 1 30); do
+            health=$(docker inspect -f '{{.State.Health.Status}}' guandan-ci)
+            if [ "$health" = healthy ]; then break; fi
+            sleep 1
+          done
+          echo "health=$health"
+          test "$health" = healthy
+
+      - name: 容器日志
+        if: always()
+        run: docker logs guandan-ci 2>&1 || true
+
+      - name: 清理
+        if: always()
+        run: docker rm -f guandan-ci 2>/dev/null || true

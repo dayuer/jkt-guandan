@@ -12,7 +12,7 @@
 
 | 关注点 | 选择 | 理由 |
 |---|---|---|
-| 语言 | Go 1.23+ | 单个静态二进制，交叉编译方便，标准库就足以写 HTTP 服务 |
+| 语言 | Go 1.27.2+ | 单个静态二进制，交叉编译方便，标准库就足以写 HTTP 服务 |
 | HTTP | 标准库 `net/http`，路由用 Go 1.22 起的 `ServeMux` 模式匹配 | 不引入 Web 框架 |
 | 数据库 | SQLite（WAL 模式），驱动 `modernc.org/sqlite` | 纯 Go 实现、无需 CGO，所以能用 `distroless/static` 镜像；数据库就是 `/data` 下的一个文件 |
 | 迁移 | `migrations/*.sql` 用 `embed` 打进二进制，启动时按序执行，执行记录存在 `schema_migrations` 表 | 部署时不需要额外的迁移工具 |
@@ -178,7 +178,7 @@ CREATE INDEX events_name_at ON events(name, at);
 连接设置和并发规则见 §11。
 
 **数据不变量**：每次写事务结束前，以及测试里每一步操作之后，下面这些条件都必须成立。`store.CheckInvariants(gameID)` 负责检查；生产环境在写事务提交前调用，检查不通过就回滚并记 error 日志。
-1. 一局的座位数在 0 到 4 之间；`status='full'` 当且仅当座位数为 4。
+1. 一局的座位数在 0 到 4 之间；牌局状态为 `open` 或 `full` 时，`status='full'` 当且仅当座位数为 4（`done` 和 `cancelled` 的局保留座位记录，不受这条约束）。
 2. 候补不为空时，座位数一定是 4（有空座就不该有人在候补）。
 3. 牌局状态为 `open` 或 `full` 时，局头一定坐在这一局的某个座位上。
 4. 同一个人在同一局里，不会同时出现在座位和候补中（触发器保证）。
@@ -374,7 +374,7 @@ COPY web/ ./
 RUN npm run build
 
 # 2) Go（CGO_ENABLED=0，因为 modernc.org/sqlite 是纯 Go）
-FROM golang:1.23-alpine AS go
+FROM golang:1.27-alpine AS go
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -656,7 +656,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
   - 写事务能正常提交（写一条心跳记录到 `kv`）；
   - 每个后台任务的心跳都在 2 个周期以内；
   - 数据目录剩余空间超过 500 MB；
-  - 最近一次备份在 2 小时以内。
+  - 最近一次备份在 2 小时以内（这是一个可注册的就绪检查：由备份任务（#20）启动时注册，未注册时不参与判断）。
 
 外部依赖出问题时：
 
