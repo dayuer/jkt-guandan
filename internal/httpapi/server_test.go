@@ -444,8 +444,8 @@ func TestClientIPFromTrustedProxyOnly(t *testing.T) {
 		return <-seen
 	}
 
-	// httptest 的对端是 127.0.0.1：默认配置下它是可信代理（生产里的 nginx 也在本机）。
-	trusted, err := clientip.Parse(clientip.DefaultTrustedProxies)
+	// httptest 的对端是 127.0.0.1：把它设为可信代理，模拟 nginx。
+	trusted, err := clientip.Parse("127.0.0.1/32")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,7 +2,6 @@ package config_test
 
 import (
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/dayuer/jkt-guandan/internal/config"
@@ -17,9 +16,7 @@ func clearEnv(t *testing.T) {
 	} {
 		t.Setenv(k, "")
 	}
-	// GUANDAN_TRUSTED_PROXIES 设成空字符串表示不信任任何代理，所以这里要真的删掉它。
 	t.Setenv("GUANDAN_TRUSTED_PROXIES", "")
-	os.Unsetenv("GUANDAN_TRUSTED_PROXIES")
 }
 
 // §12.1 第 1 步：值不合法就直接退出。
@@ -152,7 +149,7 @@ func TestDevAllowsLocalOrigins(t *testing.T) {
 	}
 }
 
-// 生产拓扑：nginx（宿主机）→ docker 网桥 → 容器。默认信任本机和 docker 网桥。
+// 默认不信任任何代理；生产拓扑（nginx → docker 网桥 → 容器）显式设置网桥网关。
 func TestTrustedProxies(t *testing.T) {
 	clientIP := func(cfg config.Config) string {
 		req := httptest.NewRequest("GET", "/", nil)
@@ -167,17 +164,17 @@ func TestTrustedProxies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := clientIP(cfg); got != "198.51.100.9" {
-		t.Fatalf("默认应信任 docker 网桥，得到 %s", got)
+	if got := clientIP(cfg); got != "172.17.0.1" {
+		t.Fatalf("默认不该信任任何代理，得到 %s", got)
 	}
 
-	t.Setenv("GUANDAN_TRUSTED_PROXIES", "")
+	t.Setenv("GUANDAN_TRUSTED_PROXIES", "172.17.0.1/32")
 	cfg, err = config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := clientIP(cfg); got != "172.17.0.1" {
-		t.Fatalf("设成空就不信任任何代理，得到 %s", got)
+	if got := clientIP(cfg); got != "198.51.100.9" {
+		t.Fatalf("显式信任网桥网关后应采用 X-Real-IP，得到 %s", got)
 	}
 
 	t.Setenv("GUANDAN_TRUSTED_PROXIES", "not-a-cidr")
