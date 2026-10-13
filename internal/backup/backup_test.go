@@ -363,7 +363,7 @@ func TestRestoreFromLocalPlainAndEncrypted(t *testing.T) {
 		if err != nil {
 			t.Fatalf("从 %s 恢复: %v", src.Path, err)
 		}
-		if len(res.MovedAside) != 0 || len(res.Migrations) != 2 {
+		if n := len(res.Migrations); len(res.MovedAside) != 0 || n < 2 || res.Migrations[n-1] != "0003_bans.sql" {
 			t.Fatalf("结果 %+v", res)
 		}
 		if n := gameCount(t, dataDir); n != 5 {

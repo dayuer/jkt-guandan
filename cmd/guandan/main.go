@@ -26,6 +26,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/config"
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
+	"github.com/dayuer/jkt-guandan/internal/identity"
 	"github.com/dayuer/jkt-guandan/internal/janitor"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
@@ -124,6 +125,8 @@ func run() error {
 
 	checks := []httpapi.ReadinessCheck{{Name: "备份", Fn: backups.Check}}
 
+	identitySvc := identity.NewService(st, clk, cfg.Dev)
+
 	srv := &http.Server{
 		Addr: cfg.Addr,
 		Handler: httpapi.New(httpapi.Options{
@@ -134,6 +137,9 @@ func run() error {
 			Checks:  checks,
 			Build:   buildinfo.Get(),
 			Metrics: reg.http,
+			RegisterRoutes: func(mux *http.ServeMux) {
+				identity.Register(mux, identitySvc)
+			},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

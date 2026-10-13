@@ -1,0 +1,94 @@
+package identity
+
+import (
+	"context"
+	"testing"
+
+	"github.com/dayuer/jkt-guandan/internal/store"
+)
+
+// mergeUsers 已经不由任何面向用户的接口触发了（§5.2 修订之后，claim 兑换遇到冲突
+// 只会返回 409 让用户确认，确认后也只切换设备、不迁移数据）。它以后只给
+// `guandan admin` 子命令用，所以这里直接测函数本身。
+func TestMergeUsersMovesSeatsAndKeepsEarlierSeat(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("打开数据库: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("执行迁移: %v", err)
+	}
+
+	ctx := context.Background()
+	mustExec := func(query string, args ...any) {
+		t.Helper()
+		err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+			_, err := tx.ExecContext(ctx, query, args...)
+			return err
+		})
+		if err != nil {
+			t.Fatalf("执行 %s: %v", query, err)
+		}
+	}
+
+	// primary 先注册，other 后注册。
+	mustExec(`INSERT INTO users (id, nickname, created_at) VALUES ('u-primary', '老王', 100)`)
+	mustExec(`INSERT INTO users (id, nickname, created_at) VALUES ('u-other', '老王', 200)`)
+	mustExec(`INSERT INTO games (id, short_code, host_id, starts_at, area, venue, kind, status, created_at)
+	          VALUES ('g1', 'c1', 'u-primary', 0, 'SCBD', 'Pacific Place', 'classic', 'open', 0)`)
+	mustExec(`INSERT INTO games (id, short_code, host_id, starts_at, area, venue, kind, status, created_at)
+	          VALUES ('g2', 'c2', 'u-other', 0, 'SCBD', 'Pacific Place', 'classic', 'open', 0)`)
+	// g1：两个身份都占了座，primary 的更早。
+	mustExec(`INSERT INTO seats (game_id, seat_no, user_id, created_at) VALUES ('g1', 1, 'u-primary', 100)`)
+	mustExec(`INSERT INTO seats (game_id, seat_no, user_id, created_at) VALUES ('g1', 2, 'u-other', 200)`)
+	// g2：只有 other 占了座，应当搬过去，同时局头也要跟着搬。
+	mustExec(`INSERT INTO seats (game_id, seat_no, user_id, created_at) VALUES ('g2', 1, 'u-other', 100)`)
+
+	var kept string
+	err = st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		kept, err = mergeUsers(ctx, tx, "u-other", "u-primary")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("合并: %v", err)
+	}
+	if kept != "u-primary" {
+		t.Fatalf("应当保留先注册的 u-primary，实际 %s", kept)
+	}
+
+	var count, seatNo int
+	if err := st.Read().QueryRow(
+		`SELECT count(*), COALESCE(min(seat_no), 0) FROM seats WHERE game_id = 'g1'`).
+		Scan(&count, &seatNo); err != nil {
+		t.Fatalf("查 g1: %v", err)
+	}
+	if count != 1 || seatNo != 1 {
+		t.Fatalf("g1 应当只剩更早的那个座位，实际 %d 个、座位号 %d", count, seatNo)
+	}
+
+	var g2Owner, g2Host string
+	if err := st.Read().QueryRow(`SELECT user_id FROM seats WHERE game_id = 'g2'`).Scan(&g2Owner); err != nil {
+		t.Fatalf("查 g2 座位: %v", err)
+	}
+	if g2Owner != "u-primary" {
+		t.Fatalf("g2 的座位应当搬到 u-primary，实际 %s", g2Owner)
+	}
+	if err := st.Read().QueryRow(`SELECT host_id FROM games WHERE id = 'g2'`).Scan(&g2Host); err != nil {
+		t.Fatalf("查 g2 局头: %v", err)
+	}
+	if g2Host != "u-primary" {
+		t.Fatalf("局头也要跟着迁，实际 %s", g2Host)
+	}
+
+	// 旧身份只标记，不删除。
+	var mergedInto string
+	if err := st.Read().QueryRow(
+		`SELECT COALESCE(merged_into, '') FROM users WHERE id = 'u-other'`).Scan(&mergedInto); err != nil {
+		t.Fatalf("查旧身份: %v", err)
+	}
+	if mergedInto != "u-primary" {
+		t.Fatalf("旧身份应当指向 u-primary，实际 %q", mergedInto)
+	}
+}

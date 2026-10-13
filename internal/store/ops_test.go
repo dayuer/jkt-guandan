@@ -48,7 +48,7 @@ func TestSnapshotIsConsistentAndVerifiable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("校验快照: %v", err)
 	}
-	if len(info.Migrations) != 2 {
+	if n := len(info.Migrations); n < 2 || info.Migrations[n-1] != "0003_bans.sql" {
 		t.Fatalf("快照里的迁移记录 %v", info.Migrations)
 	}
 	for _, suffix := range []string{"-wal", "-shm"} {
