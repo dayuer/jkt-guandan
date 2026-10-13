@@ -90,10 +90,12 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 
 // limitConcurrency 限制同时处理的请求数，超出直接 503（§12.3）。
 // /healthz 和 /readyz 不占名额：过载时存活检查也返回 503 的话，
-// Docker 会把一个其实健康、只是忙的进程重启掉（§12.5）。
+// Docker 会把一个其实健康、只是忙的进程重启掉（§12.5）。/ws 也不占，原因见下。
 func (s *Server) limitConcurrency(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+		// /ws 是长连接：占着名额就会一直占着，几百个页面开着就能把普通请求全挤成 503。
+		// 它有自己的上限（每 IP 20 条、全进程 5000 条，见 internal/realtime）。
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || r.URL.Path == "/ws" {
 			next.ServeHTTP(w, r)
 			return
 		}
