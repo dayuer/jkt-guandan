@@ -20,6 +20,7 @@
 | TLS | 两种模式：① 内置 `autocert` 自动申请 Let's Encrypt 证书，监听 80/443；② 只监听 HTTP，放在反向代理后面 | 模式 ① 不需要额外的容器 |
 | 推送 | `github.com/SherClockHolmes/webpush-go` | VAPID 密钥在首次启动时生成，存进数据库 |
 | OG 图和海报 | `golang.org/x/image` + `opentype`，内嵌思源宋体子集和一个无衬线字体 | 服务端出图；渲染结果按「局 + 版本号」缓存 |
+| 实时 | WebSocket，库用 `github.com/coder/websocket`；进程内 Hub 按主题分发 | 接口基于 context，和标准库 `net/http` 直接配合；单实例，所以不需要 Redis 之类的 pub/sub |
 | 日志 | 标准库 `log/slog`，输出 JSON 到 stdout | 用 `docker logs` 就能看 |
 
 ## 3. 仓库结构
@@ -31,6 +32,7 @@ internal/store             SQLite 连接、迁移、事务封装（所有 SQL �
 internal/identity          用户、设备 token、claim token、认领码、身份合并
 internal/games             牌局、报名（take_seat）、退出、改时间
 internal/notify            outbox 定时任务、Web Push 发送、订阅清理
+internal/realtime          WebSocket 接入、Hub（主题订阅与广播）、心跳、限流
 internal/share             /g/:code 页面的 OG 标签注入、OG 图和海报渲染、.ics 生成
 internal/agent             蛋蛋（phase:3）
 internal/httpapi           路由、中间件（身份、限流、CSRF）、JSON 编解码
@@ -153,6 +155,55 @@ CREATE TABLE kv (k TEXT PRIMARY KEY, v BLOB NOT NULL);  -- 存 VAPID 密钥等
 - `GET /g/{code}/og.png`（1200×630）和 `GET /g/{code}/poster.png`（1080×1440）：服务端渲染。结果先缓存在内存里，键是 `code + version + 座位数`，同时设 `Cache-Control: public, max-age=60`。
 - `GET /g/{code}/game.ics`：日历文件。时区写 `Asia/Jakarta`，`UID` 用牌局 id，`SEQUENCE` 用版本号，这样改时间后重新导入，日历里会更新原有事件而不是新增一条。
 
+### 5.5 实时：WebSocket
+
+页面在前台时，通过 WebSocket 实时看到变化；页面不在前台时（iOS 会挂起后台页面，连接随之断开），靠 Web Push 和日历提醒。**REST 接口始终是事实来源**：WebSocket 只负责「告诉你哪里变了」，并附上变化后的数据。断线重连后，客户端一律重新拉一次 REST，不依赖补发历史消息。
+
+**带来的实时交互**
+
+| 场景 | 主题 | 事件 |
+|---|---|---|
+| 03 牌局详情：别人报名或退出时，座位圆点实时「落座」或「离座」，「差 N 人」随之变化 | `game:{code}` | `seat.taken` · `seat.left` · `game.full` |
+| 03 牌局详情：局头改时间或地点时，顶部出现横幅「局头改到 20:00 了」 | `game:{code}` | `game.updated` |
+| 03 牌局详情：「3 人正在看这局」 | `game:{code}` | `presence`（人数在服务端合并，每 5 秒最多推一次） |
+| 02 首页：列表里每局的「差 N 人」实时变化，有新开的局时出现「有 1 个新局」提示条 | `feed:{area}` | `feed.game_changed` · `feed.game_added` |
+| 12 跳出引导：在 Safari 或 Chrome 里认领成功后，微信里那一页自动变成「✓ 已在浏览器中打开」 | `user:{id}` | `claim.redeemed` |
+| 10 我的：在另一台设备上开启了提醒或认领了身份，这里的状态同步更新 | `user:{id}` | `me.updated` |
+
+**协议**
+
+- 地址是 `GET /ws`，用 `gd_dev` cookie 识别身份（没有身份也能连，只是不能订阅 `user:*`）。
+- 握手时**必须校验 `Origin` 是本站**，防止跨站 WebSocket 劫持。
+- 消息都是 JSON，单条最大 4 KB：
+  ```json
+  // 客户端发给服务端
+  {"op":"sub","topics":["game:8K2","feed:SCBD"]}
+  {"op":"unsub","topics":["feed:SCBD"]}
+  // 服务端发给客户端
+  {"topic":"game:8K2","type":"seat.taken","v":7,"data":{"seats":[...],"missing":1}}
+  {"type":"hello","server_time":1760367600}
+  ```
+- `v` 是牌局的版本号，加上座位变化计数。客户端收到 `v` 不大于本地已有版本的消息时直接丢弃，所以消息乱序或重复都不会出错。
+- 订阅权限：`game:*` 和 `feed:*` 是公开的（和公开的 REST 接口能看到的数据一致）；`user:{id}` 只能订阅自己的。每个连接最多订阅 20 个主题。
+
+**服务端实现（`internal/realtime`）**
+
+- **Hub**：一个 `map[topic]set[*conn]`，用一把互斥锁保护。`Publish(topic, msg)` 只把消息投进每个连接的发送队列，不在锁里做网络写。
+- **只在事务提交后发布**：`games` 和 `identity` 包在写事务提交**之后**才调用 `Publish`。事务回滚就不发，客户端不会看到「幽灵座位」。实现方式是在 `store` 层登记一个提交后回调。
+- **每个连接两个 goroutine**：一个读（处理 `sub`/`unsub`），一个写（从发送队列取消息写出，再加心跳）。发送队列容量 32，**写满就直接断开这个连接**；慢客户端重连后会重新拉 REST，不会拖慢别人。
+- **心跳**：服务端每 25 秒发一次 ping，10 秒内没收到 pong 就断开。移动网络和微信内置浏览器常在空闲 60 秒左右掐断连接，25 秒的间隔比它短。
+- **限制**：同一 IP 最多 20 个连接；每个连接每秒最多 10 条客户端消息。
+- **优雅关闭**：收到 SIGTERM 后，向所有连接发送关闭码 `1012`（服务重启），客户端随后重连。
+
+**客户端约定（前端要实现的部分）**
+
+- 全站只开一个 WebSocket 连接，由各页面登记自己关心的主题；切换页面时更新订阅。
+- 断线重连：指数退避（1 秒起步，上限 30 秒）加随机抖动。重连成功后，先重新订阅，再重新拉一次当前页面的 REST。
+- 监听 `visibilitychange`：页面回到前台时，如果连接已断，立即重连并刷新数据。
+- **降级**：连续 3 次连不上，就改为每 15 秒轮询一次 REST，只在 02 和 03 页面轮询，并在页面上悄悄标一个「离线」小点。
+
+**部署注意**：用内置 autocert 直接对外时不需要额外配置。如果放在反向代理后面，代理要透传 `Upgrade` 和 `Connection` 头，读超时设到 60 秒以上。
+
 ## 6. HTTP 接口
 
 ```
@@ -171,6 +222,7 @@ DELETE /api/games/{code}/seat         退出
 POST /api/push/subscribe              保存推送订阅（phase:2）
 DELETE /api/push/subscribe            取消订阅
 POST /api/agent                       蛋蛋（phase:3）：只返回草稿，不写库
+GET  /ws                              WebSocket（见 §5.5）
 GET  /g/{code} · /g/{code}/og.png · /g/{code}/poster.png · /g/{code}/game.ics
 GET  /*                               内嵌的前端页面（单页应用，未知路径回落到 index.html）
 ```
@@ -241,6 +293,7 @@ docker run -d --name guandan --restart unless-stopped \
   - `take_seat` 并发：50 个 goroutine 抢 4 个座位，结果必须正好 4 人，并且只产生一组 `full` 提醒；
   - claim token：只能用一次、过期作废、认领码超过尝试上限后作废；
   - outbox：去重；改时间后旧提醒作废；重启后补发。
+  - WebSocket：用 `httptest` 起服务，连上两个客户端订阅同一局；一个报名后，另一个必须在 1 秒内收到 `seat.taken`；事务回滚时不能发出任何事件；慢客户端（不读消息）会被断开，且不影响其他客户端；跨站 `Origin` 握手被拒绝。
 - 前端：Vitest。
 - CI：`go vet`、`go test`、前端构建、`docker build`，job 名为 `test`，已加入分支保护的必过检查。
 
@@ -254,3 +307,4 @@ docker run -d --name guandan --restart unless-stopped \
 | Netlify Edge Function 出 OG 图 | Go 服务端渲染 |
 | 函数区域和数据库区域可能不在一处 | 服务器直接放在雅加达或新加坡，没有这个问题 |
 | 托管平台负责高可用 | 单台 VPS：要自己负责备份和监控（`/healthz` 加外部探活） |
+| 没有实时能力 | 内置 WebSocket（§5.5），进程内 Hub，单实例不需要 Redis |
