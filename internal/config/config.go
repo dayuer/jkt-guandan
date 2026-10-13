@@ -14,6 +14,10 @@ import (
 // 由宿主机把 443 映射过来——nonroot 用户不能监听 1024 以下的端口（§8、§10.12）。
 const DefaultTLSAddr = ":8443"
 
+// DefaultMetricsAddr 是 /metrics 的默认监听地址：只有本机能访问（§13.7）。
+// 生产上用 docker exec guandan /guandan metrics 查看，不映射端口（runbook §6）。
+const DefaultMetricsAddr = "127.0.0.1:9090"
+
 type Config struct {
 	// DataDir 是唯一的持久状态目录：数据库、备份、证书缓存都在这里。
 	DataDir string
@@ -29,9 +33,17 @@ type Config struct {
 	AdminEmail string
 	// Dev 为真时进入开发模式：不启用 TLS，cookie 不加 Secure，日志用文本格式（§13.5）。
 	Dev bool
-	// BackupURL 是异地备份目标（S3 兼容），BackupKey 是备份加密用的 age 公钥。
+	// BackupURL 是异地备份目标：https://<endpoint>/<bucket>[/<前缀>]（S3 兼容，path-style），
+	// 或者 file:///<目录>（挂载的网络盘，也用于本机演练）。BackupKey 是备份加密用的 age 公钥。
 	BackupURL string
 	BackupKey string
+	// BackupRegion、BackupAccessKey、BackupSecretKey 是 S3 签名用的区域和凭据，
+	// 读标准的 AWS_REGION、AWS_ACCESS_KEY_ID、AWS_SECRET_ACCESS_KEY。
+	BackupRegion    string
+	BackupAccessKey string
+	BackupSecretKey string
+	// MetricsAddr 是 /metrics 的监听地址，默认只听本机（§13.7）。设为空字符串关闭。
+	MetricsAddr string
 	// TrustedProxies 是可信的反向代理网段：只有对端在这里面时，才采用 X-Real-IP / X-Forwarded-For
 	// 里的客户端地址（按 IP 限流要用）。读 GUANDAN_TRUSTED_PROXIES，默认为空：不信任任何代理。
 	// 只有前面有反向代理、并且代理会覆盖 X-Real-IP 时才设置（生产：172.17.0.1/32，见 runbook）。
@@ -109,6 +121,14 @@ func Load() (Config, error) {
 		BackupURL:    strings.TrimSpace(os.Getenv("GUANDAN_BACKUP_URL")),
 		BackupKey:    strings.TrimSpace(os.Getenv("GUANDAN_BACKUP_KEY")),
 		AnthropicKey: strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
+
+		BackupRegion:    env("AWS_REGION", "us-east-1"),
+		BackupAccessKey: strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")),
+		BackupSecretKey: strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")),
+		MetricsAddr:     DefaultMetricsAddr,
+	}
+	if v, ok := os.LookupEnv("GUANDAN_METRICS_ADDR"); ok {
+		c.MetricsAddr = strings.TrimSpace(v)
 	}
 
 	// 默认不信任任何代理（clientip 包注释说明了为什么）。
@@ -134,6 +154,30 @@ func Load() (Config, error) {
 	}
 	if c.BackupURL != "" && c.BackupKey == "" {
 		return Config{}, fmt.Errorf("设置了 GUANDAN_BACKUP_URL 就必须同时设置 GUANDAN_BACKUP_KEY（备份必须加密）")
+	}
+	if c.BackupURL != "" {
+		u, err := url.Parse(c.BackupURL)
+		if err != nil {
+			return Config{}, fmt.Errorf("GUANDAN_BACKUP_URL 解析失败: %w", err)
+		}
+		switch u.Scheme {
+		case "file":
+			if u.Path == "" {
+				return Config{}, fmt.Errorf("GUANDAN_BACKUP_URL=%q 缺少目录", c.BackupURL)
+			}
+		case "https", "http":
+			if u.Host == "" || strings.Trim(u.Path, "/") == "" {
+				return Config{}, fmt.Errorf("GUANDAN_BACKUP_URL=%q 应为 https://<endpoint>/<bucket>[/<前缀>]", c.BackupURL)
+			}
+			if u.User != nil {
+				return Config{}, fmt.Errorf("GUANDAN_BACKUP_URL 里不要放凭据，改用 AWS_ACCESS_KEY_ID 和 AWS_SECRET_ACCESS_KEY")
+			}
+			if c.BackupAccessKey == "" || c.BackupSecretKey == "" {
+				return Config{}, fmt.Errorf("S3 备份需要 AWS_ACCESS_KEY_ID 和 AWS_SECRET_ACCESS_KEY")
+			}
+		default:
+			return Config{}, fmt.Errorf("GUANDAN_BACKUP_URL=%q 只支持 https://、http:// 或 file://", c.BackupURL)
+		}
 	}
 	if !dev && len(c.Domains()) > 0 && c.AdminEmail == "" {
 		return Config{}, fmt.Errorf("启用自动签发证书（GUANDAN_DOMAIN）时必须设置 GUANDAN_ADMIN_EMAIL")

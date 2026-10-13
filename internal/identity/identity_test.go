@@ -19,6 +19,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/config"
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/internal/identity"
+	"github.com/dayuer/jkt-guandan/internal/realtime"
 	"github.com/dayuer/jkt-guandan/internal/store"
 )
 
@@ -47,6 +48,12 @@ type fixture struct {
 
 func newFixture(t *testing.T, dev bool) *fixture {
 	t.Helper()
+	return newFixtureWithHub(t, dev, nil)
+}
+
+// newFixtureWithHub 和 newFixture 一样，另外在 hub 非空时挂上 GET /ws，并把身份事件接到 hub 上。
+func newFixtureWithHub(t *testing.T, dev bool, hub *realtime.Hub) *fixture {
+	t.Helper()
 
 	dir := t.TempDir()
 	st, err := store.Open(dir)
@@ -62,16 +69,33 @@ func newFixture(t *testing.T, dev bool) *fixture {
 
 	clk := clock.NewFake(time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC))
 	svc := identity.NewService(st, clk, dev)
+	cfg := config.Config{DataDir: dir, Dev: dev, PublicURL: testOrigin}
+	if hub != nil {
+		svc.SetPublisher(hubPublisher{hub})
+	}
 
 	// 必须用 TLS：生产环境的 cookie 名带 __Host- 前缀、带 Secure，
 	// 而 cookie jar 不会把 Secure cookie 发回普通 http 的地址，
 	// 用 NewServer 的话测试里根本认不出身份。
 	srv := httptest.NewTLSServer(httpapi.New(httpapi.Options{
-		Config: config.Config{DataDir: dir, Dev: dev, PublicURL: testOrigin},
+		Config: cfg,
 		Store:  st,
 		Clock:  clk,
 		RegisterRoutes: func(mux *http.ServeMux) {
 			identity.Register(mux, svc)
+			if hub != nil {
+				mux.Handle("GET /ws", realtime.Handler(realtime.Options{
+					Hub:         hub,
+					AllowOrigin: cfg.AllowsOrigin,
+					Identify: func(r *http.Request) (realtime.Principal, error) {
+						userID, deviceID, err := svc.ForRealtime(r)
+						return realtime.Principal{UserID: userID, DeviceID: deviceID}, err
+					},
+					Revalidate: func(ctx context.Context, p realtime.Principal) bool {
+						return svc.StillValid(ctx, p.UserID, p.DeviceID)
+					},
+				}))
+			}
 		},
 	}))
 	t.Cleanup(srv.Close)
@@ -989,5 +1013,52 @@ func TestMeReturnsCurrentDeviceID(t *testing.T) {
 	}
 	if got := f.do(http.MethodGet, "/api/me", nil); got.status != http.StatusUnauthorized {
 		t.Fatalf("退出之后应当认不出身份，实际 %d", got.status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 封禁（#20：guandan admin ban 之后的请求一律 403）
+// ---------------------------------------------------------------------------
+
+func TestBannedUserGets403(t *testing.T) {
+	f := newFixture(t, false)
+	userID := f.createIdentity(f.http, "老王")
+	other := f.newBrowser()
+	f.createIdentity(other, "Lily")
+
+	if _, err := f.st.Ban(context.Background(), userID, f.clk.Now()); err != nil {
+		t.Fatalf("封禁: %v", err)
+	}
+	for _, req := range []struct{ method, path string }{
+		{http.MethodGet, "/api/me"},
+		{http.MethodPost, "/api/claim"},
+		{http.MethodPost, "/api/me"}, // 不能靠「再建一个身份」绕过：同一台设备还是被认出来
+	} {
+		var body any
+		if req.method == http.MethodPost && req.path == "/api/me" {
+			body = map[string]string{"nickname": "换个名字"}
+		}
+		resp := f.do(req.method, req.path, body)
+		if resp.status != http.StatusForbidden || resp.errCode() != "banned" {
+			t.Errorf("%s %s：%d %s，期望 403 banned", req.method, req.path, resp.status, resp.errCode())
+		}
+	}
+	if resp := f.doWith(other, http.MethodGet, "/api/me", nil); resp.status != http.StatusOK {
+		t.Fatalf("没被封禁的人不受影响，实际 %d", resp.status)
+	}
+}
+
+func TestBannedDeviceGets403(t *testing.T) {
+	f := newFixture(t, false)
+	userID := f.createIdentity(f.http, "阿杰")
+	var deviceID string
+	if err := f.st.Read().QueryRow(`SELECT id FROM devices WHERE user_id = ?`, userID).Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	if kind, err := f.st.Ban(context.Background(), deviceID, f.clk.Now()); err != nil || kind != "device" {
+		t.Fatalf("封禁设备: %s %v", kind, err)
+	}
+	if resp := f.do(http.MethodGet, "/api/me", nil); resp.status != http.StatusForbidden || resp.errCode() != "banned" {
+		t.Fatalf("被封禁的设备应 403，实际 %d %s", resp.status, resp.errCode())
 	}
 }

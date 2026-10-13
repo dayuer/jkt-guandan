@@ -10,6 +10,7 @@
 
 ```bash
 make run        # 开发模式：GUANDAN_DEV=1，监听 http://localhost:8080 ，数据写在 ./.data
+make seed       # 往 ./.data 写入设计稿里的示例数据（老王、Lily……，牌局短码 SEED01–SEED05）
 ```
 
 改前端时开着 Vite 的热更新，API 仍然走上面那个 Go 进程：
@@ -55,24 +56,22 @@ make docker     # 镜像 guandan:local
 | `GUANDAN_ADMIN_EMAIL` | 空 | Let's Encrypt 通知地址，也是 VAPID 的 subject |
 | `GUANDAN_TRUSTED_PROXIES` | 空（不信任任何代理） | 可信反向代理的网段（逗号分隔）。只有对端在这里面时才采用 `X-Real-IP` / `X-Forwarded-For` 里的客户端 IP。**只有前面有反向代理、并且代理会用 `$remote_addr` 覆盖 `X-Real-IP` 时才设置**；容器直接对外时设了它，任何人都能伪造 IP 绕过限流。生产（nginx → docker 网桥）设为 `172.17.0.1/32`。启动日志会打印生效值 |
 | `GUANDAN_DEV` | 空 | 设为 `1` 进入开发模式：不启用 TLS，cookie 不加 `Secure`，文本日志 |
-| `GUANDAN_BACKUP_URL` | 空 | 异地备份目标（S3 兼容） |
-| `GUANDAN_BACKUP_KEY` | 空 | 备份加密的 age 公钥；填了备份地址就必须填它 |
+| `GUANDAN_BACKUP_URL` | 空 | 异地备份目标：`https://<endpoint>/<bucket>[/<前缀>]`（S3 兼容，path-style）或 `file:///<目录>` |
+| `GUANDAN_BACKUP_KEY` | 空 | 备份加密的 age 公钥（`guandan backup keygen` 生成）；填了备份地址就必须填它 |
+| `AWS_REGION`、`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY` | `us-east-1`、空、空 | S3 备份的区域和凭据 |
+| `GUANDAN_METRICS_ADDR` | `127.0.0.1:9090` | `/metrics` 的监听地址，默认只有本机能访问；设为空字符串关闭 |
 | `ANTHROPIC_API_KEY` | 空 | 蛋蛋用（phase:3） |
 
 ## 部署
 
+生产环境 https://guandan.synon.ai ：nginx（宿主机）负责 TLS 和静态前端，容器只听 `127.0.0.1:18200`。拓扑、上线准备、发布、备份恢复和管理命令见 [docs/runbook.md](docs/runbook.md)，nginx 站点模板在 [deploy/nginx/](deploy/nginx/)。
+
 ```bash
-docker run -d --name guandan --restart unless-stopped \
-  --read-only --cap-drop ALL --stop-timeout 30 \
-  --log-opt max-size=10m --log-opt max-file=5 \
-  -p 80:8080 -p 443:8443 -v guandan-data:/data \
-  -e GUANDAN_DOMAIN=example.com -e GUANDAN_ADMIN_EMAIL=you@example.com \
-  ghcr.io/dayuer/jkt-guandan:<tag>
+scripts/deploy.sh          # 构建 → 传镜像和静态文件 → 换容器 → 等 /readyz → 切 current；失败自动回滚
 ```
 
-nonroot 用户不能监听 1024 以下的端口，所以容器内听 8080 和 8443，由端口映射到 80 和 443。
-启动时依次：锁数据目录 → 检查可写和剩余空间 → `quick_check` → 迁移（§12.1）；数据库里有本程序不认识的迁移（降级）时拒绝启动。
-`/healthz` 返回 200 说明进程活着，`/readyz` 返回 200 说明写事务、后台任务心跳和磁盘空间都正常；两者都不占并发名额。
+启动时依次执行：锁数据目录 → 检查目录可写和剩余空间 → `quick_check` → 迁移（§12.1）。数据库里有本程序不认识的迁移（降级）时拒绝启动。
+`/healthz` 返回 200 说明进程活着，`/readyz` 返回 200 说明写事务、后台任务心跳、磁盘空间和备份都正常；两者都不占并发名额。
 镜像自带 `HEALTHCHECK`，调用 `/guandan healthcheck` 子命令请求本机的 `/healthz`（distroless 里没有 curl）。
 
 ## 关于 Go 版本

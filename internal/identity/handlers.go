@@ -94,6 +94,18 @@ var routeHandlers = map[string]func(*handler) http.HandlerFunc{
 func (h *handler) gate(rt Route, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident := h.current(r)
+		// 被 guandan admin ban 封禁的用户或设备，之后的请求一律 403（§13.6）。
+		if ident != nil {
+			banned, err := h.svc.Banned(r.Context(), ident)
+			if err != nil {
+				writeError(w, http.StatusServiceUnavailable, "unavailable", "暂时无法处理，请稍后再试")
+				return
+			}
+			if banned {
+				writeError(w, http.StatusForbidden, "banned", "这个账号已被停用")
+				return
+			}
+		}
 		if ident == nil && !rt.Permitted[RoleGuest] {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "还没有身份")
 			return
@@ -114,17 +126,7 @@ func requireIdentity(w http.ResponseWriter, r *http.Request) (*Identity, bool) {
 }
 
 // current 从 cookie 解析身份，没有或无效时返回 nil（不算错误）。
-func (h *handler) current(r *http.Request) *Identity {
-	token, ok := h.svc.Cookies().Read(r)
-	if !ok {
-		return nil
-	}
-	ident, err := h.svc.Current(r.Context(), token)
-	if err != nil {
-		return nil
-	}
-	return ident
-}
+func (h *handler) current(r *http.Request) *Identity { return h.svc.FromRequest(r) }
 
 // createMe 处理「首次填称呼」（§5.2）。
 func (h *handler) createMe(w http.ResponseWriter, r *http.Request) {
