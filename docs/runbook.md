@@ -216,7 +216,7 @@ make restore-drill        # 等价于 docker build 之后执行 scripts/restore-
 都通过 `docker exec guandan /guandan …` 执行，和正在运行的服务共用同一个数据库：
 
 ```bash
-guandan admin ban <用户或设备 id>          # 封禁，之后的请求一律返回 403（拦截由 #3 的身份中间件实现）
+guandan admin ban <用户或设备 id>          # 封禁，之后的请求一律返回 403（由身份中间件 `identity` 的 gate 拦截，返回 `403 banned`）
 guandan admin game cancel <短码>           # 强制取消牌局，未发出的提醒一并放弃
 guandan admin user delete --yes <用户 id>  # 处理 §14 的删除请求，见下文
 guandan admin stats [--since 7d]           # 新用户、新牌局、埋点计数

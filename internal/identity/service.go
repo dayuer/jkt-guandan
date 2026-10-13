@@ -100,6 +100,11 @@ func (s *Service) AllowCodeRedeem(ip string) bool { return s.codeLimiter.Allow(i
 // AllowClaim 检查这个用户现在能不能签发新的交接令牌（每用户每小时 5 次）。
 func (s *Service) AllowClaim(userID string) bool { return s.issueLimiter.Allow(userID) }
 
+// Banned 判断这个身份（合并后的最终用户，或者这台设备）是否被封禁（§13.6 guandan admin ban）。
+func (s *Service) Banned(ctx context.Context, ident *Identity) (bool, error) {
+	return s.st.IsBanned(ctx, ident.User.ID, ident.Device.ID)
+}
+
 // Current 用设备 token 解析出身份。没有有效身份时返回 ErrNotFound。
 func (s *Service) Current(ctx context.Context, deviceToken string) (*Identity, error) {
 	if deviceToken == "" {
