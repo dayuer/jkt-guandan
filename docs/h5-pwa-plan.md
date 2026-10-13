@@ -46,9 +46,9 @@
 方案：
 1. **匿名用户**：首次填称呼即在服务端创建 `user_id`，前端存长期 `device_token`（cookie + localStorage 双写）。
 2. **跳出交接**：生成一次性 `claim_token`（10 分钟有效，单次使用），拼进跳出链接 `?claim=xxx`。新环境打开后用它换取同一个 `user_id`，URL 立即清掉参数。
-3. **iOS PWA**：manifest 的 `start_url` 无法动态带 token。做法是在 Safari 里点「添加到主屏幕」前，把 `claim_token` 写入 Safari 的 cookie；PWA 首开时如果没有身份，展示 14 屏「这是你吗？」，让用户输入 4 位认领码（Safari 引导页上显示），兜底保证能认领。
+3. **iOS PWA**：manifest 的 `start_url` 无法动态带 token。做法是在 Safari 里点「添加到主屏幕」前，把 `claim_token` 写入 Safari 的 cookie；PWA 首开时如果没有身份，展示 14 屏「这是你吗？」，让用户输入 6 位认领码（Safari 引导页上显示；只能在签发时的同一网络使用，见 server-design §5.2），兜底保证能认领。
 4. **可选绑定**（10「我的」里）：绑定 WhatsApp 号码，用于换手机或清缓存后找回。不强制。
-5. **合并规则**：同一人出现两个 `user_id` 时，以先报名的为主，后者的报名和订阅迁移过去。
+5. **不做用户侧合并**：设备已有别的身份时，兑换 claim 需要用户确认后切换设备（server-design §5.2）；合并只作为 admin 工具保留。
 
 ## 5. 分享方案（替代小程序卡片）
 
