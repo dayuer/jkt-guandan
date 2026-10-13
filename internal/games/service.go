@@ -82,7 +82,11 @@ func (s *Service) List(ctx context.Context, area, day string, limit, offset int)
 	}
 
 	now := s.clk.Now()
-	_, to := dayRange(now, day)
+	from, to := dayRange(now, day)
+	// 下界取「筛选区间的起点」和「现在」里更晚的那个：过去的局不该出现在列表里。
+	if from.Before(now) {
+		from = now
+	}
 	if weekEnd := now.AddDate(0, 0, 7); to.After(weekEnd) {
 		to = weekEnd
 	}
@@ -95,7 +99,7 @@ func (s *Service) List(ctx context.Context, area, day string, limit, offset int)
 		  FROM games g
 		  LEFT JOIN users u ON u.id = g.host_id
 		 WHERE g.status IN ('open','full') AND g.starts_at >= ? AND g.starts_at < ?`
-	args := []any{now.Unix(), to.Unix()}
+	args := []any{from.Unix(), to.Unix()}
 	if area != "" {
 		query += ` AND g.area = ?`
 		args = append(args, area)
@@ -402,7 +406,12 @@ func (s *Service) Leave(ctx context.Context, code, userID string) (*Detail, erro
 		if err != nil {
 			return err
 		}
-		if err := s.leaveInTx(ctx, tx, game, userID, now); err != nil {
+		// 已经结束或取消的局是终态：不能再退出，否则座位会被删掉、
+		// 而且一旦「没什么人剩下」还会把状态改回 open，把历史局复活（审计发现）。
+		if !game.Open() {
+			return ErrClosed
+		}
+		if _, err := s.leaveInTx(ctx, tx, game, userID, now); err != nil {
 			return err
 		}
 		detail, err = loadDetailTx(ctx, tx, code, userID)
@@ -430,15 +439,28 @@ func (s *Service) Kick(ctx context.Context, code, hostID, targetID string) (*Det
 		if game.HostID != hostID {
 			return ErrNotHost
 		}
-		if err := s.leaveInTx(ctx, tx, game, targetID, now); err != nil {
+		if !game.Open() {
+			return ErrClosed
+		}
+		inGame, err := s.leaveInTx(ctx, tx, game, targetID, now)
+		if err != nil {
 			return err
+		}
+		// 不在这一局里的人不能被「移出」：不写 ban，也不发通知。
+		// 否则任何人都能拿白名单里的 user id 给任意用户推送「你被移出了」。
+		if !inGame {
+			return ErrNotInGame
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT OR IGNORE INTO game_bans (game_id, user_id) VALUES (?, ?)`,
 			game.ID, targetID); err != nil {
 			return err
 		}
-		if err := addReminder(ctx, tx, game.ID, targetID, ReminderKicked, now, game.Version+1); err != nil {
+		version, err := currentVersion(ctx, tx, game.ID)
+		if err != nil {
+			return err
+		}
+		if err := addReminder(ctx, tx, game.ID, targetID, ReminderKicked, now, version); err != nil {
 			return err
 		}
 		detail, err = loadDetailTx(ctx, tx, code, hostID)
@@ -450,82 +472,89 @@ func (s *Service) Kick(ctx context.Context, code, hostID, targetID string) (*Det
 	return detail, nil
 }
 
-// leaveInTx 是「离开」这件事的全部逻辑，退出和移出共用（§5.1）。
-func (s *Service) leaveInTx(ctx context.Context, tx *store.Tx, game Game, userID string, now time.Time) error {
+// 返回的 bool 说明这个人本来是否在这一局里——Kick 靠它判断该不该写 ban、发通知。
+func (s *Service) leaveInTx(ctx context.Context, tx *store.Tx, game Game, userID string, now time.Time) (bool, error) {
 	waiting, err := isWaitlisted(ctx, tx, game.ID, userID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if waiting {
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM waitlist WHERE game_id = ? AND user_id = ?`, game.ID, userID); err != nil {
-			return err
+			return false, err
 		}
-		if _, err := bumpVersion(ctx, tx, game.ID); err != nil {
-			return err
+		version, err := bumpVersion(ctx, tx, game.ID)
+		if err != nil {
+			return false, err
 		}
 		tx.Touch(game.ID)
-		s.publishAfterCommit(tx, game.ShortCode, EventSeatLeft, game.Version+1, true)
-		return nil
+		s.publishAfterCommit(tx, game.ShortCode, EventSeatLeft, version, true)
+		return true, nil
 	}
 
 	var seatNo int
 	err = tx.QueryRowContext(ctx,
 		`SELECT seat_no FROM seats WHERE game_id = ? AND user_id = ?`, game.ID, userID).Scan(&seatNo)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil // 本来就不在这一局里，什么也不用做
+		return false, nil // 本来就不在这一局里，什么也不用做
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM seats WHERE game_id = ? AND seat_no = ?`, game.ID, seatNo); err != nil {
-		return err
+		return false, err
 	}
 	// 他不用来了，作废他的开局提醒。
 	if err := dropReminders(ctx, tx, game.ID, userID, ReminderTMinus1h, now); err != nil {
-		return err
+		return false, err
 	}
 
 	version, err := bumpVersion(ctx, tx, game.ID)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// 候补自动补位：队首坐进刚空出来的座号，状态保持 full（§5.1）。
 	promoted, err := s.promoteHead(ctx, tx, game, seatNo, version, now)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	remaining, err := countSeats(ctx, tx, game.ID)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if !promoted && remaining < Capacity {
 		// 候补为空：从 full 回到 open，并告诉大家有人走了。
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE games SET status = 'open', version = version + 1 WHERE id = ?`, game.ID); err != nil {
-			return err
+		// `AND status = 'full'` 是兜底：只有真的是满员的局才需要从 full 退回来，
+		// 免得把别的状态（例如已经 done/cancelled 的）误改成 open。
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE games SET status = 'open', version = version + 1
+			 WHERE id = ? AND status = 'full'`, game.ID); err != nil {
+			return false, err
 		}
-		version++
+		version, err = currentVersion(ctx, tx, game.ID)
+		if err != nil {
+			return false, err
+		}
 		if err := notifySeated(ctx, tx, game, ReminderSeatLeft, version, now); err != nil {
-			return err
+			return false, err
 		}
 	}
 
 	// 局头退出：先补位，再把局头转给座位上最早进来的人；没人了就把局取消（§5.1）。
 	if game.HostID == userID {
 		if err := s.transferHost(ctx, tx, game, version, now); err != nil {
-			return err
+			return false, err
 		}
 	}
 
 	tx.Touch(game.ID)
 	s.publishAfterCommit(tx, game.ShortCode, EventSeatLeft, version, true)
-	return nil
+	return true, nil
 }
 
 // promoteHead 把候补队首补到 seatNo 上，返回是否补到了人。
@@ -615,6 +644,15 @@ func (s *Service) Cancel(ctx context.Context, code, hostID string) error {
 		}
 		if game.HostID != hostID {
 			return ErrNotHost
+		}
+		// 已经取消过的局：幂等地成功，但**什么都不写**。
+		// 否则每点一次取消都会把版本号 +1，而 dedupe_key 带着版本号，
+		// 于是同一条「局取消了」会被重复发出去（微信里双击、超时重试都会踩到）。
+		if game.Status == StatusCancelled {
+			return nil
+		}
+		if !game.Open() {
+			return ErrClosed
 		}
 		return s.cancelInTx(ctx, tx, game, now)
 	})
@@ -722,6 +760,10 @@ func (s *Service) Update(ctx context.Context, code, hostID string, patch Patch, 
 		}
 		if game.HostID != hostID {
 			return ErrNotHost
+		}
+		// 已结束或已取消的局不能再改（不然能改掉历史局的地点、备注）。
+		if !game.Open() {
+			return ErrClosed
 		}
 		if game.Version != ifVersion {
 			latest, err := loadDetailTx(ctx, tx, code, hostID)

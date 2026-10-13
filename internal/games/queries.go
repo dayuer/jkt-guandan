@@ -247,10 +247,19 @@ func dayRange(now time.Time, day string) (from, to time.Time) {
 	case "tomorrow":
 		return today.AddDate(0, 0, 1), today.AddDate(0, 0, 2)
 	case "weekend":
-		// 下一个周六 00:00 到下周一 00:00。
-		offset := (int(time.Saturday) - int(today.Weekday()) + 7) % 7
-		sat := today.AddDate(0, 0, offset)
-		return sat, sat.AddDate(0, 0, 2)
+		// 本周末：周六 00:00 到下周一 00:00。
+		// 周六和周日当天都要返回「当前这个」周末——周日再往后找会跳到下一个周六，
+		// 今天的局反而看不见了。
+		switch today.Weekday() {
+		case time.Saturday:
+			return today, today.AddDate(0, 0, 2)
+		case time.Sunday:
+			return today.AddDate(0, 0, -1), today.AddDate(0, 0, 1)
+		default:
+			offset := (int(time.Saturday) - int(today.Weekday()) + 7) % 7
+			sat := today.AddDate(0, 0, offset)
+			return sat, sat.AddDate(0, 0, 2)
+		}
 	default:
 		return now, now.AddDate(0, 0, 7)
 	}

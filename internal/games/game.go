@@ -115,6 +115,7 @@ var (
 	ErrRateLimited      = errors.New("操作太频繁")
 	ErrInvalidInput     = errors.New("输入不合法")
 	ErrHostCantKickSelf = errors.New("局头不能移出自己")
+	ErrNotInGame        = errors.New("这个人不在这一局里")
 )
 
 // VersionConflict 带上最新的牌局，让前端能提示「局已被修改，请确认」（§5.1）。

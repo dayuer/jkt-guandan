@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/identity"
@@ -181,7 +182,8 @@ func (h *handler) update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 局头在两台手机上同时改时，版本号不一致就返回 409 和最新数据（§11.3）。
-	ifVersion, err := strconv.ParseInt(r.Header.Get("If-Match"), 10, 64)
+	// ETag 按 HTTP 规范是带引号的（"7"），两种都收。
+	ifVersion, err := strconv.ParseInt(strings.Trim(r.Header.Get("If-Match"), `"`), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "缺少 If-Match 版本号")
 		return
@@ -376,6 +378,8 @@ func writeGameError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "banned", "你被移出过这一局")
 	case errors.Is(err, ErrNotHost):
 		writeError(w, http.StatusForbidden, "not_host", "只有局头能做这件事")
+	case errors.Is(err, ErrNotInGame):
+		writeError(w, http.StatusNotFound, "not_in_game", "这个人不在这一局里")
 	case errors.Is(err, ErrHostCantKickSelf):
 		writeError(w, http.StatusBadRequest, "kick_self", "局头不能移出自己，退出会触发转让")
 	case errors.Is(err, ErrQuota):

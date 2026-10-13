@@ -390,3 +390,66 @@ func (f *srvFixture) probe(client *http.Client, method, path string) resp {
 	}
 	return f.do(client, method, path, body, headers)
 }
+
+// 移出一个不在这一局里的人：404 not_in_game（不能给任意用户推送「你被移出了」）。
+func TestKickOutsiderOverHTTP(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "局头")
+	code := f.createGame(f.http, nil)
+
+	stranger := f.newBrowser()
+	strangerID := f.signUp(stranger, "路人")
+
+	r := f.do(f.http, http.MethodPost, "/api/games/"+code+"/kick",
+		map[string]any{"user_id": strangerID}, nil)
+	if r.status != http.StatusNotFound || r.errCode() != "not_in_game" {
+		t.Fatalf("移出不在局里的人应当 404 not_in_game，实际 %d %s", r.status, r.raw)
+	}
+}
+
+// 终态的局：报名/退出/移出/修改都是 409 game_closed；重复取消幂等地成功。
+func TestClosedGameOverHTTP(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "局头")
+	code := f.createGame(f.http, nil)
+
+	other := f.newBrowser()
+	f.signUp(other, "甲")
+	if r := f.do(other, http.MethodPost, "/api/games/"+code+"/seat", nil, nil); r.status != http.StatusOK {
+		t.Fatalf("报名: %d %s", r.status, r.raw)
+	}
+
+	if r := f.do(f.http, http.MethodPost, "/api/games/"+code+"/cancel", nil, nil); r.status != http.StatusOK {
+		t.Fatalf("取消: %d %s", r.status, r.raw)
+	}
+	// 重复取消：幂等地成功。
+	if r := f.do(f.http, http.MethodPost, "/api/games/"+code+"/cancel", nil, nil); r.status != http.StatusOK {
+		t.Fatalf("重复取消应当成功: %d %s", r.status, r.raw)
+	}
+
+	for name, r := range map[string]resp{
+		"报名": f.do(other, http.MethodPost, "/api/games/"+code+"/seat", nil, nil),
+		"退出": f.do(other, http.MethodDelete, "/api/games/"+code+"/seat", nil, nil),
+	} {
+		if r.status != http.StatusConflict || r.errCode() != "game_closed" {
+			t.Fatalf("已取消的局上「%s」应当 409 game_closed，实际 %d %s", name, r.status, r.raw)
+		}
+	}
+}
+
+// If-Match 按 HTTP 规范可以是带引号的 ETag，两种写法都收。
+func TestPatchAcceptsQuotedIfMatch(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "局头")
+	code := f.createGame(f.http, nil)
+
+	detail := f.do(f.http, http.MethodGet, "/api/games/"+code, nil, nil)
+	version := int64(detail.gameField("version").(float64))
+
+	r := f.do(f.http, http.MethodPatch, "/api/games/"+code,
+		map[string]any{"venue": "Grand Indonesia"},
+		map[string]string{"If-Match": `"` + strconv.FormatInt(version, 10) + `"`})
+	if r.status != http.StatusOK {
+		t.Fatalf("带引号的 If-Match 应当被接受，实际 %d %s", r.status, r.raw)
+	}
+}

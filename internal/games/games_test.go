@@ -596,8 +596,9 @@ func TestRandomOperationsKeepInvariants(t *testing.T) {
 
 		f.checkInvariants(code)
 
-		// 取消掉的局退场，补一个新局进来，保持 3 个活跃的局。
+		// 进入终态的局：再打几次，断言它真的不再变（审计要求 done/cancelled 是终态）。
 		if err == nil && wasCancelled(t, f, code) {
+			assertTerminal(t, f, code, ids)
 			active = append(active[:idx], active[idx+1:]...)
 			active = append(active, f.newGameForTest(ids[rnd.Intn(len(ids))]))
 		}
@@ -644,6 +645,7 @@ func isExpectedBusinessError(err error) bool {
 	for _, want := range []error{
 		games.ErrClosed, games.ErrBanned, games.ErrNotHost, games.ErrHostCantKickSelf,
 		games.ErrQuota, games.ErrRateLimited, games.ErrNotFound, games.ErrInvalidInput,
+		games.ErrNotInGame,
 	} {
 		if errors.Is(err, want) {
 			return true
