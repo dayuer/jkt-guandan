@@ -41,6 +41,9 @@ COPY --from=build /out/guandan /guandan
 COPY --from=build --chown=65532:65532 /out/data /data
 VOLUME /data
 EXPOSE 8080 8443
+# 告诉 scripts/deploy-remote.sh：这个镜像有 backup / restore 子命令，可以用来做发布前冷备份。
+# 更早的二进制不认识子命令，会把参数当成没有、直接起服务（#34 复审时发现）。
+LABEL org.jkt-guandan.ops="backup-v1"
 # 存活检查走 /healthz（§12.5）。镜像里没有 curl，用二进制自带的 healthcheck 子命令请求本机。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["/guandan", "healthcheck"]

@@ -6,7 +6,8 @@
 # 步骤：
 #   0. 预检：镜像在、静态文件在、$WEB_ROOT/current 要么不存在、要么是符号链接（是目录就停）
 #   1. 停旧容器（优雅关闭），改名为 guandan-prev
-#   2. 用新镜像做一次冷备份（不迁移、只做本地快照）；失败就中止发布、旧容器原样拉起来
+#   2. 用新镜像做一次冷备份（不迁移、只做本地快照）；失败就中止发布、旧容器原样拉起来。
+#      新镜像没有 backup 子命令时用旧版本的镜像；都没有就拒绝，除非 ALLOW_NO_BACKUP=1
 #   3. 启动新容器，等 /readyz，最多 READY_TIMEOUT 秒
 #   4. 原子切换 current 符号链接（rename(2)；nginx 站点关了 open_file_cache，不用 reload）
 #   5. 切换后经 nginx 再确认一次（SITE_URL）
@@ -117,15 +118,30 @@ fi
 #   - 停服之后做，快照就是旧版本最后的状态；
 #   - backup 子命令从不迁移数据库（#34 复审第 3 条），快照是迁移前的。
 # 备份失败就中止发布、把旧容器原样拉起来：回滚靠的就是这份快照，没有它就没有退路。
+#
+# 做备份和恢复用的镜像必须带 org.jkt-guandan.ops 标签（有 backup / restore 子命令）：更早的二进制不认识
+# 子命令，会直接起一个服务、永远不返回。优先用新镜像；新镜像没有（比如手动回滚到 #34 之前的版本），
+# 就用正在跑的旧版本的镜像；都没有就拒绝发布，除非显式设 ALLOW_NO_BACKUP=1。
+has_ops() { [ -n "$(docker image inspect -f '{{index .Config.Labels "org.jkt-guandan.ops"}}' "$1" 2>/dev/null)" ]; }
+
 cold_backup() {
   # 只传本站地址（config 校验要用）；不读 env 文件，所以不会去异地上传。
   docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
     -v "$VOLUME:/data" -e GUANDAN_PUBLIC_URL="$PUBLIC_URL" \
-    "$IMAGE" backup now --local --if-exists --no-migrate
+    "$OPS_IMAGE" backup now --local --if-exists --no-migrate
 }
 
 HAD_PREV=0
 SNAPSHOT=""
+OPS_IMAGE=""
+if has_ops "$IMAGE"; then
+  OPS_IMAGE=$IMAGE
+elif exists "$NAME" && has_ops "$(docker container inspect -f '{{.Config.Image}}' "$NAME")"; then
+  OPS_IMAGE=$(docker container inspect -f '{{.Config.Image}}' "$NAME")
+fi
+if [ -z "$OPS_IMAGE" ] && [ "${ALLOW_NO_BACKUP:-0}" != 1 ]; then
+  die "新旧镜像都没有 backup 子命令，做不了发布前冷备份。确认可以不备份（比如首次部署到空数据卷）就加 ALLOW_NO_BACKUP=1"
+fi
 if exists "$NAME"; then
   HAD_PREV=1
   log "旧版本：$(docker container inspect -f '{{.Config.Image}}' "$NAME")"
@@ -133,7 +149,10 @@ if exists "$NAME"; then
   docker stop -t 30 "$NAME" >/dev/null
   docker rename "$NAME" "$PREV"
 fi
-if ! out=$(cold_backup 2>&1); then
+if [ -z "$OPS_IMAGE" ]; then
+  out=""
+  log "警告：ALLOW_NO_BACKUP=1，跳过发布前冷备份"
+elif ! out=$(cold_backup 2>&1); then
   printf '%s\n' "$out" | sed 's/^/[deploy]   /'
   log "发布前冷备份失败，中止发布"
   if [ "$HAD_PREV" = 1 ]; then
@@ -146,11 +165,11 @@ fi
 SNAPSHOT=$(printf '%s\n' "$out" | sed -n 's/^本地快照：//p')
 log "发布前冷备份：${SNAPSHOT:-（还没有数据库，跳过）}"
 
-# restore_snapshot 用新镜像把发布前的快照放回数据卷（旧容器必须已经停下，restore 要拿数据目录锁）。
+# restore_snapshot 把发布前的快照放回数据卷（旧容器必须已经停下，restore 要拿数据目录锁）。
 restore_snapshot() {
   docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
     -v "$VOLUME:/data" -e GUANDAN_PUBLIC_URL="$PUBLIC_URL" \
-    "$IMAGE" restore "$SNAPSHOT"
+    "$OPS_IMAGE" restore "$SNAPSHOT"
 }
 
 rollback() {
