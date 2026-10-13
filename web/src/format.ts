@@ -97,6 +97,17 @@ export function dayLabel(unixSeconds: number, now: number = Math.floor(Date.now(
   return stamp;
 }
 
+/**
+ * 「今天」/「明天」/「10月18日」——话术里用，不带星期和具体日期。
+ * （首页卡片那行小字另有写法，它要的是 10/17 这种紧凑日期。）
+ */
+export function dayShort(unixSeconds: number, now: number = Math.floor(Date.now() / 1000)): string {
+  const target = dayKey(unixSeconds);
+  if (target === dayKey(now)) return "今天";
+  if (target === dayKey(now + 24 * 3600)) return "明天";
+  return monthDay(unixSeconds);
+}
+
 /** 「差 2 人」/「已满」 */
 export function missingLabel(missing: number): string {
   return missing > 0 ? `差 ${missing} 人` : "已满";
