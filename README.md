@@ -53,6 +53,7 @@ make docker     # 镜像 guandan:local
 | `GUANDAN_DOMAIN` | 空 | 填了就用 autocert 签 HTTPS，容器内监听 :8080 和 :8443 |
 | `GUANDAN_PUBLIC_URL` | 按域名推导 | 生成分享链接和 OG 图 URL 时用，也是 CSRF 校验认的本站来源；非开发模式下它和 `GUANDAN_DOMAIN` 至少要设一个，否则拒绝启动 |
 | `GUANDAN_ADMIN_EMAIL` | 空 | Let's Encrypt 通知地址，也是 VAPID 的 subject |
+| `GUANDAN_TRUSTED_PROXIES` | 空（不信任任何代理） | 可信反向代理的网段（逗号分隔）。只有对端在这里面时才采用 `X-Real-IP` / `X-Forwarded-For` 里的客户端 IP。**只有前面有反向代理、并且代理会用 `$remote_addr` 覆盖 `X-Real-IP` 时才设置**；容器直接对外时设了它，任何人都能伪造 IP 绕过限流。生产（nginx → docker 网桥）设为 `172.17.0.1/32`。启动日志会打印生效值 |
 | `GUANDAN_DEV` | 空 | 设为 `1` 进入开发模式：不启用 TLS，cookie 不加 `Secure`，文本日志 |
 | `GUANDAN_BACKUP_URL` | 空 | 异地备份目标（S3 兼容） |
 | `GUANDAN_BACKUP_KEY` | 空 | 备份加密的 age 公钥；填了备份地址就必须填它 |

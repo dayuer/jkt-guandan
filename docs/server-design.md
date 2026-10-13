@@ -357,6 +357,7 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `GUANDAN_DOMAIN` | 空 | 设置后启用 autocert：容器内监听 :8080（ACME 验证和跳转 HTTPS）和 :8443（TLS），由宿主机的 80 和 443 映射过来（nonroot 用户不能监听 1024 以下的端口）；可以写多个域名，逗号分隔（主域名加备用域名） |
 | `GUANDAN_PUBLIC_URL` | 根据域名推导 | 生成分享链接和 OG 图 URL 时用 |
 | `GUANDAN_ADMIN_EMAIL` | 空 | 填给 Let's Encrypt，也用作 VAPID 的 subject |
+| `GUANDAN_TRUSTED_PROXIES` | 空 | 可信反向代理的网段，逗号分隔。只有对端在其中时，才采用 `X-Real-IP`（或 `X-Forwarded-For` 最右边那个不可信的地址）作为客户端 IP，用于按 IP 限流。**只有前面有反向代理、并且代理会覆盖 `X-Real-IP` 时才设置**，否则任何人都能伪造 IP。生产拓扑（#12）设为 `172.17.0.1/32` |
 | `GUANDAN_DEV` | 空 | 设为 `1` 时进入开发模式：不启用 TLS，cookie 不加 `Secure`，日志用文本格式（§13.5） |
 | `GUANDAN_BACKUP_URL` | 空 | 异地备份目标，S3 兼容地址（§13.3） |
 | `GUANDAN_BACKUP_KEY` | 空 | 备份加密用的 age 公钥；设置了备份地址时必须提供 |

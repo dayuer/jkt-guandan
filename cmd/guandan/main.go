@@ -54,7 +54,8 @@ func run() error {
 		return err
 	}
 	setupLogging(cfg)
-	slog.Info("启动", "data", cfg.DataDir, "addr", cfg.Addr, "dev", cfg.Dev, "tls", cfg.TLSEnabled())
+	slog.Info("启动", "data", cfg.DataDir, "addr", cfg.Addr, "dev", cfg.Dev, "tls", cfg.TLSEnabled(),
+		"trusted_proxies", cfg.TrustedProxies.String())
 
 	// 锁文件放在数据目录里，所以目录要先存在。
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {

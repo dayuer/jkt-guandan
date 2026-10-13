@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/dayuer/jkt-guandan/internal/clientip"
 )
 
 // DefaultTLSAddr 是启用 autocert 时的 TLS 监听地址。容器里监听 8443，
@@ -30,6 +32,10 @@ type Config struct {
 	// BackupURL 是异地备份目标（S3 兼容），BackupKey 是备份加密用的 age 公钥。
 	BackupURL string
 	BackupKey string
+	// TrustedProxies 是可信的反向代理网段：只有对端在这里面时，才采用 X-Real-IP / X-Forwarded-For
+	// 里的客户端地址（按 IP 限流要用）。读 GUANDAN_TRUSTED_PROXIES，默认为空：不信任任何代理。
+	// 只有前面有反向代理、并且代理会覆盖 X-Real-IP 时才设置（生产：172.17.0.1/32，见 runbook）。
+	TrustedProxies clientip.Resolver
 	// AnthropicKey 为空时蛋蛋不可用（phase:3）。
 	AnthropicKey string
 }
@@ -104,6 +110,13 @@ func Load() (Config, error) {
 		BackupKey:    strings.TrimSpace(os.Getenv("GUANDAN_BACKUP_KEY")),
 		AnthropicKey: strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
 	}
+
+	// 默认不信任任何代理（clientip 包注释说明了为什么）。
+	resolver, err := clientip.Parse(os.Getenv("GUANDAN_TRUSTED_PROXIES"))
+	if err != nil {
+		return Config{}, fmt.Errorf("GUANDAN_TRUSTED_PROXIES: %w", err)
+	}
+	c.TrustedProxies = resolver
 
 	if c.PublicURL == "" && c.Domain != "" {
 		c.PublicURL = "https://" + c.Domains()[0]
