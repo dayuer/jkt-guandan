@@ -122,6 +122,18 @@ describe("RealtimeClient", () => {
     rt.stop();
   });
 
+  it("feed 主题上的事件来自不同的局，不按版本号去重", () => {
+    const rt = client();
+    const got: unknown[] = [];
+    rt.register({ topics: ["feed:SCBD"], onEvent: (ev) => got.push(ev.v) });
+    rt.start();
+    last().open();
+    last().receive({ topic: "feed:SCBD", type: "feed.game_changed", v: 9 }); // 某一局 v=9
+    last().receive({ topic: "feed:SCBD", type: "feed.game_added", v: 1 }); // 新开的局 v=1
+    expect(got).toEqual([9, 1]);
+    rt.stop();
+  });
+
   it("hello 带构建号，交给页面判断要不要提示刷新", () => {
     const rt = client();
     const hellos: unknown[] = [];

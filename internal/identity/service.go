@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
+	"github.com/dayuer/jkt-guandan/internal/ratelimit"
 	"github.com/dayuer/jkt-guandan/internal/store"
 )
 
@@ -77,9 +78,9 @@ type Service struct {
 	cookies CookiePolicy
 	pub     Publisher // 可以为 nil：不发实时事件
 
-	createLimiter *Limiter // POST /api/me：每 IP 每小时 20 次（§12.3）
-	issueLimiter  *Limiter // POST /api/claim：每用户每小时 5 次（§5.2 修订）
-	codeLimiter   *Limiter // 凭码兑换：每 IP 每分钟 10 次（§12.3）
+	createLimiter *ratelimit.Limiter // POST /api/me：每 IP 每小时 20 次（§12.3）
+	issueLimiter  *ratelimit.Limiter // POST /api/claim：每用户每小时 5 次（§5.2 修订）
+	codeLimiter   *ratelimit.Limiter // 凭码兑换：每 IP 每分钟 10 次（§12.3）
 	codeBudget    *codeFailureBudget
 }
 
@@ -92,9 +93,9 @@ func NewService(st *store.Store, clk clock.Clock, dev bool) *Service {
 		st:            st,
 		clk:           clk,
 		cookies:       CookiePolicyFor(dev),
-		createLimiter: NewLimiter(20.0/60, 20, clk),
-		issueLimiter:  NewLimiter(5.0/60, 5, clk),
-		codeLimiter:   NewLimiter(10, 10, clk),
+		createLimiter: ratelimit.New(20.0/60, 20, clk),
+		issueLimiter:  ratelimit.New(5.0/60, 5, clk),
+		codeLimiter:   ratelimit.New(10, 10, clk),
 		codeBudget:    newCodeFailureBudget(clk),
 	}
 }
@@ -125,8 +126,28 @@ func (s *Service) kickDeviceAfterCommit(tx *store.Tx, deviceID string) {
 	tx.AfterCommit(func(context.Context) { s.pub.KickDevice(deviceID) })
 }
 
+// ErrBanned 表示用户或设备被封禁（guandan admin ban）。
+var ErrBanned = errors.New("identity: 已被封禁")
+
+// ForRealtime 是 WebSocket 握手时的身份识别（§5.5）：没有身份返回空字符串；被封禁返回 ErrBanned，
+// 握手随之 403。和心跳时的 StillValid 是同一套规则。
+func (s *Service) ForRealtime(r *http.Request) (userID, deviceID string, err error) {
+	ident := s.FromRequest(r)
+	if ident == nil {
+		return "", "", nil
+	}
+	banned, err := s.Banned(r.Context(), ident)
+	if err != nil {
+		return "", "", err
+	}
+	if banned {
+		return "", "", ErrBanned
+	}
+	return ident.User.ID, ident.Device.ID, nil
+}
+
 // StillValid 是实时连接每次心跳时的复查（#43 的兜底）：这台设备还在，并且（顺着合并关系）
-// 还属于握手时的那个用户。读连接池上一次查询，开销很小。
+// 还属于握手时的那个用户，用户和设备都没有被封禁。读连接池上两次查询，开销很小。
 func (s *Service) StillValid(ctx context.Context, userID, deviceID string) bool {
 	var owner string
 	err := s.st.Read().QueryRowContext(ctx, `SELECT user_id FROM devices WHERE id = ?`, deviceID).Scan(&owner)
@@ -135,10 +156,12 @@ func (s *Service) StillValid(ctx context.Context, userID, deviceID string) bool 
 		return false
 	}
 	root, err := s.resolveMergedUser(ctx, owner)
-	if err != nil {
+	if err != nil || root.ID != userID {
 		return false
 	}
-	return root.ID == userID
+	// 被 guandan admin ban 封禁：那是另一个进程，通知不到 Hub，靠这里在下一次心跳时断开。
+	banned, err := s.st.IsBanned(ctx, userID, deviceID)
+	return err == nil && !banned
 }
 
 // FromRequest 用请求里的设备 cookie 认出身份；没有或无效时返回 nil。
@@ -165,6 +188,11 @@ func (s *Service) AllowCodeRedeem(ip string) bool { return s.codeLimiter.Allow(i
 
 // AllowClaim 检查这个用户现在能不能签发新的交接令牌（每用户每小时 5 次）。
 func (s *Service) AllowClaim(userID string) bool { return s.issueLimiter.Allow(userID) }
+
+// Banned 判断这个身份（合并后的最终用户，或者这台设备）是否被封禁（§13.6 guandan admin ban）。
+func (s *Service) Banned(ctx context.Context, ident *Identity) (bool, error) {
+	return s.st.IsBanned(ctx, ident.User.ID, ident.Device.ID)
+}
 
 // Current 用设备 token 解析出身份。没有有效身份时返回 ErrNotFound。
 func (s *Service) Current(ctx context.Context, deviceToken string) (*Identity, error) {

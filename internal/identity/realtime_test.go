@@ -233,3 +233,34 @@ func TestStillValid(t *testing.T) {
 		t.Fatal("不存在的设备应无效")
 	}
 }
+
+// 封禁（#34 的 guandan admin ban 是另一个进程）：被封禁的设备握手直接 403；
+// 已经连上的，心跳复查（StillValid）判为失效，下一次心跳以 4001 断开。
+func TestBannedIdentityCannotUseRealtime(t *testing.T) {
+	f := newHubFixture(t)
+	userID := f.createIdentity(f.http, "老王")
+	var deviceID string
+	if err := f.st.Read().QueryRow(`SELECT id FROM devices WHERE user_id = ?`, userID).Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if !f.svc.StillValid(ctx, userID, deviceID) {
+		t.Fatal("封禁前应有效")
+	}
+	if _, err := f.st.Ban(ctx, userID, f.clk.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if f.svc.StillValid(ctx, userID, deviceID) {
+		t.Fatal("封禁后心跳复查应判为失效")
+	}
+
+	dctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(dctx, "wss"+strings.TrimPrefix(f.srv.URL, "https")+"/ws", &websocket.DialOptions{
+		HTTPClient: f.http,
+		HTTPHeader: http.Header{"Origin": {testOrigin}},
+	})
+	if err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("被封禁的设备握手应 403，实际 %v %v", resp, err)
+	}
+}

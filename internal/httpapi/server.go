@@ -14,6 +14,7 @@ import (
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/config"
+	"github.com/dayuer/jkt-guandan/internal/metrics"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
 )
@@ -43,6 +44,10 @@ type Options struct {
 	Group  *supervise.Group
 	Clock  clock.Clock
 	Checks []ReadinessCheck
+	// Build 是构建号，非空时每个响应都带 X-App-Build，前端据此提示刷新（§13.4）。
+	Build string
+	// Metrics 收集请求数和耗时，供 /metrics 输出（§13.7）。可以为 nil。
+	Metrics *metrics.HTTP
 	// RegisterRoutes 让 identity、games 等包把自己的 handler 挂到主 mux 上。
 	// 它们拿到的是已经套好中间件的 mux，所以不用自己处理 CSRF、限流和日志。
 	RegisterRoutes func(mux *http.ServeMux)
@@ -55,6 +60,8 @@ type Server struct {
 	clk    clock.Clock
 	checks []ReadinessCheck
 	sem    chan struct{}
+	build  string
+	stats  *metrics.HTTP
 }
 
 // New 组装路由和中间件。以后各包的 handler 都挂到这个 mux 上。
@@ -69,6 +76,8 @@ func New(opts Options) http.Handler {
 		clk:    opts.Clock,
 		checks: opts.Checks,
 		sem:    make(chan struct{}, maxConcurrentRequests),
+		build:  opts.Build,
+		stats:  opts.Metrics,
 	}
 
 	mux := http.NewServeMux()

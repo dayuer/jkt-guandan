@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // 纯 Go 驱动，所以 CGO_ENABLED=0，运行时镜像可以用 distroless/static
@@ -43,6 +44,10 @@ type Store struct {
 	write *sql.DB
 	read  *sql.DB
 	path  string
+	dsn   string
+
+	// onLockWait 收到每次写事务的拿锁等待时间，供 /metrics 使用（§13.7）。
+	onLockWait atomic.Pointer[func(time.Duration)]
 }
 
 // Open 打开（必要时创建）dataDir 下的数据库，但不执行迁移。
@@ -70,7 +75,7 @@ func Open(dataDir string) (*Store, error) {
 	}
 	read.SetMaxOpenConns(4)
 
-	return &Store{write: write, read: read, path: path}, nil
+	return &Store{write: write, read: read, path: path, dsn: dsn}, nil
 }
 
 // Migrate 执行尚未应用的迁移（§12.1 第 5 步，在 QuickCheck 之后）。
@@ -195,7 +200,7 @@ func (s *Store) Write(ctx context.Context, fn func(ctx context.Context, tx *Tx) 
 		}
 		return fmt.Errorf("开启写事务: %w", err)
 	}
-	recordLockWait(ctx, time.Since(start))
+	s.recordLockWait(ctx, time.Since(start))
 
 	// 这个 defer 先于 conn.Close 执行，保证连接回池之前事务已经结束。
 	committed := false
@@ -248,9 +253,15 @@ func discard(conn *sql.Conn) {
 // lockWaitWarnThreshold 是记 warn 的门槛（§13.7）。
 const lockWaitWarnThreshold = 100 * time.Millisecond
 
-func recordLockWait(ctx context.Context, wait time.Duration) {
+// ObserveLockWait 登记一个观察者，每次写事务拿到锁后收到等待时间。启动时设置一次。
+func (s *Store) ObserveLockWait(fn func(time.Duration)) { s.onLockWait.Store(&fn) }
+
+func (s *Store) recordLockWait(ctx context.Context, wait time.Duration) {
 	if stats := writeStatsFrom(ctx); stats != nil {
 		stats.Record(wait)
+	}
+	if fn := s.onLockWait.Load(); fn != nil {
+		(*fn)(wait)
 	}
 	if wait > lockWaitWarnThreshold {
 		slog.Warn("写锁等待超过 100ms", "wait_ms", wait.Milliseconds())

@@ -88,10 +88,8 @@ func newFixtureWithHub(t *testing.T, dev bool, hub *realtime.Hub) *fixture {
 					Hub:         hub,
 					AllowOrigin: cfg.AllowsOrigin,
 					Identify: func(r *http.Request) (realtime.Principal, error) {
-						if ident := svc.FromRequest(r); ident != nil {
-							return realtime.Principal{UserID: ident.User.ID, DeviceID: ident.Device.ID}, nil
-						}
-						return realtime.Principal{}, nil
+						userID, deviceID, err := svc.ForRealtime(r)
+						return realtime.Principal{UserID: userID, DeviceID: deviceID}, err
 					},
 					Revalidate: func(ctx context.Context, p realtime.Principal) bool {
 						return svc.StillValid(ctx, p.UserID, p.DeviceID)
@@ -962,4 +960,51 @@ func (f *fixture) probe(rt identity.Route, _ identity.Role) int {
 	}
 
 	return f.do(rt.Method, path, body).status
+}
+
+// ---------------------------------------------------------------------------
+// 封禁（#20：guandan admin ban 之后的请求一律 403）
+// ---------------------------------------------------------------------------
+
+func TestBannedUserGets403(t *testing.T) {
+	f := newFixture(t, false)
+	userID := f.createIdentity(f.http, "老王")
+	other := f.newBrowser()
+	f.createIdentity(other, "Lily")
+
+	if _, err := f.st.Ban(context.Background(), userID, f.clk.Now()); err != nil {
+		t.Fatalf("封禁: %v", err)
+	}
+	for _, req := range []struct{ method, path string }{
+		{http.MethodGet, "/api/me"},
+		{http.MethodPost, "/api/claim"},
+		{http.MethodPost, "/api/me"}, // 不能靠「再建一个身份」绕过：同一台设备还是被认出来
+	} {
+		var body any
+		if req.method == http.MethodPost && req.path == "/api/me" {
+			body = map[string]string{"nickname": "换个名字"}
+		}
+		resp := f.do(req.method, req.path, body)
+		if resp.status != http.StatusForbidden || resp.errCode() != "banned" {
+			t.Errorf("%s %s：%d %s，期望 403 banned", req.method, req.path, resp.status, resp.errCode())
+		}
+	}
+	if resp := f.doWith(other, http.MethodGet, "/api/me", nil); resp.status != http.StatusOK {
+		t.Fatalf("没被封禁的人不受影响，实际 %d", resp.status)
+	}
+}
+
+func TestBannedDeviceGets403(t *testing.T) {
+	f := newFixture(t, false)
+	userID := f.createIdentity(f.http, "阿杰")
+	var deviceID string
+	if err := f.st.Read().QueryRow(`SELECT id FROM devices WHERE user_id = ?`, userID).Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	if kind, err := f.st.Ban(context.Background(), deviceID, f.clk.Now()); err != nil || kind != "device" {
+		t.Fatalf("封禁设备: %s %v", kind, err)
+	}
+	if resp := f.do(http.MethodGet, "/api/me", nil); resp.status != http.StatusForbidden || resp.errCode() != "banned" {
+		t.Fatalf("被封禁的设备应 403，实际 %d %s", resp.status, resp.errCode())
+	}
 }

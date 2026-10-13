@@ -9,7 +9,8 @@
  * - visibilitychange：页面回到前台时如果连接已断，立刻重连并刷新。
  * - 降级：连续 3 次连不上，改为每 15 秒轮询一次 REST（只有登记时 poll: true 的页面，即 02 和 03），
  *   状态变成 "offline"，页面据此悄悄标一个「离线」小点；后台继续按退避重连，连上后自动恢复。
- * - 消息带牌局版本号 v：收到 v 不大于本地已见过的版本时直接丢弃，乱序、重复都不会出错。
+ * - game:{code} 上的消息带牌局版本号 v：收到 v 不大于本地已见过的版本时直接丢弃，乱序、重复都不会出错。
+ *   feed:{area} 上的事件来自不同的局，不按版本去重（页面收到后重新拉列表）。
  */
 
 export interface RealtimeEvent {
@@ -234,7 +235,9 @@ export class RealtimeClient {
       return;
     }
     if (!ev.topic) return; // subscribed / error 等回执
-    if (typeof ev.v === "number" && ev.v > 0) {
+    // v 是「这一局」的版本号，只在 game:{code} 主题上能比大小。feed:{area} 上的事件来自片区里不同的局，
+    // 各有各的版本，按主题去重会把别的局的更新（比如新开的局 v=1）当成旧消息丢掉。
+    if (ev.topic.startsWith("game:") && typeof ev.v === "number" && ev.v > 0) {
       const seen = this.lastV.get(ev.topic) ?? 0;
       if (ev.v <= seen) return;
       this.lastV.set(ev.topic, ev.v);
