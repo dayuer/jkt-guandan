@@ -204,16 +204,20 @@ func freeSeatNo(ctx context.Context, q queryer, gameID string) (int, error) {
 	return int(n.Int64), nil
 }
 
-// heldSlots 数这个人还占着几个「未开始局」的座位或候补位（§10.8 的配额）。
+// heldSlots 数这个人还占着几个「别人局里」的座位或候补位（§10.8）。
+//
+// 口径：**自己开的局不算**。这条配额是为了防止有人在别人的局里占一大堆座位；
+// 自己能开几局已经由「每天最多 10 局」管着了，把局头自己那一座也算进来的话，
+// 两条规则会互相压住——开到第 6 局时就会被这条拦住，「每天 10 局」永远到不了。
 func heldSlots(ctx context.Context, q queryer, userID string, now time.Time) (int, error) {
 	var n int
 	err := q.QueryRowContext(ctx, `
 		SELECT
 		  (SELECT count(*) FROM seats s JOIN games g ON g.id = s.game_id
-		    WHERE s.user_id = ? AND g.starts_at > ? AND g.status IN ('open','full'))
+		    WHERE s.user_id = ? AND g.host_id <> ? AND g.starts_at > ? AND g.status IN ('open','full'))
 		+ (SELECT count(*) FROM waitlist w JOIN games g ON g.id = w.game_id
-		    WHERE w.user_id = ? AND g.starts_at > ? AND g.status IN ('open','full'))`,
-		userID, now.Unix(), userID, now.Unix()).Scan(&n)
+		    WHERE w.user_id = ? AND g.host_id <> ? AND g.starts_at > ? AND g.status IN ('open','full'))`,
+		userID, userID, now.Unix(), userID, userID, now.Unix()).Scan(&n)
 	if err != nil {
 		return 0, err
 	}

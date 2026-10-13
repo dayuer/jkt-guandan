@@ -21,6 +21,13 @@ const (
 // Capacity 是一局的座位数；§4 的 CHECK 约束也是这个值。
 const Capacity = 4
 
+// JoinGrace 是开局之后还能补人的时长。
+//
+// 缺一个人的局到点了，正是最需要临时补人的时候，所以开局后一段时间内仍然可以报名；
+// 超过这个窗口就返回 409 game_started，首页列表也不再显示这一类局。
+// 退出、移出、取消不受这条限制，直到牌局变成 done。
+const JoinGrace = 2 * time.Hour
+
 // Kind 的取值（§4）。
 var Kinds = []string{"classic", "no-level", "teaching"}
 
@@ -116,6 +123,7 @@ var (
 	ErrInvalidInput     = errors.New("输入不合法")
 	ErrHostCantKickSelf = errors.New("局头不能移出自己")
 	ErrNotInGame        = errors.New("这个人不在这一局里")
+	ErrStarted          = errors.New("这一局已经开始了")
 )
 
 // VersionConflict 带上最新的牌局，让前端能提示「局已被修改，请确认」（§5.1）。

@@ -645,7 +645,7 @@ func isExpectedBusinessError(err error) bool {
 	for _, want := range []error{
 		games.ErrClosed, games.ErrBanned, games.ErrNotHost, games.ErrHostCantKickSelf,
 		games.ErrQuota, games.ErrRateLimited, games.ErrNotFound, games.ErrInvalidInput,
-		games.ErrNotInGame,
+		games.ErrNotInGame, games.ErrStarted,
 	} {
 		if errors.Is(err, want) {
 			return true

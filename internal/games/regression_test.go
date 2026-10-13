@@ -365,3 +365,115 @@ func startOfDayWIB(now time.Time) time.Time {
 	local := now.In(loc)
 	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
 }
+
+// advanceTo 把假时钟推到某个时刻（只往前）。
+func advanceTo(f *fixture, target time.Time) {
+	if d := target.Sub(f.clk.Now()); d > 0 {
+		f.fake.Advance(d)
+	}
+}
+
+// 开局后 JoinGrace 之内还能补人，超过就 409 game_started；
+// 但退出、移出、取消不受这条限制（§5.1 修订）。
+func TestJoinGraceWindow(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	host := f.newUser("局头")
+	created, err := f.games.Create(ctx, host, games.CreateInput{
+		StartsAt: f.clk.Now().Add(30 * time.Minute),
+		Area:     "SCBD", Venue: "Pacific Place", Kind: "classic",
+	}, "")
+	if err != nil {
+		t.Fatalf("开局: %v", err)
+	}
+	code, start := created.Game.ShortCode, created.Game.StartsAt
+
+	// 开局后 1:59：还能补人。
+	advanceTo(f, start.Add(119*time.Minute))
+	onTime := f.newUser("赶上的")
+	if _, err := f.games.Join(ctx, code, onTime); err != nil {
+		t.Fatalf("开局后 1:59 应当还能报名，实际 %v", err)
+	}
+
+	// 开局后 2:01：晚了。
+	advanceTo(f, start.Add(121*time.Minute))
+	if _, err := f.games.Join(ctx, code, f.newUser("迟到的")); !errors.Is(err, games.ErrStarted) {
+		t.Fatalf("开局后 2:01 应当返回 game_started，实际 %v", err)
+	}
+
+	// 退出不受这条限制——到点了还是能退出。
+	if _, err := f.games.Leave(ctx, code, onTime); err != nil {
+		t.Fatalf("开局后仍然应当可以退出，实际 %v", err)
+	}
+	// 取消也不受限制。
+	if err := f.games.Cancel(ctx, code, host); err != nil {
+		t.Fatalf("开局后仍然应当可以取消，实际 %v", err)
+	}
+}
+
+// 首页列表不显示已经过了宽限期的局，但宽限期内（还能补人）的还看得见。
+func TestListHidesGamesPastGrace(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	host := f.newUser("局头")
+
+	created, err := f.games.Create(ctx, host, games.CreateInput{
+		StartsAt: f.clk.Now().Add(30 * time.Minute),
+		Area:     "SCBD", Venue: "Pacific Place", Kind: "classic",
+	}, "")
+	if err != nil {
+		t.Fatalf("开局: %v", err)
+	}
+	code, start := created.Game.ShortCode, created.Game.StartsAt
+
+	// 开局后 1 小时：还在宽限期内，列表里应当有。
+	advanceTo(f, start.Add(time.Hour))
+	list, err := f.games.List(ctx, "SCBD", "", 20, 0)
+	if err != nil {
+		t.Fatalf("列表: %v", err)
+	}
+	if !hasCode(list, code) {
+		t.Fatalf("开局后 1 小时还在宽限期内，列表里应当有它，实际 %v", codes(list))
+	}
+
+	// 开局后 3 小时：过了宽限期，列表里不该再有。
+	advanceTo(f, start.Add(3*time.Hour))
+	list, err = f.games.List(ctx, "SCBD", "", 20, 0)
+	if err != nil {
+		t.Fatalf("列表: %v", err)
+	}
+	if hasCode(list, code) {
+		t.Fatalf("过了宽限期就不该再显示，实际 %v", codes(list))
+	}
+}
+
+// 配额只数「别人局里」的位置：自己开的局不占自己的名额（§10.8 修订）。
+func TestOwnGamesDoNotCountTowardsHoldQuota(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	user := f.newUser("又开局又报名")
+
+	// 自己开满 games.MaxGamesPerDay 局——这些都不该占他的 5 个名额。
+	for i := 0; i < games.MaxGamesPerDay; i++ {
+		if _, err := f.games.Create(ctx, user, games.CreateInput{
+			StartsAt: f.clk.Now().Add(2 * time.Hour),
+			Area:     "SCBD", Venue: "自己开的", Kind: "classic",
+		}, ""); err != nil {
+			t.Fatalf("开第 %d 局: %v", i+1, err)
+		}
+	}
+
+	// 别人开的局里，他仍然可以占满 5 个位置。
+	other := f.newUser("别人")
+	for i := 0; i < games.MaxConcurrentHolds; i++ {
+		code := f.newGame(other)
+		if _, err := f.games.Join(ctx, code, user); err != nil {
+			t.Fatalf("在别人的局里第 %d 次报名应当成功: %v", i+1, err)
+		}
+	}
+	code := f.newGame(other)
+	if _, err := f.games.Join(ctx, code, user); !errors.Is(err, games.ErrQuota) {
+		t.Fatalf("在别人的局里超过 5 个位置应当被配额拦下，实际 %v", err)
+	}
+}

@@ -83,9 +83,17 @@ func (s *Service) List(ctx context.Context, area, day string, limit, offset int)
 
 	now := s.clk.Now()
 	from, to := dayRange(now, day)
-	// 下界取「筛选区间的起点」和「现在」里更晚的那个：过去的局不该出现在列表里。
-	if from.Before(now) {
-		from = now
+	// 下界：已经开始了但还在 JoinGrace 之内的局仍然可以补人，所以列表里还要看得见；
+	// 超过宽限期的就不显示了。
+	//
+	// - 没筛日期：窗口就从宽限期起点开始（不能用 dayRange 返回的 now，
+	//   否则「一小时前刚开始、正缺人」的局会被漏掉）；
+	// - 筛了日期：取日期起点和宽限期起点里更晚的那个。
+	earliest := now.Add(-JoinGrace)
+	if day == "" {
+		from = earliest
+	} else if from.Before(earliest) {
+		from = earliest
 	}
 	if weekEnd := now.AddDate(0, 0, 7); to.After(weekEnd) {
 		to = weekEnd
@@ -275,7 +283,13 @@ func (s *Service) Join(ctx context.Context, code, userID string) (*Detail, error
 			return err
 		}
 
-		// 配额：同时最多占 5 个未开始局的座位或候补位（§10.8）。
+		// 开局后还能补人到 JoinGrace：缺一个人的局到点了，正是要临时补人的时候。
+		// 再晚就没意义了。（放在「已经在局里」之后，是为了让重复提交仍然幂等。）
+		if now.After(game.StartsAt.Add(JoinGrace)) {
+			return ErrStarted
+		}
+
+		// 配额：同时最多占 5 个别人局里的座位或候补位（§10.8）。
 		held, err := heldSlots(ctx, tx, userID, now)
 		if err != nil {
 			return err

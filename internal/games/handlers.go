@@ -378,6 +378,8 @@ func writeGameError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "banned", "你被移出过这一局")
 	case errors.Is(err, ErrNotHost):
 		writeError(w, http.StatusForbidden, "not_host", "只有局头能做这件事")
+	case errors.Is(err, ErrStarted):
+		writeError(w, http.StatusConflict, "game_started", "这一局已经开始了")
 	case errors.Is(err, ErrNotInGame):
 		writeError(w, http.StatusNotFound, "not_in_game", "这个人不在这一局里")
 	case errors.Is(err, ErrHostCantKickSelf):
