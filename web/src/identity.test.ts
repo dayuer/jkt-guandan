@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { redeemClaimFromURL, storedDeviceToken } from "./identity";
+import { hasIdentityMarker, redeemClaimFromURL } from "./identity";
 
 // 这些用例通过 window.location 驱动，和真实页面一致。
 function visit(search: string): void {
@@ -21,10 +21,10 @@ describe("redeemClaimFromURL", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("用 POST 兑换，把 token 双写到 localStorage，并清掉地址栏里的 claim", async () => {
+  it("用 POST 兑换，只留一个非敏感标记，并清掉地址栏里的 claim", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
-      json: async () => ({ user: { id: "u1", nickname: "老王" }, device_token: "tok" }),
+      json: async () => ({ user: { id: "u1", nickname: "老王" } }),
     }));
     vi.stubGlobal("fetch", fetchMock);
     visit("?claim=abc123&keep=1");
@@ -40,17 +40,20 @@ describe("redeemClaimFromURL", () => {
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({ token: "abc123" });
 
-    expect(storedDeviceToken()).toBe("tok");
+    // 只写非敏感标记；凭证留在 HttpOnly cookie 里，前端不存。
+    expect(hasIdentityMarker()).toBe(true);
+    expect(localStorage.length).toBe(1);
+
     // claim 参数清掉了，其它参数保留。
     expect(window.location.search).toBe("?keep=1");
   });
 
-  it("兑换失败时返回 null，地址栏参数留着以便重试", async () => {
+  it("兑换失败时返回 null，不写标记，地址栏参数留着以便重试", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false })));
     visit("?claim=bad");
 
     expect(await redeemClaimFromURL()).toBeNull();
-    expect(storedDeviceToken()).toBeNull();
+    expect(hasIdentityMarker()).toBe(false);
     expect(window.location.search).toBe("?claim=bad");
   });
 });

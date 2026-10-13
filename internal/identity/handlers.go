@@ -129,12 +129,9 @@ func (h *handler) createMe(w http.ResponseWriter, r *http.Request) {
 		h.svc.Cookies().Set(w, deviceToken, CookieMaxAge)
 	}
 
-	resp := map[string]any{"user": toUserJSON(ident.User)}
-	if deviceToken != "" {
-		// 明文 token 只在这里回一次，前端拿去镜像到 localStorage；库里只存 sha256（§10.3）。
-		resp["device_token"] = deviceToken
-	}
-	writeJSON(w, http.StatusOK, resp)
+	// 明文 token 只走 Set-Cookie，不放进响应体：cookie 是 HttpOnly 的，
+	// 一旦在响应体里回一次，JS 就能读到，HttpOnly 也就没意义了（§10.3）。
+	writeJSON(w, http.StatusOK, map[string]any{"user": toUserJSON(ident.User)})
 }
 
 // getMe 返回当前身份和本用户的设备列表（§10.3 的 10「我的」）。
@@ -232,10 +229,7 @@ func (h *handler) redeemClaim(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.svc.Cookies().Set(w, deviceToken, CookieMaxAge)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"user":         toUserJSON(ident.User),
-			"device_token": deviceToken,
-		})
+		writeJSON(w, http.StatusOK, map[string]any{"user": toUserJSON(ident.User)})
 
 	case body.Code != "":
 		// 认领码只给还没有身份的设备用（§5.2）。已经有身份时也返回同一个错误，
@@ -254,10 +248,7 @@ func (h *handler) redeemClaim(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.svc.Cookies().Set(w, deviceToken, CookieMaxAge)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"user":         toUserJSON(ident.User),
-			"device_token": deviceToken,
-		})
+		writeJSON(w, http.StatusOK, map[string]any{"user": toUserJSON(ident.User)})
 
 	default:
 		writeError(w, http.StatusBadRequest, "bad_request", "需要 token 或 code")

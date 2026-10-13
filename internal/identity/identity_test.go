@@ -20,6 +20,17 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/store"
 )
 
+// 写这个包的测试时踩过的两个坑，记在这儿省得再踩：
+//
+//  1. **必须用 `httptest.NewTLSServer`，不能用 `NewServer`。** 生产环境的 cookie 叫
+//     `__Host-gd_dev`、带 `Secure`，而 cookie jar 不会把 Secure cookie 发回普通 http
+//     地址，用 `NewServer` 的话服务端永远认不出身份，症状是「创建成功但下一个请求 401」。
+//  2. **`srv.Client()` 每次返回的是同一个 `*http.Client` 指针。** 想在它上面设 `Jar`
+//     来模拟「另一个浏览器」，会把所有浏览器串成同一个。要自己 new 一个 client，
+//     只复用它的 `Transport`（见 newBrowser）。
+//
+// 另外：cookie 的属性（Secure / HttpOnly / SameSite）只能从原始的 Set-Cookie 响应头上看，
+// jar 取回来的 cookie 只剩名字和值。
 const testOrigin = "https://guandan.id"
 
 type fixture struct {
@@ -195,17 +206,18 @@ func TestCreateIdentityServesCookieAndToken(t *testing.T) {
 		t.Fatalf("称呼 %q", got)
 	}
 
-	token := resp.str("device_token")
-	if token == "" {
-		t.Fatal("新建身份时应当回传一次明文 device_token，供前端写 localStorage")
+	if _, ok := resp.body["device_token"]; ok {
+		t.Fatal("响应体里不能出现 device_token：它只该走 Set-Cookie（HttpOnly）")
 	}
-
 	cookie := f.deviceCookie(f.http)
 	if cookie == nil {
 		t.Fatal("应当下发设备 cookie")
 	}
-	if cookie.Value != token {
-		t.Fatalf("cookie 值和回传的 token 不一致：%q vs %q", cookie.Value, token)
+	if cookie.Value == "" {
+		t.Fatal("cookie 值不该为空")
+	}
+	if strings.Contains(resp.raw, cookie.Value) {
+		t.Fatal("响应体里出现了 cookie 的值，等于把 HttpOnly 绕过去了")
 	}
 
 	// GET /api/me 能认出同一个人，并列出设备。
@@ -304,6 +316,33 @@ func TestDevCookieAttributes(t *testing.T) {
 	}
 }
 
+// 任何响应体里都不能出现 device_token 明文——它只走 Set-Cookie（§10.3）。
+// 一旦在响应体里回一次，JS 就能读到，HttpOnly 就白设了。
+func TestNoResponseBodyLeaksDeviceToken(t *testing.T) {
+	f := newFixture(t, false)
+
+	created := f.do(http.MethodPost, "/api/me", map[string]string{"nickname": "老王"})
+	assertTokenOnlyInCookie(t, created)
+
+	token := f.do(http.MethodPost, "/api/claim", nil).str("claim_token")
+	byToken := f.doWith(f.newBrowser(), http.MethodPost, "/api/claim/redeem", map[string]string{"token": token})
+	assertTokenOnlyInCookie(t, byToken)
+
+	code := f.do(http.MethodPost, "/api/claim", nil).str("code")
+	byCode := f.doWith(f.newBrowser(), http.MethodPost, "/api/claim/redeem", map[string]string{"code": code})
+	assertTokenOnlyInCookie(t, byCode)
+}
+
+func assertTokenOnlyInCookie(t *testing.T, resp response) {
+	t.Helper()
+	if strings.Contains(resp.raw, "device_token") {
+		t.Fatalf("响应体里出现了 device_token：%s", resp.raw)
+	}
+	if resp.header.Get("Set-Cookie") == "" {
+		t.Fatal("响应应当通过 Set-Cookie 下发设备凭证")
+	}
+}
+
 func TestCreateIdentityRejectsBadNickname(t *testing.T) {
 	f := newFixture(t, false)
 
@@ -336,8 +375,8 @@ func TestCreateIdentityIsIdempotent(t *testing.T) {
 	if first != second {
 		t.Fatalf("已有身份的人再提交不该新建用户：%s vs %s", first, second)
 	}
-	if resp := f.do(http.MethodPost, "/api/me", map[string]string{"nickname": "老王"}); resp.str("device_token") != "" {
-		t.Fatal("没有新建设备时不该再回传明文 token")
+	if resp := f.do(http.MethodPost, "/api/me", map[string]string{"nickname": "老王"}); resp.body["device_token"] != nil {
+		t.Fatal("响应体里不该有 device_token")
 	}
 }
 
@@ -386,8 +425,8 @@ func TestRedeemByTokenMovesIdentityToNewBrowser(t *testing.T) {
 	if redeemed.userField("id") != original {
 		t.Fatalf("应当认回同一个 user_id：%s vs %s", redeemed.userField("id"), original)
 	}
-	if redeemed.str("device_token") == "" {
-		t.Fatal("兑换成功应当给新设备下发 token")
+	if _, ok := redeemed.body["device_token"]; ok {
+		t.Fatal("响应体里不该有明文 device_token，凭证只走 Set-Cookie")
 	}
 	if f.deviceCookie(other) == nil {
 		t.Fatal("新浏览器应当拿到设备 cookie")
