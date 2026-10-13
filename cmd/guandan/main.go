@@ -21,6 +21,7 @@ import (
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/config"
+	"github.com/dayuer/jkt-guandan/internal/games"
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/internal/identity"
 	"github.com/dayuer/jkt-guandan/internal/store"
@@ -109,6 +110,8 @@ func run() error {
 	_ = bgCtx
 
 	identitySvc := identity.NewService(st, clk, cfg.Dev)
+	// pub 暂时是空实现：#18 的 Hub 合进来之后，把它换成 realtime 的 Hub 即可（§5.5）。
+	gamesSvc := games.NewService(st, clk, nil)
 
 	srv := &http.Server{
 		Addr: cfg.Addr,
@@ -119,6 +122,7 @@ func run() error {
 			Clock:  clk,
 			RegisterRoutes: func(mux *http.ServeMux) {
 				identity.Register(mux, identitySvc)
+				games.Register(mux, gamesSvc, identitySvc)
 			},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
