@@ -42,6 +42,11 @@ func newFixture(t *testing.T, dev bool) *fixture {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
+	// open 之后要显式跑迁移（§12.1 的顺序：quick_check 在迁移之前）。
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("执行迁移: %v", err)
+	}
+
 	clk := clock.NewFake(time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC))
 	svc := identity.NewService(st, clk, dev)
 
