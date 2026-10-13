@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 )
 
 // Snapshot 用 VACUUM INTO 把当前数据库写成一个独立的快照文件（§13.3）。
@@ -50,7 +49,8 @@ type SnapshotInfo struct {
 }
 
 // VerifySnapshot 只读打开一个快照文件，执行 quick_check，并确认它是本程序能用的库：
-// 有 schema_migrations，且没有本程序不认识的迁移（§13.3：校验通过才算备份成功、才能恢复）。
+// 有 schema_migrations，且没有本程序不认识的 breaking 迁移（§13.3：校验通过才算备份成功、才能恢复）。
+// 不认识的兼容迁移放行，规则和启动时的 migrate 一致。
 func VerifySnapshot(ctx context.Context, path string) (SnapshotInfo, error) {
 	if _, err := os.Stat(path); err != nil {
 		return SnapshotInfo{}, fmt.Errorf("快照文件: %w", err)
@@ -70,43 +70,53 @@ func VerifySnapshot(ctx context.Context, path string) (SnapshotInfo, error) {
 		return SnapshotInfo{}, fmt.Errorf("快照 quick_check 检出问题: %s", result)
 	}
 
-	rows, err := db.QueryContext(ctx, `SELECT name FROM schema_migrations ORDER BY name`)
+	var info SnapshotInfo
+
+	var applied map[string]bool
+	has, err := hasBreakingColumn(ctx, db)
 	if err != nil {
 		return SnapshotInfo{}, fmt.Errorf("快照里读不到 schema_migrations，不是本程序的数据库: %w", err)
 	}
-	defer rows.Close()
-	var info SnapshotInfo
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return SnapshotInfo{}, err
-		}
-		info.Migrations = append(info.Migrations, name)
+	if has {
+		applied, err = appliedMigrations(ctx, db)
+	} else {
+		applied, err = legacyAppliedMigrations(ctx, db) // 加 breaking 列之前的快照
 	}
-	if err := rows.Err(); err != nil {
-		return SnapshotInfo{}, err
+	if err != nil {
+		return SnapshotInfo{}, fmt.Errorf("快照里读不到 schema_migrations，不是本程序的数据库: %w", err)
 	}
-	if len(info.Migrations) == 0 {
+	if len(applied) == 0 {
 		return SnapshotInfo{}, errors.New("快照里没有任何迁移记录，不是本程序的数据库")
 	}
+	for name := range applied {
+		info.Migrations = append(info.Migrations, name)
+	}
+	sort.Strings(info.Migrations)
 
+	// 规则和启动时一样：不认识的兼容迁移放行，不认识的 breaking 迁移拒绝。
 	known, err := migrationNames()
 	if err != nil {
 		return SnapshotInfo{}, err
 	}
-	knownSet := make(map[string]bool, len(known))
-	for _, n := range known {
-		knownSet[n] = true
-	}
-	var unknown []string
-	for _, n := range info.Migrations {
-		if !knownSet[n] {
-			unknown = append(unknown, n)
-		}
-	}
-	if len(unknown) > 0 {
-		sort.Strings(unknown)
-		return SnapshotInfo{}, fmt.Errorf("快照来自更新的版本，含本程序不认识的迁移 %s", strings.Join(unknown, "、"))
+	if err := checkUnknown(ctx, applied, known); err != nil {
+		return SnapshotInfo{}, fmt.Errorf("快照来自更新的版本：%w", err)
 	}
 	return info, nil
+}
+
+func legacyAppliedMigrations(ctx context.Context, db *sql.DB) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM schema_migrations`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	applied := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		applied[name] = false
+	}
+	return applied, rows.Err()
 }

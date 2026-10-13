@@ -2,6 +2,7 @@
 # 在本机或 CI 上验证 scripts/deploy-remote.sh（服务器端的发布逻辑），不需要 nginx 和 ssh：
 # 用一个临时目录当 /var/www/guandan，用容器自己的端口当 SITE_URL。
 # 用法：scripts/test-deploy.sh <已经 build 好的镜像，如 guandan:ci>
+# 在仓库根目录执行：场景 6 要用当前提交的源码另外构建一个带额外迁移的镜像。
 set -eu
 GOOD=${1:?"用法：scripts/test-deploy.sh <镜像>"}
 PORT=${PORT:-28480}
@@ -14,7 +15,7 @@ export NAME=guandan-deploytest VOLUME=guandan-deploytest-data IMAGE_REPO=$REPO P
 cleanup() {
   docker rm -f "$NAME" "$NAME-prev" >/dev/null 2>&1 || true
   docker volume rm "$VOLUME" >/dev/null 2>&1 || true
-  for t in good0 good1 good2 good3 broken; do docker rmi "$REPO:$t" >/dev/null 2>&1 || true; done
+  for t in good0 good1 good2 good3 broken migrated-base migrated; do docker rmi "$REPO:$t" >/dev/null 2>&1 || true; done
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -81,4 +82,20 @@ expect "current" "$(current)" good2
 expect "镜像" "$(image)" "$REPO:good2"
 curl -fsS "http://127.0.0.1:$PORT/readyz"; echo
 
-echo "== 通过：发布、清理旧版本、三种失败的回滚都符合预期"
+echo "== 6. 新版本先跑完一条兼容迁移、然后才失败：旧版本照常起来（coord 对 #34 的裁定）"
+# 用当前提交的源码加一条兼容迁移构建新版本，再让它监听一个非法端口：迁移跑完后才退出。
+src="$work/src"
+mkdir -p "$src"
+git archive HEAD | tar -x -C "$src"
+printf -- '-- 测试用的兼容迁移\nCREATE TABLE deploytest_compat (x INTEGER);\n' > "$src/migrations/0999_deploytest_compat.sql"
+docker build -q -t "$REPO:migrated-base" "$src" >/dev/null
+printf 'FROM %s\nENV GUANDAN_ADDR=:99999\n' "$REPO:migrated-base" | docker build -q -t "$REPO:migrated" - >/dev/null
+stage migrated
+deploy migrated "已回滚，旧版本恢复服务"
+expect "current" "$(current)" good2
+expect "镜像" "$(image)" "$REPO:good2"
+docker logs "$NAME" 2>&1 | grep -q "不认识的兼容迁移" || { echo "失败：旧版本日志里没有「不认识的兼容迁移」，新版本的迁移可能没跑"; exit 1; }
+docker logs "$NAME" 2>&1 | grep "不认识的兼容迁移" | tail -1
+curl -fsS "http://127.0.0.1:$PORT/readyz"; echo
+
+echo "== 通过：发布、清理旧版本、四种失败的回滚都符合预期"

@@ -109,7 +109,7 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 		t.Fatalf("读迁移记录: %v", err)
 	}
 	if count != 2 {
-		t.Fatalf("迁移记录应为 2 条（0001、0002），实际 %d 条", count)
+		t.Fatalf("迁移记录应为 2 条（0001、0003），实际 %d 条", count)
 	}
 }
 
@@ -129,8 +129,8 @@ func TestOpenDoesNotMigrate(t *testing.T) {
 	}
 }
 
-// 库里有本程序不认识的迁移（降级）时拒绝启动。
-func TestMigrateRefusesUnknownMigration(t *testing.T) {
+// 降级或回滚到旧版本：库里有本程序不认识的兼容迁移时照常启动（coord 对 #34 的裁定）。
+func TestMigrateAllowsUnknownCompatibleMigration(t *testing.T) {
 	dir := t.TempDir()
 	st := openDir(t, dir)
 	mustExec(t, st, `INSERT INTO schema_migrations (name, applied_at) VALUES ('9999_from_the_future.sql', 0)`)
@@ -141,9 +141,26 @@ func TestMigrateRefusesUnknownMigration(t *testing.T) {
 		t.Fatalf("重新打开: %v", err)
 	}
 	defer again.Close()
+	if err := again.Migrate(context.Background()); err != nil {
+		t.Fatalf("不认识的兼容迁移应放行，实际 %v", err)
+	}
+}
+
+// 库里有本程序不认识、并且标记了 breaking 的迁移时拒绝启动，并指向 runbook。
+func TestMigrateRefusesUnknownBreakingMigration(t *testing.T) {
+	dir := t.TempDir()
+	st := openDir(t, dir)
+	mustExec(t, st, `INSERT INTO schema_migrations (name, applied_at, breaking) VALUES ('9999_drop_column.sql', 0, 1)`)
+	_ = st.Close()
+
+	again, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("重新打开: %v", err)
+	}
+	defer again.Close()
 	err = again.Migrate(context.Background())
-	if err == nil || !contains(err.Error(), "9999_from_the_future.sql") {
-		t.Fatalf("应当拒绝不认识的迁移，实际 %v", err)
+	if err == nil || !contains(err.Error(), "9999_drop_column.sql") || !contains(err.Error(), "runbook") {
+		t.Fatalf("应当拒绝不认识的 breaking 迁移并指向 runbook，实际 %v", err)
 	}
 }
 

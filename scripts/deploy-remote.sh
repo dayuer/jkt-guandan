@@ -23,7 +23,9 @@ IMAGE_REPO=${IMAGE_REPO:-guandan}
 PORT=${PORT:-18200}                     # 宿主机的 8080、8443 被别的服务占着，只能用这个
 WEB_ROOT=${WEB_ROOT:-/var/www/guandan}
 VOLUME=${VOLUME:-guandan-data}
-ENV_FILE=${ENV_FILE:-/etc/guandan/guandan.env}
+ENV_FILE=${ENV_FILE:-/etc/guandan/env}
+# 容器看到的对端是 docker 网桥网关（coord 在服务器上确认过），只信任它传来的 X-Real-IP（#35）。
+TRUSTED_PROXIES=${TRUSTED_PROXIES-172.17.0.1/32}
 PUBLIC_URL=${PUBLIC_URL:-https://guandan.synon.ai}
 SITE_URL=${SITE_URL:-$PUBLIC_URL}       # 切换后经 nginx 检查的地址；设为空跳过
 MEMORY=${MEMORY:-256m}
@@ -48,7 +50,7 @@ start() {
     --memory "$MEMORY" --stop-timeout 30 \
     --log-opt max-size=10m --log-opt max-file=5 \
     -p "127.0.0.1:$PORT:8080" -v "$VOLUME:/data" \
-    -e GUANDAN_PUBLIC_URL="$PUBLIC_URL" "$@" \
+    -e GUANDAN_PUBLIC_URL="$PUBLIC_URL" -e GUANDAN_TRUSTED_PROXIES="$TRUSTED_PROXIES" "$@" \
     "$img" >/dev/null
 }
 
@@ -111,7 +113,7 @@ if exists "$NAME"; then
   HAD_PREV=1
   log "旧版本：$(docker container inspect -f '{{.Config.Image}}' "$NAME")"
   if running "$NAME"; then
-    # 给回滚留一个最新的恢复点：新版本如果跑了旧版本不认识的迁移，旧版本会拒绝启动（runbook §2.2）。
+    # 给回滚留一个最新的恢复点：新版本如果跑了 breaking 迁移，旧版本会拒绝启动（runbook §2.2）。
     if docker exec "$NAME" /guandan backup now >/dev/null 2>&1; then
       log "发布前备份完成"
     else
@@ -141,7 +143,7 @@ rollback() {
   if wait_ready; then
     log "已回滚，旧版本恢复服务"
   else
-    log "回滚后旧版本也没有就绪。日志里如果是「不认识的迁移」，按 docs/runbook.md §2.2 用发布前的快照恢复"
+    log "回滚后旧版本也没有就绪。日志里如果是「不兼容迁移」，按 docs/runbook.md §2.2 用发布前的快照恢复"
   fi
   exit 1
 }

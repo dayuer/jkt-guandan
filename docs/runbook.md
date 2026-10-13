@@ -13,14 +13,14 @@
 - **服务器**：新加坡 `root@43.156.128.95`，Debian 12，Docker 26，nginx 1.22。**同机跑着很多其他生产服务**：可用内存约 1.4 GB，磁盘已用 67%。
 - **容器**：`guandan`，镜像 `guandan:<短 SHA>`，只映射到 `127.0.0.1:18200`（宿主机的 8080、8443 被别的服务占着，**绝不能映射到这两个端口**）。参数：`--read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m`。数据卷 `guandan-data`。不设 `GUANDAN_DOMAIN`，容器内只走 HTTP；`GUANDAN_PUBLIC_URL=https://guandan.synon.ai`。
 - **nginx 站点**：`/etc/nginx/sites-available/guandan.synon.ai` 加片段 `/etc/nginx/snippets/guandan-security.conf`，由 coord 维护。仓库里的模板是 [deploy/nginx/](../deploy/nginx/)，两边要保持一致。站点里关掉了 `open_file_cache`，所以切换 `current` 后**不需要 reload nginx**。
-- **客户端 IP**：DNS 只做解析，不走 Cloudflare 代理。nginx 用 `$remote_addr` 覆盖设置 `X-Real-IP`，用 `$proxy_add_x_forwarded_for` 设置 `X-Forwarded-For`。应用只在对端属于 `GUANDAN_TRUSTED_PROXIES`（默认 127.0.0.1 和 docker 网桥）时才看这两个头。
+- **客户端 IP**：DNS 只做解析，不走 Cloudflare 代理。nginx 用 `$remote_addr` 覆盖设置 `X-Real-IP`，用 `$proxy_add_x_forwarded_for` 设置 `X-Forwarded-For`。应用默认不信任任何代理；部署脚本给容器设 `GUANDAN_TRUSTED_PROXIES=172.17.0.1/32`（容器看到的对端就是网桥网关），只有来自它的这两个头才被采用。启动日志里的 `trusted_proxies` 字段会显示生效值。
 - **不要在服务器上改别的站点、别的服务，也不要改全局 nginx 配置。**
 
 ## 1. 上线前准备
 
 ### 1.1 环境变量文件
 
-备份相关的配置写进服务器上的 `/etc/guandan/guandan.env`（`chmod 600`，属主 root）。`scripts/deploy-remote.sh` 启动容器时会用 `--env-file` 读它；`GUANDAN_PUBLIC_URL` 由脚本直接传入，不用写在这里。
+备份相关的配置写进服务器上的 `/etc/guandan/env`（`chmod 600`，属主 root）。`scripts/deploy-remote.sh` 启动容器时会用 `--env-file` 读它；`GUANDAN_PUBLIC_URL` 和 `GUANDAN_TRUSTED_PROXIES` 由脚本直接传入，不用写在这里。
 
 ```bash
 # 异地备份（上线前必须配置，§13.3）
@@ -34,6 +34,14 @@ AWS_SECRET_ACCESS_KEY=…
 - `GUANDAN_BACKUP_URL` 用 path-style 地址，AWS S3、Cloudflare R2、Backblaze B2、MinIO 都支持，例如 `https://s3.ap-southeast-1.amazonaws.com/guandan-backup/prod`。也可以写 `file:///某个目录`，把备份放到挂进容器的网络盘上。
 - bucket 凭据只给这一个 bucket（最好限定到这个前缀）的 `PutObject`、`GetObject`、`ListBucket`、`DeleteObject` 四项权限。
 - 远端超过 30 天的备份，服务每小时会自己删除。bucket 上另外配一条 35 天过期的生命周期规则兜底。
+- **上线前检查项：在真实的 bucket 上验证一次。** S3 签名只用 AWS 官方样例和本地的假 S3 测过。仓库所有者提供 bucket 之后，配置好上面的变量，在服务器上执行：
+
+  ```bash
+  docker exec guandan /guandan backup now    # 应输出「异地备份：….db.age 已上传」
+  docker exec guandan /guandan backup list   # 异地列表里能看到刚才那份
+  ```
+
+  再按第 4 节，用 `restore -i <私钥> latest` 在一个临时数据卷上恢复一次，确认能解密、能通过校验。
 
 ### 1.2 生成备份密钥
 
@@ -72,7 +80,7 @@ scripts/deploy.sh            # 发布当前 HEAD；也可以写成 scripts/deplo
 1. 用 `git worktree` 取出这个提交的干净副本，未提交的改动不会被发布出去；
 2. 按服务器的 CPU 架构交叉编译镜像 `guandan:<短 SHA>`，构建号写进 `X-App-Build`；
 3. 用 `docker build --target web` 取出前端产物 `web/dist`，取完立刻删掉构建镜像；
-4. 用 `docker save | gzip | ssh docker load` 把镜像传上去。镜像只有十几 MB，服务器不用登录镜像仓库，也不用在服务器上构建（构建过程要占 350 MB，那台机器磁盘紧张）。服务器上已经有同名镜像就跳过；
+4. 把镜像送到服务器（服务器上已有同名镜像就跳过），两种方式见 2.4，默认是 `docker save | gzip | ssh docker load`；
 5. 把静态文件打包传到 `/var/www/guandan/<短 SHA>/`，先解压到临时目录再改名，不会出现解到一半的目录。
 
 **服务器部分**（`scripts/deploy-remote.sh`，通过 ssh 执行）：
@@ -87,9 +95,9 @@ scripts/deploy.sh            # 发布当前 HEAD；也可以写成 scripts/deplo
 
 **第 3–5 步任何一步失败**：删掉新容器，把 `guandan-prev` 改回原名并启动，`current` 指回原来的版本。脚本退出码为 1，并打印新容器最近的日志。
 
-可以用环境变量覆盖的项：`SSH_HOST`、`WEB_ROOT`、`PORT`、`MEMORY`、`PUBLIC_URL`、`SITE_URL`、`READY_TIMEOUT`、`KEEP`。
+可以用环境变量覆盖的项：`SSH_HOST`、`WEB_ROOT`、`IMAGE_SOURCE`、`PORT`、`MEMORY`、`PUBLIC_URL`、`TRUSTED_PROXIES`、`SITE_URL`、`READY_TIMEOUT`、`KEEP`。
 
-`make deploy-test` 会在本机用 Docker 验证服务器部分（不需要 nginx 和 ssh），覆盖以下场景：首次发布、升级并清理旧版本、新版本起不来、`current` 是真目录、切换后站点检查失败。CI 每次都会跑这个测试。
+`make deploy-test` 会在本机用 Docker 验证服务器部分（不需要 nginx 和 ssh），覆盖以下场景：首次发布、升级并清理旧版本、新版本起不来、`current` 是真目录、切换后站点检查失败、新版本跑完一条兼容迁移后才失败。CI 每次都会跑这个测试。
 
 ### 2.1 手动回滚到更早的版本
 
@@ -100,21 +108,39 @@ ssh root@43.156.128.95 'ls -t /var/www/guandan; docker image ls guandan'
 ssh root@43.156.128.95 'env SHA=<旧短 SHA> sh -s' < scripts/deploy-remote.sh
 ```
 
-### 2.2 回滚失败：旧版本拒绝新迁移
+### 2.2 迁移和回滚
 
-迁移只做向前兼容的修改，但旧版本的程序发现库里有它不认识的迁移时，会拒绝启动（防止降级把数据写坏）。所以，如果新版本已经执行了新迁移，之后才没能就绪，回滚时旧容器就起不来，日志里会出现「不认识的迁移」。这时在服务器上执行：
+迁移默认必须向前兼容（§12.1：只加表、加列）。旧版本的程序遇到库里多出来、自己不认识的兼容迁移时，会记一条 warn 日志，然后照常启动。所以**普通发布的自动回滚始终有效**：即使新版本跑完迁移之后才失败，旧版本也能起来。`make deploy-test` 的场景 6 验证的就是这一点。
+
+只有标记了 breaking 的迁移会让旧版本拒绝启动（见 2.3）。如果发布 breaking 迁移之后需要回滚，旧容器会起不来，日志里出现「不兼容迁移」。这时在服务器上执行：
 
 ```bash
 docker rm -f guandan                       # 确保没有容器在用数据卷
-# 用发布前那份快照恢复（第 1 步做的，在本地快照目录里，未加密）
+# 用发布前那份快照恢复（2. 的第 1 步做的，在本地快照目录里，未加密）
 docker run --rm -v guandan-data:/data -e GUANDAN_PUBLIC_URL=https://guandan.synon.ai \
   guandan:<旧短 SHA> backup list
 docker run --rm -v guandan-data:/data -e GUANDAN_PUBLIC_URL=https://guandan.synon.ai \
   guandan:<旧短 SHA> restore /data/backup/guandan-<发布前的时间>.db
-env SHA=<旧短 SHA> sh deploy-remote.sh     # 或者在本机按 2.1 执行
 ```
 
-从发布前备份到回滚之间写入的数据会丢失，通常只有几十秒。
+然后在本机按 2.1 发布旧版本。从发布前备份到回滚之间写入的数据会丢失。
+
+### 2.3 breaking 迁移：发布前人工确认
+
+会破坏旧版本的迁移（删列、改列的含义、加更严格的约束），文件开头必须写一行 `-- breaking: <原因>`。`migrate` 会在 `schema_migrations` 里给它记上 `breaking=1`。规则：
+
+- **编号由 coord 分配**，在 PR 描述里写「申请 000N」；编号重复时程序拒绝启动。
+- 加 breaking 迁移的 PR 要把文件名加进 `internal/store/migrate_internal_test.go` 的 `confirmedBreaking`，否则测试失败。这样做是为了让作者和复审方必须在 PR 里明确确认。
+- **发布前**：先确认这个版本不需要回滚，或者已经接受「回滚要从发布前快照恢复，会丢失这段时间的数据」；选一个低峰时段；发布后盯一会儿日志。
+
+### 2.4 镜像怎么送到服务器
+
+| 方式 | 用法 | 前提 |
+|---|---|---|
+| **ssh（默认）** | `scripts/deploy.sh` | 能 ssh 到服务器。不需要任何镜像仓库凭据；压缩后约 6 MB |
+| **GHCR** | `IMAGE_SOURCE=ghcr scripts/deploy.sh` | 本机执行过 `docker login ghcr.io`（token 要有 `write:packages`）；服务器能拉到镜像：要么仓库所有者在 GitHub 的 Packages 设置里把 `jkt-guandan` 设为公开，要么在服务器上执行 `docker login ghcr.io`（token 只给 `read:packages`） |
+
+两种方式下，服务器上的镜像名都是 `guandan:<短 SHA>`；GHCR 方式拉下来之后会重新打成这个名字，并删掉 GHCR 的标签。
 
 ## 3. 备份
 
@@ -144,7 +170,7 @@ docker stop guandan
 install -m 600 -o 65532 /dev/stdin /root/guandan-key.txt   # 粘贴 AGE-SECRET-KEY-… 后按 Ctrl-D
 
 # 3. 恢复。参数可以是 latest（异地最新一份）、异地对象名或本地快照路径
-docker run --rm --env-file /etc/guandan/guandan.env -e GUANDAN_PUBLIC_URL=https://guandan.synon.ai \
+docker run --rm --env-file /etc/guandan/env -e GUANDAN_PUBLIC_URL=https://guandan.synon.ai \
   -v guandan-data:/data -v /root/guandan-key.txt:/key.txt:ro \
   guandan:<当前短 SHA> restore -i /key.txt latest
 
@@ -181,7 +207,7 @@ make restore-drill        # 等价于 docker build 之后执行 scripts/restore-
 | 旧机器启动，`seed --force` | 12 个用户、5 个牌局 |
 | `backup now` | 本地快照 188 KB，加密对象 `guandan-20261013T164341Z.db.age` 上传到「异地」，文件头是 `age-encryption.org/v1` |
 | 删掉旧机器 | — |
-| 新机器的空数据卷上执行 `restore -i /key.txt latest` | 取到最新的一份，迁移 `0001_init.sql、0002_bans.sql`，校验通过 |
+| 新机器的空数据卷上执行 `restore -i /key.txt latest` | 取到最新的一份，迁移 `0001_init.sql、0003_bans.sql`，校验通过 |
 | 新机器启动 | `/readyz` 200；`admin stats` 显示 12 个用户、5 个牌局，与旧机器一致；`X-App-Build` 和 `/metrics` 正常 |
 | 服务运行时执行 restore | 被拒绝：「数据目录 /data 已被另一个实例占用；恢复前先停服务」 |
 

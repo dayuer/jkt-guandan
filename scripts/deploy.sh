@@ -7,20 +7,29 @@
 # 容器只听 127.0.0.1:18200。
 #   1. 用 git worktree 取出这个提交的干净副本，构建镜像 guandan:<短 SHA>（按服务器的 CPU 架构交叉编译）
 #      和前端产物 web/dist（docker build --target web，取完就删构建镜像）；
-#   2. 镜像用 docker save | gzip | ssh docker load 传过去：镜像只有十几 MB，服务器不用登录镜像仓库，
-#      也不用在服务器上构建（构建镜像 350 MB，那台机器磁盘紧张）；服务器上已有同名镜像就跳过；
+#   2. 把镜像送到服务器，两种方式（IMAGE_SOURCE）；服务器上已有同名镜像就跳过：
+#      - ssh（默认）：docker save | gzip | ssh docker load。镜像约 6 MB，不需要任何凭据，
+#        也不用在服务器上构建（构建镜像 350 MB，那台机器磁盘紧张）；
+#      - ghcr：本机 docker push 到 ghcr.io/dayuer/jkt-guandan:<短 SHA>，服务器 docker pull。
+#        需要本机 docker login ghcr.io（write:packages），并且 package 设为公开或服务器也 login 过，
+#        见 runbook §2.4；
 #   3. 静态文件打包传到 /var/www/guandan/<短 SHA>/（先解到临时目录再改名，不会出现半个目录）；
 #   4. 在服务器上执行 scripts/deploy-remote.sh：换容器 → 等 /readyz → 切 current → 失败就全部回滚。
 #
 # 环境变量：
-#   SSH_HOST   默认 root@43.156.128.95
-#   WEB_ROOT   默认 /var/www/guandan
+#   SSH_HOST      默认 root@43.156.128.95
+#   WEB_ROOT      默认 /var/www/guandan
+#   IMAGE_SOURCE  ssh（默认）或 ghcr
+#   GHCR_REPO     默认 ghcr.io/dayuer/jkt-guandan
 #   其余（PORT、MEMORY、PUBLIC_URL、READY_TIMEOUT、KEEP……）原样传给 deploy-remote.sh
 set -eu
 
 REF=${1:-HEAD}
 SSH_HOST=${SSH_HOST:-root@43.156.128.95}
 WEB_ROOT=${WEB_ROOT:-/var/www/guandan}
+IMAGE_SOURCE=${IMAGE_SOURCE:-ssh}
+GHCR_REPO=${GHCR_REPO:-ghcr.io/dayuer/jkt-guandan}
+case "$IMAGE_SOURCE" in ssh | ghcr) ;; *) echo "IMAGE_SOURCE 只能是 ssh 或 ghcr" >&2; exit 2 ;; esac
 
 log() { printf '[deploy] %s\n' "$*"; }
 
@@ -57,6 +66,12 @@ docker rmi "guandan-web:$SHA" >/dev/null
 
 if ssh "$SSH_HOST" docker image inspect "guandan:$SHA" >/dev/null 2>&1; then
   log "服务器上已有镜像 guandan:$SHA，跳过上传"
+elif [ "$IMAGE_SOURCE" = ghcr ]; then
+  log "推送 $GHCR_REPO:$SHA，服务器从 GHCR 拉取"
+  docker tag "guandan:$SHA" "$GHCR_REPO:$SHA"
+  docker push -q "$GHCR_REPO:$SHA" >/dev/null
+  # 服务器上统一叫 guandan:<短 SHA>，deploy-remote.sh 和清理旧版本都按这个名字找。
+  ssh "$SSH_HOST" "docker pull -q '$GHCR_REPO:$SHA' >/dev/null && docker tag '$GHCR_REPO:$SHA' 'guandan:$SHA' && docker rmi '$GHCR_REPO:$SHA' >/dev/null"
 else
   log "上传镜像（docker save | gzip | ssh docker load）"
   docker save "guandan:$SHA" | gzip | ssh "$SSH_HOST" 'gunzip | docker load -q' >/dev/null
@@ -74,7 +89,7 @@ tar -C "$work/dist" -czf - . | ssh "$SSH_HOST" "set -eu
 log "在服务器上切换"
 # 只把 deploy-remote.sh 认识的变量传过去。
 env_args="SHA=$SHA WEB_ROOT=$WEB_ROOT"
-for v in NAME PORT VOLUME ENV_FILE PUBLIC_URL SITE_URL MEMORY READY_TIMEOUT KEEP; do
+for v in NAME PORT VOLUME ENV_FILE PUBLIC_URL SITE_URL MEMORY READY_TIMEOUT KEEP TRUSTED_PROXIES; do
   eval "val=\${$v-}"
   # shellcheck disable=SC2154 # val 由上面的 eval 赋值
   [ -n "$val" ] && env_args="$env_args $v='$val'"

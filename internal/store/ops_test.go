@@ -72,15 +72,25 @@ func TestVerifySnapshotRejectsGarbageAndForeignDB(t *testing.T) {
 		t.Fatal("乱码文件应校验失败")
 	}
 
+	// 规则和启动时一样：不认识的兼容迁移放行，不认识的 breaking 迁移拒绝。
 	st := openTest(t)
-	mustExec(t, st, `INSERT INTO schema_migrations (name, applied_at) VALUES ('9999_future.sql', 0)`)
+	mustExec(t, st, `INSERT INTO schema_migrations (name, applied_at) VALUES ('9998_future_compat.sql', 0)`)
+	compat := filepath.Join(dir, "compat.db")
+	if err := st.Snapshot(context.Background(), compat); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.VerifySnapshot(context.Background(), compat); err != nil {
+		t.Fatalf("含不认识的兼容迁移的快照应放行，实际 %v", err)
+	}
+
+	mustExec(t, st, `INSERT INTO schema_migrations (name, applied_at, breaking) VALUES ('9999_future_breaking.sql', 0, 1)`)
 	newer := filepath.Join(dir, "newer.db")
 	if err := st.Snapshot(context.Background(), newer); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.VerifySnapshot(context.Background(), newer); err == nil ||
-		!strings.Contains(err.Error(), "9999_future.sql") {
-		t.Fatalf("含不认识迁移的快照应拒绝，实际 %v", err)
+		!strings.Contains(err.Error(), "9999_future_breaking.sql") {
+		t.Fatalf("含不认识的 breaking 迁移的快照应拒绝，实际 %v", err)
 	}
 }
 

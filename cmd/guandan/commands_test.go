@@ -91,7 +91,7 @@ func TestCommandsBackupAndRestoreDrill(t *testing.T) {
 	newMachine := t.TempDir()
 	setEnv(t, newMachine, remote, recipient)
 	out := r.ok("restore", "-i", keyFile, "latest")
-	if !strings.Contains(out, "已从 file://") || !strings.Contains(out, "0001_init.sql、0002_bans.sql") {
+	if !strings.Contains(out, "已从 file://") || !strings.Contains(out, "0001_init.sql、0003_bans.sql") {
 		t.Fatalf("restore 输出：%s", out)
 	}
 	if out := r.ok("admin", "stats", "--since", "1d"); !strings.Contains(out, "新牌局  5") {
