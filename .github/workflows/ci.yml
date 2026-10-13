@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  # 分支保护要求的必过检查，名字必须是 test（docs/server-design.md §9）。
+  # 分支保护要求的必过检查，job 名必须是 test（docs/server-design.md §9）。
   test:
     runs-on: ubuntu-latest
     steps:
@@ -29,6 +29,9 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
       - name: 安装前端依赖
         run: cd web && npm ci
 
@@ -36,11 +39,15 @@ jobs:
         run: cd web && npm run build
 
       # 放在构建之后，这样 httpapi 的用例能验证真的被打进二进制的前端页面。
-      - name: go test
-        run: go test ./...
+      # -race 需要 CGO，只在测试里打开，发布构建仍然是 CGO_ENABLED=0。
+      - name: go test -race
+        run: go test -race ./...
 
       - name: 前端测试
         run: cd web && npm test
+
+      - name: 前端依赖审计
+        run: cd web && npm audit --omit=dev
 
       - name: docker build
         run: docker build -t guandan:ci .
@@ -56,9 +63,14 @@ jobs:
           echo "--- /healthz"
           curl -fsS http://127.0.0.1:8080/healthz
           echo
+          echo "--- /readyz"
+          curl -fsS http://127.0.0.1:8080/readyz
+          echo
           echo "--- /"
           curl -fsS http://127.0.0.1:8080/ | grep -q 'id="app"'
           echo "内嵌页面已提供"
+          echo "--- 安全响应头"
+          curl -fsSI http://127.0.0.1:8080/ | grep -i 'content-security-policy'
 
       - name: 容器日志
         if: always()
