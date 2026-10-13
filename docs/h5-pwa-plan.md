@@ -74,12 +74,12 @@
 
 ## 7. 技术栈
 
-- 前端：静态 H5 + Service Worker + Web App Manifest，部署在 Netlify，绑定自定义域名，并准备 1 个备用域名应对微信拦截。
-- 后端：Netlify Functions（API）+ Scheduled Functions（每 5 分钟扫描待发提醒）。
-- 存储：Supabase（Postgres），表：`users`、`devices`、`claim_tokens`、`games`、`seats`、`push_subscriptions`、`reminders`。
-- 推送：`web-push` 库 + VAPID；订阅失效（410）时清理。
-- 07「蛋蛋」：Netlify Function 调用 LLM，流式输出；超时时退回到表单（08 屏）。
-- OG 图：Netlify Edge Function 按 `game_id` 动态出图。
+> 2026-10-13 变更：放弃 Netlify + Supabase，改用 **Go 单一二进制 + 内嵌 SQLite + 单个 Docker 镜像**。完整设计见 [server-design.md](server-design.md)。
+
+- 前端：Preact + Vite 构建成 H5，加上 Service Worker 和 Web App Manifest，构建产物用 `embed` 打进 Go 二进制。
+- 服务端：一个 Go 进程，负责 API、静态页面、`/g/:code` 的 OG 注入、海报和 OG 图渲染、.ics、outbox 定时提醒和 Web Push。
+- 数据库：SQLite（WAL 模式），数据文件放在 `/data` 卷；每小时快照，并加密上传异地（上线前必须配置）。
+- 部署：雅加达或新加坡的 VPS，`docker run` 一个容器；内置 autocert 签发 HTTPS 证书，主域名和备用域名可以同时配置。
 
 ## 8. 指标
 
@@ -92,7 +92,8 @@
 
 ## 9. 风险
 
-- **微信拦截域名**：备用域名；分享以海报为主，链接为辅。
+- **微信拦截域名**：备用域名（`GUANDAN_DOMAIN` 支持同时配置多个域名）；分享以海报为主，链接为辅。
+- **单机部署**：只有一台 VPS，自己负责备份和探活，见 server-design.md §8。
 - **iOS 安装漏斗太长**：iOS 的提醒以日历为主，推送为辅，这个预期要提前定好。
 - **无 GMS 机型占比高**（华人用户多国行机）：上线第一周统计推送能力检测的失败率，超过 40% 时提高 WhatsApp 兜底的优先级。
 

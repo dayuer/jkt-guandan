@@ -1,0 +1,148 @@
+package config_test
+
+import (
+	"testing"
+
+	"github.com/dayuer/jkt-guandan/internal/config"
+)
+
+func clearEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"GUANDAN_DATA", "GUANDAN_ADDR", "GUANDAN_DOMAIN", "GUANDAN_PUBLIC_URL",
+		"GUANDAN_ADMIN_EMAIL", "GUANDAN_DEV", "GUANDAN_BACKUP_URL",
+		"GUANDAN_BACKUP_KEY", "ANTHROPIC_API_KEY",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
+// §12.1 第 1 步：值不合法就直接退出。
+func TestLoadRejectsBackupURLWithoutKey(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("GUANDAN_PUBLIC_URL", "https://guandan.id")
+	t.Setenv("GUANDAN_BACKUP_URL", "s3://bucket/backup")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("设置了备份地址却没有加密公钥，应当报错")
+	}
+}
+
+func TestLoadRejectsAutocertWithoutAdminEmail(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("GUANDAN_DOMAIN", "guandan.id")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("启用 autocert 却没有管理员邮箱，应当报错")
+	}
+}
+
+// 非开发模式下不知道本站域名，CSRF 会把所有写请求拒掉，所以启动时就要报错。
+func TestLoadRequiresPublicURLOrDomainOutsideDev(t *testing.T) {
+	clearEnv(t)
+	if _, err := config.Load(); err == nil {
+		t.Fatal("非开发模式下 GUANDAN_PUBLIC_URL 和 GUANDAN_DOMAIN 都没设，应当报错")
+	}
+
+	t.Setenv("GUANDAN_DEV", "1")
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("开发模式可以不设: %v", err)
+	}
+}
+
+func TestLoadRejectsMalformedPublicURL(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("GUANDAN_PUBLIC_URL", "guandan.id")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("没有 scheme 的 GUANDAN_PUBLIC_URL 应当报错")
+	}
+}
+
+func TestLoadDefaults(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("GUANDAN_PUBLIC_URL", "http://127.0.0.1:8080")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DataDir != "/data" {
+		t.Fatalf("DataDir = %q", cfg.DataDir)
+	}
+	if cfg.Addr != ":8080" {
+		t.Fatalf("Addr = %q", cfg.Addr)
+	}
+	if cfg.TLSAddr != config.DefaultTLSAddr {
+		t.Fatalf("TLSAddr = %q", cfg.TLSAddr)
+	}
+	if cfg.TLSEnabled() {
+		t.Fatal("没有域名时不该启用 TLS")
+	}
+}
+
+func TestLoadDerivesPublicURLFromDomain(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("GUANDAN_DOMAIN", "guandan.id,backup.example.com")
+	t.Setenv("GUANDAN_ADMIN_EMAIL", "a@b.c")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PublicURL != "https://guandan.id" {
+		t.Fatalf("PublicURL = %q", cfg.PublicURL)
+	}
+	if len(cfg.Domains()) != 2 {
+		t.Fatalf("Domains = %v", cfg.Domains())
+	}
+	if !cfg.TLSEnabled() {
+		t.Fatal("有域名时应当启用 TLS")
+	}
+}
+
+func TestDevModeDisablesTLS(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("GUANDAN_DEV", "1")
+	t.Setenv("GUANDAN_DOMAIN", "guandan.id")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Dev {
+		t.Fatal("GUANDAN_DEV=1 应当进入开发模式")
+	}
+	if cfg.TLSEnabled() {
+		t.Fatal("开发模式不该启用 TLS")
+	}
+}
+
+// §10.5：CSRF 只接受本站来源。
+func TestAllowsOrigin(t *testing.T) {
+	cfg := config.Config{PublicURL: "https://guandan.id", Domain: "guandan.id,backup.example.com"}
+
+	for _, origin := range []string{"https://guandan.id", "https://backup.example.com"} {
+		if !cfg.AllowsOrigin(origin) {
+			t.Errorf("%s 应当被接受", origin)
+		}
+	}
+	for _, origin := range []string{"", "https://evil.example", "http://guandan.id", "null"} {
+		if cfg.AllowsOrigin(origin) {
+			t.Errorf("%q 不该被接受", origin)
+		}
+	}
+}
+
+// 开发模式下页面由 Vite 提供，所以要放行本机来源（§13.5）。
+func TestDevAllowsLocalOrigins(t *testing.T) {
+	cfg := config.Config{Dev: true}
+
+	for _, origin := range []string{"http://localhost:5173", "http://127.0.0.1:8080"} {
+		if !cfg.AllowsOrigin(origin) {
+			t.Errorf("%s 在开发模式下应当被接受", origin)
+		}
+	}
+	if cfg.AllowsOrigin("https://evil.example") {
+		t.Error("开发模式也不该接受外站来源")
+	}
+}

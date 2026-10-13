@@ -14,4 +14,4 @@ scripts/agents/sync.sh <coord|impl|auditor|design>
 - 提交信息、PR 描述不得含 AI 助手署名（CI 会拦）。
 - 进展落到 GitHub，不留在本机会话里。
 
-项目背景：[docs/h5-pwa-plan.md](docs/h5-pwa-plan.md)（方案）、[design/guandan-offline/redesign-prompts.md](design/guandan-offline/redesign-prompts.md)（设计改版）。
+项目背景：[docs/h5-pwa-plan.md](docs/h5-pwa-plan.md)（方案）、[docs/server-design.md](docs/server-design.md)（服务端：Go 单一二进制 + SQLite + Docker）、[design/guandan-offline/redesign-prompts.md](design/guandan-offline/redesign-prompts.md)（设计改版）。
