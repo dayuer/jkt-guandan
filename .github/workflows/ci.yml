@@ -29,6 +29,10 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # 每个反向代理的 location 都要写全转发头（#35 的前提），webroot、TLS 加固也要对。
+      - name: nginx 模板检查
+        run: scripts/check-nginx.sh deploy/nginx/guandan.synon.ai.conf
+
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
@@ -50,7 +54,7 @@ jobs:
         run: cd web && npm audit --omit=dev
 
       - name: docker build
-        run: docker build -t guandan:ci .
+        run: docker build --build-arg BUILD=${{ github.sha }} -t guandan:ci .
 
       # 按 §8 的部署参数跑：只读根文件系统、去掉全部 capability；
       # 非开发模式必须告诉它本站地址（config.Load 会检查）。
@@ -76,6 +80,8 @@ jobs:
           echo "内嵌页面已提供"
           echo "--- 安全响应头"
           curl -fsSI http://127.0.0.1:8080/ | grep -i 'content-security-policy'
+          echo "--- 构建号（§13.4）"
+          curl -fsSI http://127.0.0.1:8080/healthz | grep -i "x-app-build: ${{ github.sha }}"
           echo "--- Docker HEALTHCHECK（guandan healthcheck 子命令）"
           for _ in $(seq 1 30); do
             health=$(docker inspect -f '{{.State.Health.Status}}' guandan-ci)
@@ -85,6 +91,14 @@ jobs:
           echo "health=$health"
           test "$health" = healthy
 
+      # §13.4：服务器端的发布逻辑（deploy-remote.sh）：换容器、切 current、三种失败的回滚。
+      - name: 发布与回滚测试
+        run: scripts/test-deploy.sh guandan:ci
+
+      # §13.3：加密备份到「异地」，在全新数据卷上恢复，服务起来后数据都在。
+      - name: 恢复演练
+        run: scripts/restore-drill.sh guandan:ci
+
       - name: 容器日志
         if: always()
         run: docker logs guandan-ci 2>&1 || true
@@ -92,3 +106,4 @@ jobs:
       - name: 清理
         if: always()
         run: docker rm -f guandan-ci 2>/dev/null || true
+

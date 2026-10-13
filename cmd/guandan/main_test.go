@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -75,7 +76,7 @@ func TestShutdownDrainsHTTPBeforeStoppingBackground(t *testing.T) {
 
 	shutdownDone := make(chan struct{})
 	go func() {
-		shutdown(srv, stopBackground, group, st, lock)
+		shutdown([]*http.Server{srv}, stopBackground, group, st, lock)
 		close(shutdownDone)
 	}()
 
@@ -115,7 +116,7 @@ func TestShutdownDrainsHTTPBeforeStoppingBackground(t *testing.T) {
 	_ = again.Release()
 }
 
-func TestHealthzURL(t *testing.T) {
+func TestProbeURL(t *testing.T) {
 	for addr, want := range map[string]string{
 		"":               "http://127.0.0.1:8080/healthz",
 		":8080":          "http://127.0.0.1:8080/healthz",
@@ -123,12 +124,12 @@ func TestHealthzURL(t *testing.T) {
 		"[::]:9000":      "http://127.0.0.1:9000/healthz",
 		"127.0.0.1:8081": "http://127.0.0.1:8081/healthz",
 	} {
-		got, err := healthzURL(addr)
+		got, err := probeURL(addr, "/healthz")
 		if err != nil || got != want {
-			t.Errorf("healthzURL(%q) = %q, %v；期望 %q", addr, got, err, want)
+			t.Errorf("probeURL(%q) = %q, %v；期望 %q", addr, got, err, want)
 		}
 	}
-	if _, err := healthzURL("8080"); err == nil {
+	if _, err := probeURL("8080", "/healthz"); err == nil {
 		t.Error("没有冒号的地址应当报错")
 	}
 }
@@ -137,7 +138,7 @@ func TestHealthcheckExitCode(t *testing.T) {
 	var status atomic.Int32
 	status.Store(http.StatusOK)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" {
+		if r.URL.Path != "/healthz" && r.URL.Path != "/readyz" {
 			http.NotFound(w, r)
 			return
 		}
@@ -146,15 +147,54 @@ func TestHealthcheckExitCode(t *testing.T) {
 	defer srv.Close()
 	addr := srv.Listener.Addr().String()
 
-	if code := healthcheck(addr); code != 0 {
+	if code := healthcheck(addr, "/healthz"); code != 0 {
 		t.Fatalf("/healthz 返回 200 时退出码应为 0，实际 %d", code)
 	}
 	status.Store(http.StatusServiceUnavailable)
-	if code := healthcheck(addr); code != 1 {
+	if code := healthcheck(addr, "/healthz"); code != 1 {
 		t.Fatalf("/healthz 返回 503 时退出码应为 1，实际 %d", code)
 	}
 	srv.Close()
-	if code := healthcheck(addr); code != 1 {
+	if code := healthcheck(addr, "/healthz"); code != 1 {
 		t.Fatalf("连不上时退出码应为 1，实际 %d", code)
+	}
+}
+
+func TestHealthcheckReadyChecksReadyz(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("GUANDAN_ADDR", srv.Listener.Addr().String())
+	var out, errOut strings.Builder
+	c := cmdIO{out: &out, errOut: &errOut}
+	if code := c.run("healthcheck", nil); code != 0 {
+		t.Fatalf("/healthz 200 时应退出 0，实际 %d", code)
+	}
+	if code := c.run("healthcheck", []string{"--ready"}); code != 1 {
+		t.Fatalf("/readyz 503 时应退出 1，实际 %d", code)
+	}
+}
+
+func TestMetricsCommandPrintsLocalMetrics(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte("guandan_build_info{build=\"x\"} 1\n"))
+	}))
+	defer srv.Close()
+	t.Setenv("GUANDAN_METRICS_ADDR", srv.Listener.Addr().String())
+	var out, errOut strings.Builder
+	if code := (cmdIO{out: &out, errOut: &errOut}).run("metrics", nil); code != 0 {
+		t.Fatalf("退出码 %d：%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "guandan_build_info") {
+		t.Fatalf("输出 %q", out.String())
 	}
 }

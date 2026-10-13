@@ -2,14 +2,17 @@
 GO ?= go
 NPM ?= npm
 
-.PHONY: help web-install web-build build vet go-test race-test vuln web-test test run docker clean
+.PHONY: help web-install web-build build vet go-test race-test vuln web-test test run seed docker deploy-test restore-drill clean
 
 help:
 	@echo "make build    构建二进制（会先构建前端，再用 embed 打进去）"
 	@echo "make run      开发模式跑起来：GUANDAN_DEV=1，监听 :8080，数据写在 ./.data"
 	@echo "make test     go vet + 后端测试（-race）+ 前端测试"
 	@echo "make vuln     govulncheck"
+	@echo "make seed     往 ./.data 写入设计稿里的示例数据"
 	@echo "make docker   构建 Docker 镜像"
+	@echo "make deploy-test    用 Docker 验证 scripts/deploy.sh 的自动回滚"
+	@echo "make restore-drill  用 Docker 演练备份恢复（docs/runbook.md）"
 
 web-install:
 	cd web && $(NPM) ci
@@ -17,8 +20,12 @@ web-install:
 web-build: web-install
 	cd web && $(NPM) run build
 
+BUILD ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+
 build: web-build
-	CGO_ENABLED=0 $(GO) build -trimpath -ldflags="-s -w" -o bin/guandan ./cmd/guandan
+	CGO_ENABLED=0 $(GO) build -trimpath \
+		-ldflags="-s -w -X github.com/dayuer/jkt-guandan/internal/buildinfo.Build=$(BUILD)" \
+		-o bin/guandan ./cmd/guandan
 
 vet:
 	$(GO) vet ./...
@@ -39,8 +46,17 @@ test: vet web-build race-test web-test
 run: build
 	GUANDAN_DEV=1 GUANDAN_DATA=./.data ./bin/guandan
 
+seed: build
+	GUANDAN_DEV=1 GUANDAN_DATA=./.data ./bin/guandan seed
+
 docker:
-	docker build -t guandan:local .
+	docker build --build-arg BUILD=$(BUILD) -t guandan:local .
+
+deploy-test: docker
+	scripts/test-deploy.sh guandan:local
+
+restore-drill: docker
+	scripts/restore-drill.sh guandan:local
 
 clean:
 	rm -rf bin .data web/dist/*

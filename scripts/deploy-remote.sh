@@ -1,0 +1,251 @@
+#!/bin/sh
+# 发布的服务器端部分（docs/runbook.md §2）。由 scripts/deploy.sh 通过 ssh 执行，
+# 也可以在服务器上直接跑：SHA=<短 SHA> sh scripts/deploy-remote.sh
+#
+# 前提（deploy.sh 已经做好）：镜像 guandan:<SHA> 已 docker load，静态文件已放在 $WEB_ROOT/<SHA>/。
+# 步骤：
+#   0. 预检：镜像在、静态文件在、$WEB_ROOT/current 要么不存在、要么是符号链接（是目录就停）
+#   1. 停旧容器（优雅关闭），改名为 guandan-prev
+#   2. 用新镜像做一次冷备份（不迁移、只做本地快照）；失败就中止发布、旧容器原样拉起来。
+#      新镜像没有 backup 子命令时用旧版本的镜像；都没有就拒绝，除非 ALLOW_NO_BACKUP=1
+#   3. 启动新容器，等 /readyz，最多 READY_TIMEOUT 秒
+#   4. 原子切换 current 符号链接（rename(2)；nginx 站点关了 open_file_cache，不用 reload）
+#   5. 切换后经 nginx 再确认一次（SITE_URL）
+#   任何一步失败：删新容器、旧容器原样启动回来、current 指回原来的版本，退出码 1。
+#   旧容器起不来（新版本已经执行了它不认识的迁移）时，用第 2 步的快照恢复数据库再拉起旧容器。
+#   6. 成功：删 guandan-prev，只保留最近 KEEP 个版本的静态目录和镜像（服务器磁盘紧张）。
+#
+# 只动这几样东西：容器 $NAME / $NAME-prev、镜像 guandan:<SHA>、$WEB_ROOT 下面的目录。
+# 不碰 nginx 配置和别的服务。
+set -eu
+
+: "${SHA:?需要 SHA（镜像 tag 和静态目录名）}"
+NAME=${NAME:-guandan}
+IMAGE_REPO=${IMAGE_REPO:-guandan}
+PORT=${PORT:-18200}                     # 宿主机的 8080、8443 被别的服务占着，只能用这个
+WEB_ROOT=${WEB_ROOT:-/var/www/guandan}
+VOLUME=${VOLUME:-guandan-data}
+# 服务器上由 coord 建好（600），里面有 GUANDAN_PUBLIC_URL 和 GUANDAN_TRUSTED_PROXIES=172.17.0.1/32，
+# 备份相关的变量等 bucket 定下来再加（runbook §1.1）。
+ENV_FILE=${ENV_FILE:-/etc/guandan/guandan.env}
+PUBLIC_URL=${PUBLIC_URL:-https://guandan.synon.ai}
+SITE_URL=${SITE_URL:-$PUBLIC_URL}       # 切换后经 nginx 检查的地址；设为空跳过
+MEMORY=${MEMORY:-256m}
+READY_TIMEOUT=${READY_TIMEOUT:-60}
+KEEP=${KEEP:-5}
+
+IMAGE="$IMAGE_REPO:$SHA"
+PREV="$NAME-prev"
+CURRENT="$WEB_ROOT/current"
+
+log() { printf '[deploy] %s\n' "$*"; }
+die() { log "$*"; exit 1; }
+exists() { docker container inspect "$1" >/dev/null 2>&1; }
+running() { [ "$(docker container inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = true ]; }
+
+start() {
+  img=$1
+  # 可信代理、备份地址和密钥写在 $ENV_FILE 里（runbook §1.1）。没有这个文件也能起：
+  # 只是不做异地备份，并且不信任任何代理（按 IP 限流退化成按网桥地址）。
+  if [ -r "$ENV_FILE" ]; then set -- --env-file "$ENV_FILE"; else set --; fi
+  docker run -d --name "$NAME" --restart unless-stopped \
+    --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --memory "$MEMORY" --stop-timeout 30 \
+    --log-opt max-size=10m --log-opt max-file=5 \
+    -p "127.0.0.1:$PORT:8080" -v "$VOLUME:/data" \
+    -e GUANDAN_PUBLIC_URL="$PUBLIC_URL" "$@" \
+    "$img" >/dev/null
+}
+
+wait_ready() {
+  i=0
+  # 重启次数是容器整个生命周期累计的（回滚时拉起的旧容器以前可能重启过），所以和开始等待时比。
+  restarts0=$(docker container inspect -f '{{.RestartCount}}' "$NAME")
+  while [ "$i" -lt "$READY_TIMEOUT" ]; do
+    if docker exec "$NAME" /guandan healthcheck --ready >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! running "$NAME"; then
+      log "容器 $NAME 已退出"
+      return 1
+    fi
+    # --restart unless-stopped 会把崩溃的进程一直拉起来，看重启次数才知道它其实起不来。
+    if [ "$(docker container inspect -f '{{.RestartCount}}' "$NAME")" -gt "$restarts0" ]; then
+      log "容器 $NAME 启动后崩溃重启过"
+      return 1
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  log "$READY_TIMEOUT 秒内 /readyz 没有返回 200："
+  docker exec "$NAME" /guandan healthcheck --ready 2>&1 | sed 's/^/[deploy]   /' || true
+  return 1
+}
+
+# 原子地把 current 指向 $1：先建临时链接，再 rename(2) 覆盖。rename 不跟随符号链接，
+# 不会出现「链接建到目录里面」的问题（ln -sfn 碰到 current 是真目录时就会这样）。
+switch_current() {
+  tmp="$WEB_ROOT/.current.$$"
+  ln -s "$1" "$tmp"
+  perl -e 'rename($ARGV[0], $ARGV[1]) or die "rename: $!\n"' "$tmp" "$CURRENT"
+}
+
+site_ok() {
+  [ -z "$SITE_URL" ] && return 0
+  curl -fsS --max-time 10 "$SITE_URL/readyz" >/dev/null &&
+    curl -fsS --max-time 10 "$SITE_URL/" | grep -q 'id="app"'
+}
+
+# ---- 0. 预检：在动任何东西之前 ----
+docker image inspect "$IMAGE" >/dev/null 2>&1 || die "镜像 $IMAGE 不存在，先 docker load"
+[ -f "$WEB_ROOT/$SHA/index.html" ] || die "静态文件 $WEB_ROOT/$SHA/index.html 不存在"
+PREV_CURRENT=""
+if [ -L "$CURRENT" ]; then
+  PREV_CURRENT=$(readlink "$CURRENT")
+elif [ -e "$CURRENT" ]; then
+  die "$CURRENT 存在但不是符号链接。请人工确认后改成指向某个版本目录的符号链接，再重新发布"
+fi
+log "镜像 $IMAGE，静态文件 $WEB_ROOT/$SHA，当前前端 ${PREV_CURRENT:-（无）}"
+
+if exists "$PREV"; then
+  log "清理上次遗留的 $PREV"
+  docker rm -f "$PREV" >/dev/null
+fi
+
+# ---- 1、2. 停旧、冷备份 ----
+# 先停旧容器，再用**新镜像**做一次冷备份（不迁移、只做本地快照）：
+#   - 不依赖旧二进制有没有 backup 子命令（#34 之前的版本没有）；
+#   - 停服之后做，快照就是旧版本最后的状态；
+#   - backup 子命令从不迁移数据库（#34 复审第 3 条），快照是迁移前的。
+# 备份失败就中止发布、把旧容器原样拉起来：回滚靠的就是这份快照，没有它就没有退路。
+#
+# 做备份和恢复用的镜像必须带 org.jkt-guandan.ops 标签（有 backup / restore 子命令）：更早的二进制不认识
+# 子命令，会直接起一个服务、永远不返回。优先用新镜像；新镜像没有（比如手动回滚到 #34 之前的版本），
+# 就用正在跑的旧版本的镜像；都没有就拒绝发布，除非显式设 ALLOW_NO_BACKUP=1。
+has_ops() { [ -n "$(docker image inspect -f '{{index .Config.Labels "org.jkt-guandan.ops"}}' "$1" 2>/dev/null)" ]; }
+
+cold_backup() {
+  # 只传本站地址（config 校验要用）；不读 env 文件，所以不会去异地上传。
+  docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
+    -v "$VOLUME:/data" -e GUANDAN_PUBLIC_URL="$PUBLIC_URL" \
+    "$OPS_IMAGE" backup now --local --if-exists --no-migrate
+}
+
+HAD_PREV=0
+SNAPSHOT=""
+OPS_IMAGE=""
+if has_ops "$IMAGE"; then
+  OPS_IMAGE=$IMAGE
+elif exists "$NAME" && has_ops "$(docker container inspect -f '{{.Config.Image}}' "$NAME")"; then
+  OPS_IMAGE=$(docker container inspect -f '{{.Config.Image}}' "$NAME")
+fi
+if [ -z "$OPS_IMAGE" ] && [ "${ALLOW_NO_BACKUP:-0}" != 1 ]; then
+  die "新旧镜像都没有 backup 子命令，做不了发布前冷备份。确认可以不备份（比如首次部署到空数据卷）就加 ALLOW_NO_BACKUP=1"
+fi
+if exists "$NAME"; then
+  HAD_PREV=1
+  log "旧版本：$(docker container inspect -f '{{.Config.Image}}' "$NAME")"
+  log "停止旧容器（优雅关闭，最多 30 秒）"
+  docker stop -t 30 "$NAME" >/dev/null
+  docker rename "$NAME" "$PREV"
+fi
+if [ -z "$OPS_IMAGE" ]; then
+  out=""
+  log "警告：ALLOW_NO_BACKUP=1，跳过发布前冷备份"
+elif ! out=$(cold_backup 2>&1); then
+  printf '%s\n' "$out" | sed 's/^/[deploy]   /'
+  log "发布前冷备份失败，中止发布"
+  if [ "$HAD_PREV" = 1 ]; then
+    docker rename "$PREV" "$NAME"
+    docker start "$NAME" >/dev/null
+    if wait_ready; then log "旧版本已原样恢复服务"; else log "旧版本没有就绪，请人工检查"; fi
+  fi
+  exit 1
+fi
+SNAPSHOT=$(printf '%s\n' "$out" | sed -n 's/^本地快照：//p')
+log "发布前冷备份：${SNAPSHOT:-（还没有数据库，跳过）}"
+
+# restore_snapshot 把发布前的快照放回数据卷（旧容器必须已经停下，restore 要拿数据目录锁）。
+restore_snapshot() {
+  docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
+    -v "$VOLUME:/data" -e GUANDAN_PUBLIC_URL="$PUBLIC_URL" \
+    "$OPS_IMAGE" restore "$SNAPSHOT"
+}
+
+rollback() {
+  log "最近的日志："
+  docker logs --tail 30 "$NAME" 2>&1 | sed 's/^/[deploy]   /' || true
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  if [ -n "$PREV_CURRENT" ] && [ "$(readlink "$CURRENT" 2>/dev/null)" != "$PREV_CURRENT" ]; then
+    switch_current "$PREV_CURRENT"
+    log "前端已切回 $PREV_CURRENT"
+  fi
+  if [ "$HAD_PREV" = 0 ]; then
+    log "发布失败，没有旧版本可以回滚"
+    exit 1
+  fi
+  log "回滚到旧容器"
+  docker rename "$PREV" "$NAME"
+  docker start "$NAME" >/dev/null
+  if wait_ready; then
+    log "已回滚，旧版本恢复服务"
+    exit 1
+  fi
+  # 旧版本起不来，多半是新版本已经执行了它不认识的迁移（#34 之前的版本遇到任何不认识的迁移都拒绝启动；
+  # 之后的版本只拒绝 breaking 迁移）。用发布前的冷备份恢复，再拉起旧版本。
+  if [ -z "$SNAPSHOT" ]; then
+    log "回滚后旧版本也没有就绪，并且没有发布前快照可用，请按 docs/runbook.md §2.2 人工处理"
+    exit 1
+  fi
+  log "旧版本起不来，用发布前的快照恢复数据库：$SNAPSHOT（新版本运行期间的写入会丢失）"
+  docker stop -t 30 "$NAME" >/dev/null
+  if ! rout=$(restore_snapshot 2>&1); then
+    printf '%s\n' "$rout" | sed 's/^/[deploy]   /'
+    log "恢复失败，请按 docs/runbook.md §2.2 人工处理"
+    exit 1
+  fi
+  printf '%s\n' "$rout" | sed 's/^/[deploy]   /'
+  docker start "$NAME" >/dev/null
+  if wait_ready; then
+    log "已从发布前快照恢复，旧版本恢复服务"
+  else
+    log "恢复快照后旧版本仍然没有就绪，请人工检查"
+  fi
+  exit 1
+}
+
+# ---- 3. 启新、等就绪 ----
+log "启动 $IMAGE（127.0.0.1:$PORT → :8080，内存上限 $MEMORY）"
+if ! start "$IMAGE" || ! wait_ready; then
+  log "新版本没有就绪"
+  rollback
+fi
+log "/readyz 通过"
+
+# ---- 4、5. 切前端、经 nginx 确认 ----
+switch_current "$SHA"
+log "前端已切到 $SHA"
+if ! site_ok; then
+  log "经 nginx 访问 $SITE_URL 失败"
+  rollback
+fi
+
+# ---- 6. 收尾 ----
+[ "$HAD_PREV" = 1 ] && docker rm "$PREV" >/dev/null
+# 只保留最近 KEEP 个版本（按目录修改时间）。
+kept=0
+# 版本目录名都是十六进制的短 SHA，没有空格，按 ls -t 遍历是安全的。
+# shellcheck disable=SC2045
+for d in $(ls -1t "$WEB_ROOT"); do
+  case "$d" in current | .*) continue ;; esac
+  [ -d "$WEB_ROOT/$d" ] || continue
+  kept=$((kept + 1))
+  # 当前版本和上一个版本（手动回滚的目标）无论如何都留着。
+  if [ "$kept" -le "$KEEP" ] || [ "$d" = "$SHA" ] || [ "$d" = "$PREV_CURRENT" ]; then continue; fi
+  rm -rf "${WEB_ROOT:?}/$d"
+  if docker image inspect "$IMAGE_REPO:$d" >/dev/null 2>&1; then
+    docker rmi "$IMAGE_REPO:$d" >/dev/null 2>&1 || true
+  fi
+  log "清理旧版本 $d"
+done
+log "发布成功：$IMAGE 已就绪，前端 $SHA"

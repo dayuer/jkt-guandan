@@ -144,8 +144,8 @@ func TestOpenDoesNotMigrate(t *testing.T) {
 	}
 }
 
-// 库里有本程序不认识的迁移（降级）时拒绝启动。
-func TestMigrateRefusesUnknownMigration(t *testing.T) {
+// 降级或回滚到旧版本：库里有本程序不认识的兼容迁移时照常启动（coord 对 #34 的裁定）。
+func TestMigrateAllowsUnknownCompatibleMigration(t *testing.T) {
 	dir := t.TempDir()
 	st := openDir(t, dir)
 	mustExec(t, st, `INSERT INTO schema_migrations (name, applied_at) VALUES ('9999_from_the_future.sql', 0)`)
@@ -156,9 +156,26 @@ func TestMigrateRefusesUnknownMigration(t *testing.T) {
 		t.Fatalf("重新打开: %v", err)
 	}
 	defer again.Close()
+	if err := again.Migrate(context.Background()); err != nil {
+		t.Fatalf("不认识的兼容迁移应放行，实际 %v", err)
+	}
+}
+
+// 库里有本程序不认识、并且标记了 breaking 的迁移时拒绝启动，并指向 runbook。
+func TestMigrateRefusesUnknownBreakingMigration(t *testing.T) {
+	dir := t.TempDir()
+	st := openDir(t, dir)
+	mustExec(t, st, `INSERT INTO schema_migrations (name, applied_at, breaking) VALUES ('9999_drop_column.sql', 0, 1)`)
+	_ = st.Close()
+
+	again, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("重新打开: %v", err)
+	}
+	defer again.Close()
 	err = again.Migrate(context.Background())
-	if err == nil || !contains(err.Error(), "9999_from_the_future.sql") {
-		t.Fatalf("应当拒绝不认识的迁移，实际 %v", err)
+	if err == nil || !contains(err.Error(), "9999_drop_column.sql") || !contains(err.Error(), "runbook") {
+		t.Fatalf("应当拒绝不认识的 breaking 迁移并指向 runbook，实际 %v", err)
 	}
 }
 
@@ -514,4 +531,31 @@ func countKV(t *testing.T, st *store.Store, k string) int {
 		t.Fatalf("查询 kv: %v", err)
 	}
 	return n
+}
+
+// 只读的子命令靠 MigrationStatus 判断 schema 状态，它自己不能改库。
+func TestMigrationStatusIsReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	fresh, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, unknown, err := fresh.MigrationStatus(context.Background())
+	if err != nil || len(pending) < 2 || len(unknown) != 0 {
+		t.Fatalf("新库：pending=%v unknown=%v err=%v", pending, unknown, err)
+	}
+	if got := tables(t, fresh); len(got) != 0 {
+		t.Fatalf("MigrationStatus 不该建表：%v", got)
+	}
+	_ = fresh.Close()
+
+	st := openDir(t, dir)
+	pending, _, err = st.MigrationStatus(context.Background())
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("迁移完：pending=%v err=%v", pending, err)
+	}
+	mustExec(t, st, `INSERT INTO schema_migrations (name, applied_at, breaking) VALUES ('9999_x.sql', 0, 1)`)
+	if _, unknown, _ := st.MigrationStatus(context.Background()); len(unknown) != 1 || unknown[0] != "9999_x.sql" {
+		t.Fatalf("unknown breaking = %v", unknown)
+	}
 }

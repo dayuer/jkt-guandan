@@ -16,6 +16,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/config"
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
+	"github.com/dayuer/jkt-guandan/internal/metrics"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
 	"github.com/dayuer/jkt-guandan/web"
@@ -420,6 +421,47 @@ func TestMiddlewareKeepsHijackerAndFlusher(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("接管连接后应收到 101，实际 %d", resp.StatusCode)
+	}
+}
+
+// §13.4：每个响应都带构建号；§13.7：请求数和耗时进 /metrics。
+func TestBuildHeaderAndRequestMetrics(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var reg metrics.Registry
+	stats := metrics.NewHTTP(&reg)
+	srv := httptest.NewServer(httpapi.New(httpapi.Options{
+		Config:  config.Config{DataDir: dir},
+		Store:   st,
+		Build:   "cfc0bf8",
+		Metrics: stats,
+	}))
+	t.Cleanup(srv.Close)
+
+	// 不用 SPA 兜底的路径：没先构建前端时 /api/nope 会是 503（auditor 在 #34 的建议）。
+	for _, path := range []string{"/healthz", "/readyz", "/healthz"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("X-App-Build"); got != "cfc0bf8" {
+			t.Fatalf("%s 的 X-App-Build = %q", path, got)
+		}
+	}
+
+	var out strings.Builder
+	reg.WriteTo(context.Background(), &out)
+	if !strings.Contains(out.String(), `guandan_http_requests_total{code="2xx"} 3`) ||
+		!strings.Contains(out.String(), "guandan_http_request_duration_seconds_count 3") {
+		t.Fatalf("请求指标不对：\n%s", out.String())
 	}
 }
 
