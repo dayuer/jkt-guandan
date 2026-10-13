@@ -1,0 +1,29 @@
+name: 待决定事项
+description: 需要仓库所有者拍板的选择
+title: "[decision] "
+labels: ["type:decision", "needs-user", "status:triage"]
+body:
+  - type: dropdown
+    id: role
+    attributes:
+      label: 提出方
+      options: ["[coord]", "[impl]", "[auditor]", "[design]"]
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: 要决定什么
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: 选项与取舍
+      description: 每个选项一段：做法、代价、风险；标出推荐项
+    validations:
+      required: true
+  - type: textarea
+    id: deadline
+    attributes:
+      label: 不决定会阻塞什么
