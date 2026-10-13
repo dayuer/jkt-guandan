@@ -1,0 +1,56 @@
+name: issue-sync
+# Keeps GitHub the single source of truth (docs/agents/COORDINATION.md §8):
+#   - status: when a status:* label is added, every other status:* label is removed;
+#   - board:  the auto section of the coordination board is regenerated on any issue/PR/comment
+#             change and once a day as a fallback.
+# Label names are read from the event file with jq, never interpolated into the script.
+on:
+  issues:
+    types: [opened, labeled, unlabeled, closed, reopened]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened, reopened, synchronize, closed, ready_for_review]
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: issue-sync
+  cancel-in-progress: false
+
+jobs:
+  single-status:
+    if: github.event_name == 'issues' && github.event.action == 'labeled' && startsWith(github.event.label.name, 'status:')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: drop other status labels
+        run: |
+          set -eu
+          n=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
+          new=$(jq -r '.label.name' "$GITHUB_EVENT_PATH")
+          jq -r --arg new "$new" '.issue.labels[].name | select(startswith("status:") and . != $new)' "$GITHUB_EVENT_PATH" |
+            while read -r old; do
+              gh issue edit "$n" --repo "$REPO" --remove-label "$old"
+              echo "#$n: removed $old (kept $new)"
+            done
+
+  board:
+    needs: [single-status]
+    if: always() && !(github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'board'))
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: refresh board
+        run: sh scripts/agents/board.sh

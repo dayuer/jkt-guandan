@@ -1,0 +1,52 @@
+name: 审计发现
+description: 一条审计发现（每条单独一个 issue）
+title: "[finding] "
+labels: ["type:finding", "status:triage"]
+body:
+  - type: dropdown
+    id: role
+    attributes:
+      label: 角色
+      options: ["[auditor]", "[coord]", "[impl]", "[design]"]
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: 优先级
+      description: P0 = 合并或进入下一阶段前必须修；P1 = 本阶段内修；P2 = 排进计划
+      options: ["P0", "P1", "P2"]
+    validations:
+      required: true
+  - type: input
+    id: sha
+    attributes:
+      label: 审计对象
+      description: 被审计的提交（40 位 SHA）或 PR 编号
+    validations:
+      required: true
+  - type: textarea
+    id: location
+    attributes:
+      label: 位置
+      description: 文件:行号，可多条
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现
+      description: 命令、输入与实际输出；能写成失败测试最好
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为与依据
+      description: 设计文档章节、上游代码位置或规范
+    validations:
+      required: true
+  - type: textarea
+    id: fix
+    attributes:
+      label: 建议修法（可选）

@@ -1,0 +1,42 @@
+name: 任务
+description: 一项可认领的工作
+title: "[task] "
+labels: ["type:task", "status:triage"]
+body:
+  - type: dropdown
+    id: role
+    attributes:
+      label: 角色
+      options: ["[coord]", "[impl]", "[auditor]", "[design]"]
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标
+      description: 做完是什么样子（完成标志）
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围
+      description: 涉及的文件或包；明确不做的内容
+    validations:
+      required: true
+  - type: textarea
+    id: refs
+    attributes:
+      label: 依据
+      description: 设计或计划的章节、相关的 issue 与 PR
+  - type: dropdown
+    id: owner
+    attributes:
+      label: 建议负责
+      options: ["impl", "auditor", "design", "coord"]
+  - type: dropdown
+    id: phase
+    attributes:
+      label: 阶段
+      description: 见 COORDINATION.md §9
+      options: ["phase:1", "phase:2", "phase:3"]
