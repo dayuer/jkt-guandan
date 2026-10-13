@@ -29,8 +29,8 @@
 ```
 cmd/guandan/main.go        入口：读配置 → 打开数据库 → 执行迁移 → 启动 HTTP 和定时任务
 internal/config            环境变量
-internal/store             SQLite 连接、迁移、事务封装（所有 SQL 只写在这里）
-internal/identity          用户、设备 token、claim token、认领码、身份合并
+internal/store             SQLite 连接、迁移、事务封装。业务包（identity、games…）可以写自己的 SQL，但只能通过 store.Write / store.Read 拿到的事务或连接执行；store 以外不允许持有 *sql.DB
+internal/identity          用户、设备 token、claim token、认领码、设备切换（合并只留给 admin）
 internal/games             牌局、报名（take_seat）、退出、改时间
 internal/notify            outbox 定时任务、Web Push 发送、订阅清理
 internal/realtime          WebSocket 接入、Hub（主题订阅与广播）、心跳、限流
@@ -50,7 +50,7 @@ CREATE TABLE users (
   id          TEXT PRIMARY KEY,            -- ULID
   nickname    TEXT NOT NULL,
   wa_phone    TEXT,                        -- 可选，绑定后用于找回
-  merged_into TEXT REFERENCES users(id),
+  merged_into TEXT REFERENCES users(id),   -- 只有 admin 合并会写入（§5.2：不提供面向用户的合并）
   created_at  INTEGER NOT NULL
 );
 CREATE TABLE devices (
@@ -62,13 +62,15 @@ CREATE TABLE devices (
 );
 CREATE TABLE claim_tokens (
   token_hash BLOB PRIMARY KEY,             -- sha256(claim_token)
-  code       TEXT NOT NULL,                -- 4 位认领码
+  code       TEXT NOT NULL,                -- 6 位认领码（#31）
   user_id    TEXT NOT NULL REFERENCES users(id),
   expires_at INTEGER NOT NULL,             -- 签发后 10 分钟
   used_at    INTEGER,
-  attempts   INTEGER NOT NULL DEFAULT 0
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  issued_net TEXT                          -- 签发时的客户端网络（IPv4 /24、IPv6 /64），兑换认领码时必须一致（0002_claim_net.sql）
 );
-CREATE INDEX claim_code_live ON claim_tokens(code) WHERE used_at IS NULL;
+-- 有效码唯一（0002_claim_net.sql 改为 UNIQUE；作废旧码时写 used_at 把号码让出来）
+CREATE UNIQUE INDEX claim_code_live ON claim_tokens(code) WHERE used_at IS NULL;
 CREATE TABLE games (
   id         TEXT PRIMARY KEY,
   short_code TEXT NOT NULL UNIQUE,         -- 链接里的短码：6 位 Crockford base32 随机串（如 /g/8K2QXM），防止逐个猜出所有局
@@ -215,12 +217,27 @@ CREATE INDEX events_name_at ON events(name, at);
 
 ### 5.2 身份
 
-- **首次填称呼**（`POST /api/me`）：创建 user 和 device，生成 32 字节随机的 `device_token`，以 cookie 形式下发：`__Host-gd_dev`，`HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=400 天`（§10.3）。数据库只存它的 sha256。
-- **跳出微信前**（`POST /api/claim`）：生成 16 字节随机的 `claim_token` 和 4 位认领码，10 分钟内有效。前端把 token 拼进跳出链接：`?claim=…`。
-- **兑换**（`POST /api/claim/redeem`）：
-  - 凭 token 兑换：`UPDATE claim_tokens SET used_at=? WHERE token_hash=? AND used_at IS NULL AND expires_at>? RETURNING user_id`。这一条语句同时保证「只能用一次」和「过期作废」。兑换成功后给新设备下发 cookie，前端立刻用 `history.replaceState` 清掉 URL 里的参数。
-  - 凭认领码兑换：只允许**还没有身份的设备**使用。每个码最多试 5 次（`attempts` 字段计数）；同一 IP 每分钟最多 10 次，用内存令牌桶限流（单实例，所以内存限流够用）。
-- **身份合并**：把旧用户的座位和推送订阅迁移到新用户。如果迁移会违反唯一约束（两个身份都报了同一局），保留较早的那个座位。旧用户只标记 `merged_into`，不删除。
+> 2026-10-14 按 #31（实现）、#32（认领码撞库）和 coord 在 PR #31 里的裁定修订。
+
+- **首次填称呼**（`POST /api/me`）：创建 user 和 device，生成 32 字节随机的 `device_token`，**只通过 HttpOnly cookie 下发**，任何响应体里都不出现它；前端只在 localStorage 里存一个非敏感标记 `gd_has_identity=1`。数据库只存 token 的 sha256。cookie 的名字和属性只在一个地方决定（§10.3）：
+  - 生产环境：`__Host-gd_dev`，`HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=400 天`；
+  - 开发模式（`GUANDAN_DEV=1`）：`gd_dev`，不带 Secure。真机通过局域网 IP 调试时，浏览器不把这类地址当作安全上下文，带 Secure 的 cookie 会被丢掉。
+- **跳出微信前**（`POST /api/claim`）：生成 16 字节随机的 `claim_token`，以及一个 **6 位**认领码（`crypto/rand` + `rand.Int`，没有取模偏差）。两者都是 10 分钟内有效，并记下签发时的客户端网络 `issued_net`（IPv4 取 /24，IPv6 取 /64）。约束：
+  - **每个用户同时只有一个有效码**，签发新码时，旧码写上 `used_at` 作废；
+  - 签发**每个用户每小时最多 5 次**；
+  - 有效码之间不重复：签发时在写事务里查重；数据库上还有一个 UNIQUE 部分索引 `claim_code_live(code) WHERE used_at IS NULL` 兜底，作废旧码和签发查重用的判断条件与这个索引一致。
+- **凭 token 兑换**（`POST /api/claim/redeem {token, confirm?}`）：
+  - 当前设备**没有身份**：直接兑换，设备成为 token 的主人。一次性和过期检查由一条 `UPDATE … RETURNING` 完成。前端用 `replaceState` 去掉 URL 里的参数，并在「✓ 已认回身份：X」旁边放一个「不是我」，点了就退出（#36）。
+  - 当前设备**已有另一个身份**：**不合并，也不自动切换**。服务端返回 `409 claim_conflict`，附上 token 主人的称呼，**此时 token 不会被消耗**，这个请求是只读的。前端显示确认屏，默认选项是「保持当前身份」。用户确认后，前端带上 `confirm:true` 再提交一次，这时才消耗 token，并只把**这台设备**的 `user_id` 换过去。原来那个身份的数据不迁移、不删除。
+  - 只有 POST 会消耗 token，GET 打开带 `?claim=` 的页面不会。所以微信、WhatsApp 的链接预览抓取器拿到这个链接，也用不掉它。
+- **凭认领码兑换**（`POST /api/claim/redeem {code}`）：只允许还没有身份的设备使用。兑换时只查有效记录（`used_at IS NULL AND expires_at > now`），并且有以下几层防护：
+  1. **只能在签发时的同一个网络兑换**：兑换请求的客户端 IP（§10.13）必须和 `issued_net` 在同一个 /24 或 /64 网段内；
+  2. 同一个 IP 每分钟最多 10 次；每个码最多试 5 次；
+  3. **全站失败预算**：全站加起来每分钟失败超过 20 次，就暂停凭码兑换 5 分钟，同时记 warn 日志。凭 token 兑换不受这个限制。
+  4. 所有失败都返回同一个 `400 claim_invalid`。
+
+  按这些限制估算：6 位码共 10⁶ 种，全站每 10 分钟最多大约 200 次失败尝试，而且攻击者必须和受害者在同一个网段，远程撞库几乎不可能成功。
+- **不提供面向用户的身份合并。** `mergeUsers` 只留给以后的 `guandan admin` 子命令使用，任何用户能触发的路径都调不到它。
 
 ### 5.3 提醒（outbox 模式）
 
@@ -315,7 +332,8 @@ GET  /api/push/key                    VAPID 公钥
 POST /api/me                          首次填称呼
 GET  /api/me                          当前身份
 POST /api/claim                       签发 claim token 和认领码
-POST /api/claim/redeem                凭 {token} 或 {code} 兑换身份
+POST /api/claim/redeem                凭 {token, confirm?} 或 {code} 兑换身份；设备已有别的身份时返回 409 claim_conflict（§5.2）
+DELETE /api/me/devices/{id}           退出这台以外的某个设备（§10.3「退出其他设备」）
 GET  /api/games?area=&day=            首页列表
 POST /api/games                       开一局
 GET  /api/games/{code}                牌局详情
@@ -358,6 +376,8 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `GUANDAN_PUBLIC_URL` | 根据域名推导 | 生成分享链接和 OG 图 URL 时用 |
 | `GUANDAN_ADMIN_EMAIL` | 空 | 填给 Let's Encrypt，也用作 VAPID 的 subject |
 | `GUANDAN_TRUSTED_PROXIES` | 空 | 可信反向代理的网段，逗号分隔。只有对端在其中时，才采用 `X-Real-IP`（或 `X-Forwarded-For` 最右边那个不可信的地址）作为客户端 IP，用于按 IP 限流。**只有前面有反向代理、并且代理会覆盖 `X-Real-IP` 时才设置**，否则任何人都能伪造 IP。生产拓扑（#12）设为 `172.17.0.1/32` |
+| `GUANDAN_TRUSTED_PROXIES` | 空（谁都不信任） | 只有前面有反向代理、并且代理会覆盖 `X-Real-IP` 时才设置（§10.13）。生产环境：`172.17.0.1/32`（docker 网桥网关） |
+| `GUANDAN_METRICS_ADDR` | `127.0.0.1:9090` | `/metrics` 单独监听的地址，不经过对外的路由（§13.7） |
 | `GUANDAN_DEV` | 空 | 设为 `1` 时进入开发模式：不启用 TLS，cookie 不加 `Secure`，日志用文本格式（§13.5） |
 | `GUANDAN_BACKUP_URL` | 空 | 异地备份目标，S3 兼容地址（§13.3） |
 | `GUANDAN_BACKUP_KEY` | 空 | 备份加密用的 age 公钥；设置了备份地址时必须提供 |
@@ -407,6 +427,13 @@ docker run -d --name guandan --restart unless-stopped \
 - **升级**：执行 `scripts/deploy.sh`（§13.4），其中包括优雅关闭（§12.4）、启动时自动迁移，以及就绪检查失败时自动回滚。
 - **镜像**：CI 构建镜像并推送到 GHCR，tag 用提交 SHA。
 
+### 8.1 生产环境（2026-10-14 起，详见 #12）
+
+上面的单容器加 autocert 是通用方案。**生产环境**部署在一台新加坡的共享主机上（`guandan.synon.ai`），同一台机器上还跑着其他站点，所以改用 nginx 在前、容器在后：
+- **nginx**：负责 TLS（certbot 用 webroot 方式，目录 `/var/www/certbot`）和静态前端。静态文件放在 `/var/www/guandan/<sha>`，由 `current` 符号链接指向当前版本，发布时原子切换；本站关闭了 `open_file_cache`。`/api/`、`/g/`、`/healthz`、`/readyz` 和 `/ws` 反向代理到 `127.0.0.1:18200`。**每个写了 `proxy_set_header` 的 location，都要把 Host、X-Real-IP、X-Forwarded-For、X-Forwarded-Proto 全部写全**，因为 nginx 遇到 location 里有任何一条 `proxy_set_header`，就不再继承 server 级的设置。
+- **容器**：`-p 127.0.0.1:18200:8080 --read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m --env-file /etc/guandan/guandan.env`，容器内只跑 HTTP。
+- 发布和回滚用 `scripts/deploy.sh`，nginx 配置的模板在 `deploy/nginx/`（#20 / #34）。
+
 ## 9. 测试
 
 所有测试都用 `t.TempDir()` 下的真实 SQLite 文件，执行真实的迁移，不 mock 数据库。时间通过 `clock` 接口注入，测试里可以随意快进。
@@ -419,7 +446,7 @@ docker run -d --name guandan --restart unless-stopped \
 - 局头在两台设备上同时修改牌局：一个成功，另一个收到 `409 version_conflict`。
 
 **随机操作序列（属性测试）**
-- 随机生成 1000 步操作（报名、退出、移出、取消、修改、身份合并），涉及 10 个用户和 3 个局。每一步之后检查全部不变量，失败时打印出能复现问题的最短操作序列。
+- 随机生成 1000 步操作（报名、退出、移出、取消、修改、设备切换身份），涉及 10 个用户和 3 个局。每一步之后检查全部不变量，失败时打印出能复现问题的最短操作序列。
 
 **故障注入**
 - 在写事务中途让进程 panic：重启后数据仍处于提交前的状态，不变量成立。
@@ -474,7 +501,9 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
   - 带 claim 参数的页面返回 `Referrer-Policy: no-referrer`，前端兑换成功后立即用 `replaceState` 去掉参数；
   - 访问日志里，查询参数一律脱敏，不记录 `claim=`；
   - 有效期 10 分钟，只能用一次（§5.2）。
-- **认领码**：4 位数字，每个码最多试 5 次，同一 IP 有频率限制，只有还没有身份的设备才能使用（§5.2）。服务端在任何时候都不能告诉请求方「这个码存在，但次数已用完」，所有失败一律返回同一个错误。
+- **认领码**：6 位数字，必须在签发时的同一网络兑换，并且有全站失败预算，详见 §5.2。所有失败一律返回同一个错误。
+- **claim 不合并身份**：设备已有别的身份时，必须用户确认后才切换，见 §5.2。这样，「把自己的 claim 链接发到群里，接管点开链接的人的身份」这条攻击路径就不存在了（#31 审计 P0）。
+- **token 不出现在前端可读的地方**：只放在 HttpOnly cookie 里，不写 localStorage，任何响应体里也不出现。
 
 ### 10.4 授权
 
@@ -563,6 +592,13 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
   - 去掉所有 Linux capabilities（`--cap-drop ALL`）；
   - nonroot 用户不能监听 1024 以下的端口，所以容器内监听 8080 和 8443，由端口映射到宿主机的 80 和 443（§8）。
 
+### 10.13 真实客户端 IP
+
+限流、认领码的网络绑定和访问日志，都通过同一个函数取客户端 IP（#35）：
+- 只有当对端地址落在 `GUANDAN_TRUSTED_PROXIES` 里时，才采用 `X-Real-IP`；没有这个头时，取 `X-Forwarded-For` 中从右往左第一个不在可信网段里的地址。对端不可信时，完全不看这两个头。
+- **默认不信任任何代理。** 如果容器直接对外暴露、经过 docker-proxy，所有请求的对端都是网桥地址，这时信任网桥网段就等于允许任何人伪造 IP。
+- 带 zone 的 IPv6 地址视为非法；以 IPv4 映射形式写的可信网段，会换算成对应的 IPv4 网段。
+
 ## 11. 并发模型
 
 ### 11.1 数据库：一个写入口，多个读连接
@@ -615,6 +651,8 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 3. 检查数据目录可写，并且剩余空间超过 500 MB。
 4. 打开数据库，执行 `PRAGMA quick_check`。检查失败就退出，并提示从备份恢复（§13.3）。
 5. 执行迁移，失败就退出。迁移只做向前兼容的修改：只加表和列，删列分两次发布完成。
+   - **编号唯一**：数字前缀由 coord 分配，前缀重复时拒绝启动（包括前导零不同、数值相同的情况）。
+   - **降级兼容**：旧二进制遇到不认识的迁移时**照常启动**，只记一条 warn 日志，这样发布失败后可以自动回滚。只有在文件开头写了 `-- breaking: <原因>` 的迁移，才会在 `schema_migrations` 里记一个 breaking 标记；旧二进制遇到不认识的 breaking 迁移时拒绝启动，并提示从发布前的快照恢复（#34）。
 6. 后台任务都启动后，`/readyz` 才返回 200。
 
 ### 12.2 超时和错误隔离
