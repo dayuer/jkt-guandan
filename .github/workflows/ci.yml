@@ -29,6 +29,10 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # 每个反向代理的 location 都要写全转发头（#35 的前提），webroot、TLS 加固也要对。
+      - name: nginx 模板检查
+        run: scripts/check-nginx.sh deploy/nginx/guandan.synon.ai.conf
+
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 

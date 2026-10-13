@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -28,25 +30,49 @@ func TestNginxSnippetMatchesAppSecurityHeaders(t *testing.T) {
 	}
 }
 
-// 站点模板必须覆盖设置两个客户端 IP 头（GUANDAN_TRUSTED_PROXIES 的前提），并且只代理到 127.0.0.1:18200。
-func TestNginxSiteTemplate(t *testing.T) {
-	b, err := os.ReadFile("../../deploy/nginx/guandan.synon.ai.conf")
+// 站点模板过 scripts/check-nginx.sh；把 /ws 退回成只写 Upgrade、Connection 的写法（coord 在线上
+// 比对时发现的漏洞：location 里写了 proxy_set_header 就不再继承 server 级的 X-Real-IP），检查必须报错。
+func TestNginxSiteTemplatePassesCheck(t *testing.T) {
+	if _, err := exec.LookPath("awk"); err != nil {
+		t.Skip("没有 awk")
+	}
+	const tmpl = "../../deploy/nginx/guandan.synon.ai.conf"
+	run := func(path string) (string, error) {
+		out, err := exec.Command("sh", "../../scripts/check-nginx.sh", path).CombinedOutput()
+		return string(out), err
+	}
+	if out, err := run(tmpl); err != nil {
+		t.Fatalf("模板没通过检查：%v\n%s", err, out)
+	}
+
+	b, err := os.ReadFile(tmpl)
 	if err != nil {
 		t.Fatal(err)
 	}
-	site := string(b)
-	for _, want := range []string{
-		"proxy_set_header X-Real-IP         $remote_addr;",
-		"proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;",
-		"server 127.0.0.1:18200;",
-		"root /var/www/guandan/current;",
-		"open_file_cache off;",
-	} {
-		if !strings.Contains(site, want) {
-			t.Errorf("站点模板里缺少：%s", want)
+	var kept []string
+	inWS := false
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.Contains(line, "location = /ws") {
+			inWS = true
 		}
+		if inWS && strings.Contains(line, "}") {
+			inWS = false
+		}
+		if inWS && strings.Contains(line, "proxy_set_header") &&
+			!strings.Contains(line, "Upgrade") && !strings.Contains(line, "Connection") {
+			continue
+		}
+		kept = append(kept, line)
 	}
-	if strings.Contains(site, "location /metrics") || strings.Contains(site, ":9090;") {
+	bad := filepath.Join(t.TempDir(), "bad.conf")
+	if err := os.WriteFile(bad, []byte(strings.Join(kept, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := run(bad)
+	if err == nil || !strings.Contains(out, "location = /ws") || !strings.Contains(out, "X-Real-IP") {
+		t.Fatalf("/ws 漏了 X-Real-IP 时检查应报错，实际 %v\n%s", err, out)
+	}
+	if strings.Contains(string(b), ":9090") || strings.Contains(string(b), "location /metrics") {
 		t.Error("/metrics 不能经 nginx 对外")
 	}
 }

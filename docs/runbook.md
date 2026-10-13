@@ -12,15 +12,25 @@
 
 - **服务器**：新加坡 `root@43.156.128.95`，Debian 12，Docker 26，nginx 1.22。**同机跑着很多其他生产服务**：可用内存约 1.4 GB，磁盘已用 67%。
 - **容器**：`guandan`，镜像 `guandan:<短 SHA>`，只映射到 `127.0.0.1:18200`（宿主机的 8080、8443 被别的服务占着，**绝不能映射到这两个端口**）。参数：`--read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m`。数据卷 `guandan-data`。不设 `GUANDAN_DOMAIN`，容器内只走 HTTP；`GUANDAN_PUBLIC_URL=https://guandan.synon.ai`。
-- **nginx 站点**：`/etc/nginx/sites-available/guandan.synon.ai` 加片段 `/etc/nginx/snippets/guandan-security.conf`，由 coord 维护。仓库里的模板是 [deploy/nginx/](../deploy/nginx/)，两边要保持一致。站点里关掉了 `open_file_cache`，所以切换 `current` 后**不需要 reload nginx**。
-- **客户端 IP**：DNS 只做解析，不走 Cloudflare 代理。nginx 用 `$remote_addr` 覆盖设置 `X-Real-IP`，用 `$proxy_add_x_forwarded_for` 设置 `X-Forwarded-For`。应用默认不信任任何代理；部署脚本给容器设 `GUANDAN_TRUSTED_PROXIES=172.17.0.1/32`（容器看到的对端就是网桥网关），只有来自它的这两个头才被采用。启动日志里的 `trusted_proxies` 字段会显示生效值。
+- **nginx 站点**：`/etc/nginx/sites-available/guandan.synon.ai` 加片段 `/etc/nginx/snippets/guandan-security.conf`，由 coord 维护。仓库里的 [deploy/nginx/](../deploy/nginx/) 照抄线上配置。改动先改模板，过 `scripts/check-nginx.sh`（CI 也跑），再同步到服务器并执行 `nginx -t`。站点里关掉了 `open_file_cache`，所以切换 `current` 后**不需要 reload nginx**。
+  - **每个反向代理的 location 都要写全 `Host`、`X-Real-IP`、`X-Forwarded-For`、`X-Forwarded-Proto`**：location 里只要写了一条 `proxy_set_header`，就不再继承 server 级的设置。漏了 `X-Real-IP` 的话，客户端可以伪造 IP。
+  - 证书由 certbot 续期，webroot 是 `/var/www/certbot`。
+  - 检查线上文件：`ssh root@43.156.128.95 sh -s /etc/nginx/sites-available/guandan.synon.ai < scripts/check-nginx.sh`。
+- **客户端 IP**：DNS 只做解析，不走 Cloudflare 代理。nginx 用 `$remote_addr` 覆盖设置 `X-Real-IP`，用 `$proxy_add_x_forwarded_for` 设置 `X-Forwarded-For`。应用默认不信任任何代理；env 文件里设了 `GUANDAN_TRUSTED_PROXIES=172.17.0.1/32`（容器看到的对端就是网桥网关），只有来自它的这两个头才被采用。启动日志里的 `trusted_proxies` 字段会显示生效值。
 - **不要在服务器上改别的站点、别的服务，也不要改全局 nginx 配置。**
 
 ## 1. 上线前准备
 
 ### 1.1 环境变量文件
 
-备份相关的配置写进服务器上的 `/etc/guandan/env`（`chmod 600`，属主 root）。`scripts/deploy-remote.sh` 启动容器时会用 `--env-file` 读它；`GUANDAN_PUBLIC_URL` 和 `GUANDAN_TRUSTED_PROXIES` 由脚本直接传入，不用写在这里。
+容器的配置写在服务器上的 `/etc/guandan/guandan.env`（文件 600、目录 700、属主 root，coord 已经建好），`scripts/deploy-remote.sh` 启动容器时会用 `--env-file` 读它。目前的内容：
+
+```bash
+GUANDAN_PUBLIC_URL=https://guandan.synon.ai
+GUANDAN_TRUSTED_PROXIES=172.17.0.1/32      # 容器看到的对端是网桥网关；只信任它传来的 X-Real-IP
+```
+
+等仓库所有者提供 bucket 和 age 公钥之后，再加上备份相关的变量：
 
 ```bash
 # 异地备份（上线前必须配置，§13.3）
@@ -95,7 +105,7 @@ scripts/deploy.sh            # 发布当前 HEAD；也可以写成 scripts/deplo
 
 **第 3–5 步任何一步失败**：删掉新容器，把 `guandan-prev` 改回原名并启动，`current` 指回原来的版本。脚本退出码为 1，并打印新容器最近的日志。
 
-可以用环境变量覆盖的项：`SSH_HOST`、`WEB_ROOT`、`IMAGE_SOURCE`、`PORT`、`MEMORY`、`PUBLIC_URL`、`TRUSTED_PROXIES`、`SITE_URL`、`READY_TIMEOUT`、`KEEP`。
+可以用环境变量覆盖的项：`SSH_HOST`、`WEB_ROOT`、`IMAGE_SOURCE`、`PORT`、`MEMORY`、`PUBLIC_URL`、`ENV_FILE`、`SITE_URL`、`READY_TIMEOUT`、`KEEP`。
 
 `make deploy-test` 会在本机用 Docker 验证服务器部分（不需要 nginx 和 ssh），覆盖以下场景：首次发布、升级并清理旧版本、新版本起不来、`current` 是真目录、切换后站点检查失败、新版本跑完一条兼容迁移后才失败。CI 每次都会跑这个测试。
 
@@ -170,7 +180,7 @@ docker stop guandan
 install -m 600 -o 65532 /dev/stdin /root/guandan-key.txt   # 粘贴 AGE-SECRET-KEY-… 后按 Ctrl-D
 
 # 3. 恢复。参数可以是 latest（异地最新一份）、异地对象名或本地快照路径
-docker run --rm --env-file /etc/guandan/env -e GUANDAN_PUBLIC_URL=https://guandan.synon.ai \
+docker run --rm --env-file /etc/guandan/guandan.env -e GUANDAN_PUBLIC_URL=https://guandan.synon.ai \
   -v guandan-data:/data -v /root/guandan-key.txt:/key.txt:ro \
   guandan:<当前短 SHA> restore -i /key.txt latest
 

@@ -89,7 +89,7 @@ tar -C "$work/dist" -czf - . | ssh "$SSH_HOST" "set -eu
 log "在服务器上切换"
 # 只把 deploy-remote.sh 认识的变量传过去。
 env_args="SHA=$SHA WEB_ROOT=$WEB_ROOT"
-for v in NAME PORT VOLUME ENV_FILE PUBLIC_URL SITE_URL MEMORY READY_TIMEOUT KEEP TRUSTED_PROXIES; do
+for v in NAME PORT VOLUME ENV_FILE PUBLIC_URL SITE_URL MEMORY READY_TIMEOUT KEEP; do
   eval "val=\${$v-}"
   # shellcheck disable=SC2154 # val 由上面的 eval 赋值
   [ -n "$val" ] && env_args="$env_args $v='$val'"

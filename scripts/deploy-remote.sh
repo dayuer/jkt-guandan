@@ -23,9 +23,9 @@ IMAGE_REPO=${IMAGE_REPO:-guandan}
 PORT=${PORT:-18200}                     # 宿主机的 8080、8443 被别的服务占着，只能用这个
 WEB_ROOT=${WEB_ROOT:-/var/www/guandan}
 VOLUME=${VOLUME:-guandan-data}
-ENV_FILE=${ENV_FILE:-/etc/guandan/env}
-# 容器看到的对端是 docker 网桥网关（coord 在服务器上确认过），只信任它传来的 X-Real-IP（#35）。
-TRUSTED_PROXIES=${TRUSTED_PROXIES-172.17.0.1/32}
+# 服务器上由 coord 建好（600），里面有 GUANDAN_PUBLIC_URL 和 GUANDAN_TRUSTED_PROXIES=172.17.0.1/32，
+# 备份相关的变量等 bucket 定下来再加（runbook §1.1）。
+ENV_FILE=${ENV_FILE:-/etc/guandan/guandan.env}
 PUBLIC_URL=${PUBLIC_URL:-https://guandan.synon.ai}
 SITE_URL=${SITE_URL:-$PUBLIC_URL}       # 切换后经 nginx 检查的地址；设为空跳过
 MEMORY=${MEMORY:-256m}
@@ -43,14 +43,15 @@ running() { [ "$(docker container inspect -f '{{.State.Running}}' "$1" 2>/dev/nu
 
 start() {
   img=$1
-  # 备份地址、密钥等写在 $ENV_FILE 里（runbook §1.1）；没有这个文件也能起，只是不做异地备份。
+  # 可信代理、备份地址和密钥写在 $ENV_FILE 里（runbook §1.1）。没有这个文件也能起：
+  # 只是不做异地备份，并且不信任任何代理（按 IP 限流退化成按网桥地址）。
   if [ -r "$ENV_FILE" ]; then set -- --env-file "$ENV_FILE"; else set --; fi
   docker run -d --name "$NAME" --restart unless-stopped \
     --read-only --cap-drop ALL --security-opt no-new-privileges \
     --memory "$MEMORY" --stop-timeout 30 \
     --log-opt max-size=10m --log-opt max-file=5 \
     -p "127.0.0.1:$PORT:8080" -v "$VOLUME:/data" \
-    -e GUANDAN_PUBLIC_URL="$PUBLIC_URL" -e GUANDAN_TRUSTED_PROXIES="$TRUSTED_PROXIES" "$@" \
+    -e GUANDAN_PUBLIC_URL="$PUBLIC_URL" "$@" \
     "$img" >/dev/null
 }
 
