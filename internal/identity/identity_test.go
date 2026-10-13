@@ -87,11 +87,14 @@ func newFixtureWithHub(t *testing.T, dev bool, hub *realtime.Hub) *fixture {
 				mux.Handle("GET /ws", realtime.Handler(realtime.Options{
 					Hub:         hub,
 					AllowOrigin: cfg.AllowsOrigin,
-					Identify: func(r *http.Request) (string, error) {
+					Identify: func(r *http.Request) (realtime.Principal, error) {
 						if ident := svc.FromRequest(r); ident != nil {
-							return ident.User.ID, nil
+							return realtime.Principal{UserID: ident.User.ID, DeviceID: ident.Device.ID}, nil
 						}
-						return "", nil
+						return realtime.Principal{}, nil
+					},
+					Revalidate: func(ctx context.Context, p realtime.Principal) bool {
+						return svc.StillValid(ctx, p.UserID, p.DeviceID)
 					},
 				}))
 			}

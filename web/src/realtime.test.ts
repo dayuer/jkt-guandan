@@ -188,6 +188,19 @@ describe("RealtimeClient", () => {
     rt.stop();
   });
 
+  it("身份失效（4001）：通知页面重新拉身份，并很快重连", () => {
+    const rt = client();
+    const revoked = vi.fn();
+    rt.onIdentityRevoked(revoked);
+    rt.start();
+    last().open();
+    last().drop(4001);
+    expect(revoked).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1000);
+    expect(sockets).toHaveLength(2);
+    rt.stop();
+  });
+
   it("服务端重启（1012）后很快重连", () => {
     const rt = client();
     rt.start();

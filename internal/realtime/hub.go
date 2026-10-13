@@ -35,7 +35,16 @@ const (
 	StatusServiceRestart = websocket.StatusServiceRestart
 	// StatusSlowConsumer 表示发送队列满了被断开；客户端重连后重新拉 REST。
 	StatusSlowConsumer websocket.StatusCode = 4000
+	// StatusIdentityRevoked 表示这条连接的身份失效了（设备被退出、切换到别的身份、被封禁，#43）。
+	// 客户端收到后重新拉一次身份再重连。
+	StatusIdentityRevoked websocket.StatusCode = 4001
 )
+
+// Principal 是一条连接认出来的身份。都为空表示没有身份（只能订阅公开主题）。
+type Principal struct {
+	UserID   string
+	DeviceID string
+}
 
 // Event 是服务端推给客户端的一条消息（§5.5）。V 是牌局版本号，客户端丢弃不比本地新的消息；
 // 没有版本概念的事件（如 claim.redeemed）V 为 0。
@@ -101,10 +110,41 @@ func (h *Hub) Publish(ev Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for c := range h.topics[ev.Topic] {
+		if c.isKicked() {
+			continue
+		}
 		select {
 		case c.send <- msg:
 		default:
 			c.slow()
+		}
+	}
+}
+
+// KickDevice 以 4001 断开这台设备的所有连接（#43）。在写事务提交后调用：设备被退出、切换到别的身份。
+func (h *Hub) KickDevice(deviceID string) {
+	if deviceID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.conns {
+		if c.deviceID == deviceID {
+			c.kick(StatusIdentityRevoked, "identity revoked")
+		}
+	}
+}
+
+// KickUser 以 4001 断开这个用户所有设备的连接（#43）：用户被封禁、注销。
+func (h *Hub) KickUser(userID string) {
+	if userID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.conns {
+		if c.userID == userID {
+			c.kick(StatusIdentityRevoked, "identity revoked")
 		}
 	}
 }

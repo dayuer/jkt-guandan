@@ -58,6 +58,8 @@ export const BACKOFF_MAX_MS = 30_000;
 export const FAILURES_BEFORE_POLLING = 3;
 export const POLL_INTERVAL_MS = 15_000;
 const OPEN = 1;
+/** 服务端断开时的关闭码：身份失效（#43）。 */
+export const IDENTITY_REVOKED = 4001;
 
 /** 第 attempt 次重连（从 0 开始）的等待时间：指数退避，取 [一半, 全部] 之间的随机值。 */
 export function backoffDelay(attempt: number, random: () => number): number {
@@ -94,6 +96,7 @@ export class RealtimeClient {
   private readonly lastV = new Map<string, number>();
   private readonly statusListeners = new Set<(s: RealtimeStatus) => void>();
   private readonly helloListeners = new Set<(hello: { build?: string; user_id?: string }) => void>();
+  private readonly revokedListeners = new Set<() => void>();
 
   private socket: SocketLike | null = null;
   private opened = false; // 当前这条 socket 是否真的连上过
@@ -175,6 +178,15 @@ export class RealtimeClient {
     return () => this.helloListeners.delete(fn);
   }
 
+  /**
+   * 服务端以 4001 断开：这台设备的身份失效了（被「退出其他设备」、切换到别的身份、被封禁，#43）。
+   * 页面应重新拉一次 GET /api/me；连接会以新身份自动重连。
+   */
+  onIdentityRevoked(fn: () => void): () => void {
+    this.revokedListeners.add(fn);
+    return () => this.revokedListeners.delete(fn);
+  }
+
   // ---- 内部 ----
 
   private setStatus(s: RealtimeStatus): void {
@@ -244,8 +256,13 @@ export class RealtimeClient {
     } else if (this._status !== "offline") {
       this.setStatus("connecting");
     }
-    // 1012 是服务端重启（§12.4），新进程几秒内就起来，不必等太久；其他情况按退避。
-    const delay = code === 1012 && this.opened ? backoffDelay(0, this.deps.random) : backoffDelay(this.failures, this.deps.random);
+    if (code === IDENTITY_REVOKED) {
+      for (const fn of this.revokedListeners) fn();
+    }
+    // 1012 是服务端重启（§12.4），新进程几秒内就起来；4001 是身份失效，换身份后马上能重连。
+    // 这两种不必等太久，其他情况按退避。
+    const quick = (code === 1012 || code === IDENTITY_REVOKED) && this.opened;
+    const delay = quick ? backoffDelay(0, this.deps.random) : backoffDelay(this.failures, this.deps.random);
     this.reconnectTimer = this.deps.setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();

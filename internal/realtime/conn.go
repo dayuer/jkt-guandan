@@ -15,11 +15,12 @@ import (
 
 // conn 是一条 WebSocket 连接。topics 由 Hub 的锁保护；send、kicked 是读写两个 goroutine 之间的通道。
 type conn struct {
-	ws     *websocket.Conn
-	userID string
-	ip     string
-	send   chan []byte
-	topics map[string]struct{}
+	ws       *websocket.Conn
+	userID   string
+	deviceID string
+	ip       string
+	send     chan []byte
+	topics   map[string]struct{}
 
 	kickOnce   sync.Once
 	kicked     chan struct{}
@@ -36,6 +37,17 @@ func (c *conn) kick(code websocket.StatusCode, reason string) {
 		c.kickCode, c.kickReason = code, reason
 		close(c.kicked)
 	})
+}
+
+// isKicked 说明这条连接是否已经被要求断开。被踢的连接不再收任何消息：身份失效之后，
+// 哪怕在真正关闭前的那一小段时间里也不能再收到 user:{旧id} 的事件（#43）。
+func (c *conn) isKicked() bool {
+	select {
+	case <-c.kicked:
+		return true
+	default:
+		return false
+	}
 }
 
 // trySend 往发送队列里放一条控制消息（hello、订阅回执、错误），队列满就断开。
@@ -62,9 +74,13 @@ type Options struct {
 	Hub *Hub
 	// AllowOrigin 判断握手的 Origin 是不是本站（§5.5：防跨站 WebSocket 劫持）。
 	AllowOrigin func(origin string) bool
-	// Identify 从请求（cookie）里认出用户；没有身份返回空字符串。返回错误时拒绝握手（403），
+	// Identify 从请求（cookie）里认出用户和设备；没有身份返回零值。返回错误时拒绝握手（403），
 	// 比如设备被封禁。
-	Identify func(r *http.Request) (userID string, err error)
+	Identify func(r *http.Request) (Principal, error)
+	// Revalidate 在每次心跳时复查一次身份（#43 的兜底）：设备还在、还属于这个用户、没有被封禁。
+	// 返回 false 就以 4001 断开。主动断开（Hub.KickDevice / KickUser）覆盖同一进程里的退出和切换；
+	// 另一个进程里的操作（guandan admin ban）只能靠它。为 nil 时不复查。
+	Revalidate func(ctx context.Context, p Principal) bool
 	// Build 是构建号，放在 hello 消息里，前端据此提示刷新（§13.4）。
 	Build string
 	// 测试里可以调短；零值用 25 秒和 10 秒（§5.5）。
@@ -113,14 +129,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	var userID string
+	var who Principal
 	if h.opts.Identify != nil {
-		id, err := h.opts.Identify(r)
+		p, err := h.opts.Identify(r)
 		if err != nil {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		userID = id
+		who = p
 	}
 
 	// http.Server 的 ReadTimeout、WriteTimeout 会在连接上留下截止时间，接管之后要清掉，
@@ -137,12 +153,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ws.SetReadLimit(MaxMessageBytes)
 
 	c := &conn{
-		ws:     ws,
-		userID: userID,
-		ip:     ip,
-		send:   make(chan []byte, SendQueueSize),
-		topics: make(map[string]struct{}),
-		kicked: make(chan struct{}),
+		ws:       ws,
+		userID:   who.UserID,
+		deviceID: who.DeviceID,
+		ip:       ip,
+		send:     make(chan []byte, SendQueueSize),
+		topics:   make(map[string]struct{}),
+		kicked:   make(chan struct{}),
 	}
 	c.writeCtx, c.abortWrite = context.WithCancel(context.Background())
 	defer c.abortWrite()
@@ -156,7 +173,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"type":        "hello",
 		"server_time": time.Now().Unix(),
 		"build":       h.opts.Build,
-		"user_id":     userID,
+		"user_id":     who.UserID,
 	})
 
 	// 两个 goroutine：这个（HTTP handler 的 goroutine）负责读，另起一个负责写。
@@ -230,6 +247,10 @@ func (h *handler) writeLoop(ctx context.Context, c *conn) {
 			_ = c.ws.Close(c.kickCode, c.kickReason)
 			return
 		case msg := <-c.send:
+			if c.isKicked() {
+				_ = c.ws.Close(c.kickCode, c.kickReason)
+				return
+			}
 			wctx, cancel := context.WithTimeout(c.writeCtx, writeTimeout)
 			err := c.ws.Write(wctx, websocket.MessageText, msg)
 			cancel()
@@ -238,6 +259,15 @@ func (h *handler) writeLoop(ctx context.Context, c *conn) {
 				return
 			}
 		case <-ticker.C:
+			if c.deviceID != "" && h.opts.Revalidate != nil {
+				vctx, cancel := context.WithTimeout(ctx, writeTimeout)
+				ok := h.opts.Revalidate(vctx, Principal{UserID: c.userID, DeviceID: c.deviceID})
+				cancel()
+				if !ok && ctx.Err() == nil {
+					c.kick(StatusIdentityRevoked, "identity revoked")
+					continue
+				}
+			}
 			pctx, cancel := context.WithTimeout(ctx, h.opts.PongTimeout)
 			err := c.ws.Ping(pctx)
 			cancel()

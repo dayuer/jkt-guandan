@@ -61,9 +61,13 @@ type Identity struct {
 	Device Device
 }
 
-// Publisher 把实时事件发给订阅者（internal/realtime 的 Hub）。只在写事务提交后调用。
+// Publisher 是身份系统用到的实时能力（internal/realtime 的 Hub）。都只在写事务提交后调用。
 type Publisher interface {
+	// Publish 把事件发给订阅者。
 	Publish(topic, eventType string, data any)
+	// KickDevice 立刻断开这台设备的实时连接：设备被退出、切换到别的身份之后，
+	// 它已经建立的连接不能再收到 user:{旧id} 的事件（#43）。
+	KickDevice(deviceID string)
 }
 
 // Service 是身份系统的业务入口。
@@ -111,6 +115,30 @@ func (s *Service) publishClaimRedeemed(tx *store.Tx, ownerID string, device Devi
 			"ua":        device.UserAgent,
 		})
 	})
+}
+
+// kickDeviceAfterCommit 登记一个提交后回调，断开这台设备的实时连接（#43）。回滚时不执行。
+func (s *Service) kickDeviceAfterCommit(tx *store.Tx, deviceID string) {
+	if s.pub == nil {
+		return
+	}
+	tx.AfterCommit(func(context.Context) { s.pub.KickDevice(deviceID) })
+}
+
+// StillValid 是实时连接每次心跳时的复查（#43 的兜底）：这台设备还在，并且（顺着合并关系）
+// 还属于握手时的那个用户。读连接池上一次查询，开销很小。
+func (s *Service) StillValid(ctx context.Context, userID, deviceID string) bool {
+	var owner string
+	err := s.st.Read().QueryRowContext(ctx, `SELECT user_id FROM devices WHERE id = ?`, deviceID).Scan(&owner)
+	if err != nil {
+		// 查不到就是设备被删了；读失败（库出问题）时也断开，客户端会重连并重新认身份。
+		return false
+	}
+	root, err := s.resolveMergedUser(ctx, owner)
+	if err != nil {
+		return false
+	}
+	return root.ID == userID
 }
 
 // FromRequest 用请求里的设备 cookie 认出身份；没有或无效时返回 nil。
@@ -355,6 +383,8 @@ func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentDe
 				`UPDATE devices SET user_id = ? WHERE id = ?`, ownerID, currentDeviceID); err != nil {
 				return err
 			}
+			// 这台设备原来的连接认的是旧身份，断开它，让它以新身份重连（#43）。
+			s.kickDeviceAfterCommit(tx, currentDeviceID)
 			user, err := loadUser(ctx, tx, ownerID)
 			if err != nil {
 				return err
@@ -544,6 +574,8 @@ func (s *Service) SignOutDevice(ctx context.Context, userID, deviceID string) er
 		if n == 0 {
 			return ErrDeviceNotFound
 		}
+		// 被退出的设备（可能是被盗的会话）立刻断开实时连接（§10.3、#43）。
+		s.kickDeviceAfterCommit(tx, deviceID)
 		return nil
 	})
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,22 +24,28 @@ func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 const site = "https://guandan.id"
 
 type env struct {
-	hub *realtime.Hub
-	srv *httptest.Server
+	hub     *realtime.Hub
+	srv     *httptest.Server
+	revoked sync.Map // deviceID → true：心跳复查时判为失效
 }
 
 // newEnv 起一个只挂 /ws 的服务。测试里用 X-Test-User 头冒充 cookie 认出的用户。
 func newEnv(t *testing.T, ping, pong time.Duration) *env {
 	t.Helper()
-	hub := realtime.NewHub()
+	e := &env{hub: realtime.NewHub()}
+	hub := e.hub
 	srv := httptest.NewServer(realtime.Handler(realtime.Options{
 		Hub:         hub,
 		AllowOrigin: func(o string) bool { return o == site },
-		Identify: func(r *http.Request) (string, error) {
+		Identify: func(r *http.Request) (realtime.Principal, error) {
 			if r.Header.Get("X-Test-User") == "banned" {
-				return "", errors.New("banned")
+				return realtime.Principal{}, errors.New("banned")
 			}
-			return r.Header.Get("X-Test-User"), nil
+			return realtime.Principal{UserID: r.Header.Get("X-Test-User"), DeviceID: r.Header.Get("X-Test-Device")}, nil
+		},
+		Revalidate: func(_ context.Context, p realtime.Principal) bool {
+			_, revoked := e.revoked.Load(p.DeviceID)
+			return !revoked
 		},
 		Build:        "build-123",
 		PingInterval: ping,
@@ -50,12 +57,22 @@ func newEnv(t *testing.T, ping, pong time.Duration) *env {
 		_ = hub.Shutdown(ctx)
 		srv.Close()
 	})
-	return &env{hub: hub, srv: srv}
+	e.srv = srv
+	return e
 }
 
 func (e *env) dial(t *testing.T, user, origin string) (*websocket.Conn, *http.Response, error) {
 	t.Helper()
+	return e.dialDevice(t, user, "", origin)
+}
+
+// dialDevice 以某个用户的某台设备连上来（user 为空表示没有身份）。
+func (e *env) dialDevice(t *testing.T, user, device, origin string) (*websocket.Conn, *http.Response, error) {
+	t.Helper()
 	h := http.Header{}
+	if device != "" {
+		h.Set("X-Test-Device", device)
+	}
 	if origin != "" {
 		h.Set("Origin", origin)
 	}
@@ -240,8 +257,15 @@ func TestTopicLimitPerConnection(t *testing.T) {
 	}
 }
 
-// §5.5：发送队列写满就断开这个连接，不拖慢别人。慢客户端完全不读：内核的缓冲写满后，
-// 写 goroutine 卡住，队列随之写满。内核缓冲有多大因系统而异，所以一直发到它被断开为止。
+// §5.5：发送队列写满就断开这个连接，不拖慢别人。
+//
+// 慢客户端完全不读：内核缓冲写满后写 goroutine 卡住，队列随之写满，它被断开。
+// 发布按「快客户端读到一条再发下一条」的节奏进行，所以快客户端的队列最多只有 1 条，
+// 在任何机器上（包括 CI 加 -race）都不会溢出——被断开的只可能是慢的那个（#40 复审第 1 条）。
+//
+// 断言的是「谁被断开」：快客户端仍在订阅、随后发的消息照收；慢客户端的连接结束。
+// 慢客户端收不到 4000 这个关闭码：它的 socket 缓冲是满的，关闭帧写不进去，服务端只能直接关掉连接，
+// 它把缓冲里的消息读完之后看到的是连接断开。
 func TestSlowConsumerIsDisconnected(t *testing.T) {
 	e := newEnv(t, 0, 0)
 	slow := e.mustDial(t, "")
@@ -249,28 +273,18 @@ func TestSlowConsumerIsDisconnected(t *testing.T) {
 	fast := e.mustDial(t, "")
 	subscribe(t, fast, "game:SLOW")
 
-	// fast 一直在读；slow 从这里起不再读。
-	received := make(chan int, 1)
-	stop := make(chan int, 1) // 发了多少条
+	got := make(chan struct{})
+	readErr := make(chan error, 1)
 	go func() {
-		n, want := 0, -1
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		for want < 0 || n < want {
-			select {
-			case want = <-stop:
-				if n >= want {
-					received <- n
-					return
-				}
-			default:
-			}
+		for {
 			if _, _, err := fast.Read(ctx); err != nil {
-				break
+				readErr <- err
+				return
 			}
-			n++
+			got <- struct{}{}
 		}
-		received <- n
 	}()
 
 	payload := strings.Repeat("x", 3000)
@@ -278,16 +292,38 @@ func TestSlowConsumerIsDisconnected(t *testing.T) {
 	for published < 100000 && e.hub.Subscribers("game:SLOW") == 2 {
 		e.hub.Publish(realtime.Event{Topic: "game:SLOW", Type: "seat.taken", Data: payload})
 		published++
-		if published%50 == 0 {
-			time.Sleep(time.Millisecond) // 模拟真实的事件节奏，fast 跟得上
+		select {
+		case <-got: // 快客户端读到了，再发下一条
+		case err := <-readErr:
+			t.Fatalf("快客户端在第 %d 条时被断开：%v", published, err)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("快客户端 5 秒内没收到第 %d 条", published)
 		}
 	}
 	eventually(t, "慢客户端被断开", func() bool { return e.hub.Subscribers("game:SLOW") == 1 })
-	stop <- published
-	if n := <-received; n != published {
-		t.Fatalf("正常的客户端应收到全部 %d 条，实际 %d", published, n)
-	}
 	t.Logf("发到第 %d 条时慢客户端被断开", published)
+
+	// 留下的是快客户端：随后发的消息它照收。
+	e.hub.Publish(realtime.Event{Topic: "game:SLOW", Type: "after"})
+	select {
+	case <-got:
+	case err := <-readErr:
+		t.Fatalf("快客户端不该被断开：%v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("快客户端没收到断开之后的消息")
+	}
+
+	// 慢客户端：把缓冲里的消息读完之后，连接是断开的。
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for {
+		if _, _, err := slow.Read(ctx); err != nil {
+			if ctx.Err() != nil {
+				t.Fatal("慢客户端的连接没有被关闭")
+			}
+			break
+		}
+	}
 }
 
 // §5.5：每 25 秒 ping 一次，10 秒内没有 pong 就断开。这里调成 100ms / 200ms。
@@ -413,5 +449,83 @@ func TestRolledBackTransactionPublishesNothing(t *testing.T) {
 	// 收到的第一条就是提交成功的那条：回滚的那条没有发出来。
 	if m := read(t, c); m["type"] != "seat.taken.real" {
 		t.Fatalf("收到 %v", m)
+	}
+}
+
+// #43：设备被退出、切换身份之后，它已经建立的连接立刻以 4001 断开，之后发到 user:{旧id} 的事件收不到；
+// 同一个用户的其他设备不受影响。
+func TestKickDeviceClosesOnlyThatDevice(t *testing.T) {
+	e := newEnv(t, 0, 0)
+	stolen, _, err := e.dialDevice(t, "u1", "d-stolen", site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read(t, stolen) // hello
+	subscribe(t, stolen, "user:u1")
+	mine, _, err := e.dialDevice(t, "u1", "d-mine", site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read(t, mine)
+	subscribe(t, mine, "user:u1")
+
+	start := time.Now()
+	e.hub.KickDevice("d-stolen")
+	e.hub.Publish(realtime.Event{Topic: "user:u1", Type: "me.updated"})
+
+	if code := closeStatus(t, stolen); code != realtime.StatusIdentityRevoked {
+		t.Fatalf("被退出的设备应收到 4001，实际 %d", code)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("应在 1 秒内断开，实际 %v", d)
+	}
+	if m := read(t, mine); m["type"] != "me.updated" {
+		t.Fatalf("同一用户的其他设备应照常收到事件：%v", m)
+	}
+}
+
+// 被踢之后、真正关闭之前，连接上不能再收到任何事件（#43）。
+func TestKickedConnectionReceivesNothingAfterKick(t *testing.T) {
+	e := newEnv(t, 0, 0)
+	c, _, err := e.dialDevice(t, "u1", "d1", site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read(t, c)
+	subscribe(t, c, "user:u1")
+	e.hub.KickUser("u1")
+	for i := 0; i < 20; i++ {
+		e.hub.Publish(realtime.Event{Topic: "user:u1", Type: "secret"})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, data, err := c.Read(ctx)
+	if err == nil {
+		t.Fatalf("被踢之后不该再收到任何消息：%s", data)
+	}
+	if code := websocket.CloseStatus(err); code != realtime.StatusIdentityRevoked {
+		t.Fatalf("关闭码 %d，期望 4001", code)
+	}
+}
+
+// #43 的兜底：另一个进程里的操作（guandan admin ban、直接改库）通知不到 Hub，靠每次心跳时复查。
+func TestHeartbeatRevalidatesIdentity(t *testing.T) {
+	e := newEnv(t, 100*time.Millisecond, 500*time.Millisecond)
+	c, _, err := e.dialDevice(t, "u1", "d1", site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read(t, c)
+	subscribe(t, c, "user:u1")
+	anon := e.mustDial(t, "") // 没有身份的连接不复查
+	subscribe(t, anon, "game:X")
+
+	e.revoked.Store("d1", true)
+	if code := closeStatus(t, c); code != realtime.StatusIdentityRevoked {
+		t.Fatalf("复查失败应以 4001 断开，实际 %d", code)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if e.hub.Subscribers("game:X") != 1 {
+		t.Fatal("没有身份的连接不该被复查断开")
 	}
 }

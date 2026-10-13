@@ -117,11 +117,14 @@ func run() error {
 	wsHandler := realtime.Handler(realtime.Options{
 		Hub:         hub,
 		AllowOrigin: cfg.AllowsOrigin,
-		Identify: func(r *http.Request) (string, error) {
+		Identify: func(r *http.Request) (realtime.Principal, error) {
 			if ident := identitySvc.FromRequest(r); ident != nil {
-				return ident.User.ID, nil
+				return realtime.Principal{UserID: ident.User.ID, DeviceID: ident.Device.ID}, nil
 			}
-			return "", nil
+			return realtime.Principal{}, nil
+		},
+		Revalidate: func(ctx context.Context, p realtime.Principal) bool {
+			return identitySvc.StillValid(ctx, p.UserID, p.DeviceID)
 		},
 		Build: buildinfo.Get(),
 	})
@@ -290,3 +293,5 @@ type hubPublisher struct{ hub *realtime.Hub }
 func (p hubPublisher) Publish(topic, eventType string, data any) {
 	p.hub.Publish(realtime.Event{Topic: topic, Type: eventType, Data: data})
 }
+
+func (p hubPublisher) KickDevice(deviceID string) { p.hub.KickDevice(deviceID) }
