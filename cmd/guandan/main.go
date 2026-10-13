@@ -31,6 +31,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/janitor"
 	"github.com/dayuer/jkt-guandan/internal/notify"
 	"github.com/dayuer/jkt-guandan/internal/realtime"
+	"github.com/dayuer/jkt-guandan/internal/share"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
 )
@@ -184,6 +185,7 @@ func run() error {
 				identity.Register(mux, identitySvc)
 				games.Register(mux, gamesSvc, identitySvc)
 				mux.Handle("GET /ws", wsHandler)
+				share.Register(mux, gamesSvc, cfg.PublicURL, clk)
 				notify.Register(mux, notifySvc, identitySvc)
 			},
 		}),
