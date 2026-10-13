@@ -6,6 +6,8 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"fmt"
+	"math/big"
+	"net"
 	"time"
 )
 
@@ -48,17 +50,32 @@ func hashToken(token string) []byte {
 	return sum[:]
 }
 
-// newClaimCode 生成 4 位数字认领码，作为 token 的兜底（§5.2）。
-func newClaimCode() string {
-	var b [4]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(fmt.Sprintf("生成认领码失败: %v", err))
+// ClaimCodeDigits 是认领码的位数（§5.2 修订：从 4 位改成 6 位）。
+const ClaimCodeDigits = 6
+
+// newClaimCode 生成 6 位数字认领码，作为 token 的兜底。
+//
+// 用 rand.Int 在 [0, 10^6) 上均匀取值，不再对随机字节取模——取模会让小的数字略微偏多。
+func newClaimCode() (string, error) {
+	limit := new(big.Int).Exp(big.NewInt(10), big.NewInt(ClaimCodeDigits), nil)
+	n, err := rand.Int(rand.Reader, limit)
+	if err != nil {
+		return "", fmt.Errorf("生成认领码: %w", err)
 	}
-	// 每个字节取模 10 会有轻微偏差，但码只有 4 位、5 次尝试上限，足够用。
-	return string([]byte{
-		'0' + b[0]%10,
-		'0' + b[1]%10,
-		'0' + b[2]%10,
-		'0' + b[3]%10,
-	})
+	return fmt.Sprintf("%0*d", ClaimCodeDigits, n.Int64()), nil
+}
+
+// netPrefix 把客户端 IP 归一到「网络前缀」：IPv4 取前 24 位，IPv6 取前 64 位。
+//
+// 只用来判断「兑换和签发是不是同一个网络」，不当作安全边界——印尼大量使用
+// 运营商级 NAT，同一个出口后面有很多互不相干的用户（§12.3）。
+func netPrefix(ipStr string) string {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return ""
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.Mask(net.CIDRMask(24, 32)).String() + "/24"
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }

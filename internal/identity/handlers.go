@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -20,9 +21,10 @@ const (
 	RoleUser Role = "user"
 )
 
-// Route 是身份包对外注册的一条路由，连同它在授权矩阵里的授权声明。
+// Route 是身份包对外注册的一条路由，连同它的授权声明。
 //
-// Register 和授权矩阵测试用的是同一张表，所以新增接口时不可能漏掉权限声明（§10.12）。
+// Register 和授权矩阵测试用的是同一张表，而且 Register 就按 Permitted 统一做权限检查，
+// 所以「表里写了允许、handler 里忘了检查」这种情况不可能出现（§10.12）。
 type Route struct {
 	Method    string
 	Pattern   string
@@ -34,7 +36,7 @@ var Routes = []Route{
 	{
 		Method:  http.MethodPost,
 		Pattern: "/api/me",
-		// 访客填称呼就创建身份；已有身份的人再次提交也是允许的（幂等地返回原身份）。
+		// 访客填称呼就创建身份；已有身份的人再次提交是幂等的。
 		Permitted: map[Role]bool{RoleGuest: true, RoleUser: true},
 	},
 	{
@@ -55,12 +57,16 @@ var Routes = []Route{
 	{
 		Method:  http.MethodPost,
 		Pattern: "/api/claim/redeem",
-		// 两种身份都能兑换：有身份的人凭 token 兑换时会顺带合并身份（§5.2）。
+		// 两种身份都能进来：有身份的人凭 token 兑换时会先拿到 409，确认后才切换。
+		// 「凭码兑换只给没有身份的设备用」是业务规则，在 handler 里判。
 		Permitted: map[Role]bool{RoleGuest: true, RoleUser: true},
 	},
 }
 
 type handler struct{ svc *Service }
+
+// identityKey 把 gate 解析好的身份放进请求上下文，handler 不用再各查一次。
+type identityKey struct{}
 
 // Register 把身份路由挂到主 mux 上。传入的 mux 已经套好中间件，
 // 所以这里不用自己处理 CSRF、限流和日志。
@@ -72,7 +78,7 @@ func Register(mux *http.ServeMux, svc *Service) {
 			// 表里有、实现没有，属于写代码时漏了，启动就应该炸。
 			panic("identity: 路由表里的路由没有实现: " + rt.Method + " " + rt.Pattern)
 		}
-		mux.HandleFunc(rt.Method+" "+rt.Pattern, fn(h))
+		mux.HandleFunc(rt.Method+" "+rt.Pattern, h.gate(rt, fn(h)))
 	}
 }
 
@@ -82,6 +88,29 @@ var routeHandlers = map[string]func(*handler) http.HandlerFunc{
 	"DELETE /api/me/devices/{id}": func(h *handler) http.HandlerFunc { return h.signOutDevice },
 	"POST /api/claim":             func(h *handler) http.HandlerFunc { return h.issueClaim },
 	"POST /api/claim/redeem":      func(h *handler) http.HandlerFunc { return h.redeemClaim },
+}
+
+// gate 是统一的一层：先解析身份，再按路由表决定放不放行，最后把身份放进 ctx。
+func (h *handler) gate(rt Route, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident := h.current(r)
+		if ident == nil && !rt.Permitted[RoleGuest] {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "还没有身份")
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, ident)))
+	}
+}
+
+// requireIdentity 取出 gate 放进 ctx 的身份。声明了只允许有身份用户的路由，这里一定非 nil；
+// 多判一次是为了万一以后有人改了路由表。
+func requireIdentity(w http.ResponseWriter, r *http.Request) (*Identity, bool) {
+	ident, _ := r.Context().Value(identityKey{}).(*Identity)
+	if ident == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "还没有身份")
+		return nil, false
+	}
+	return ident, true
 }
 
 // current 从 cookie 解析身份，没有或无效时返回 nil（不算错误）。
@@ -99,7 +128,7 @@ func (h *handler) current(r *http.Request) *Identity {
 
 // createMe 处理「首次填称呼」（§5.2）。
 func (h *handler) createMe(w http.ResponseWriter, r *http.Request) {
-	current := h.current(r)
+	current, _ := r.Context().Value(identityKey{}).(*Identity)
 
 	var body struct {
 		Nickname string `json:"nickname"`
@@ -136,9 +165,8 @@ func (h *handler) createMe(w http.ResponseWriter, r *http.Request) {
 
 // getMe 返回当前身份和本用户的设备列表（§10.3 的 10「我的」）。
 func (h *handler) getMe(w http.ResponseWriter, r *http.Request) {
-	current := h.current(r)
-	if current == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "还没有身份")
+	current, ok := requireIdentity(w, r)
+	if !ok {
 		return
 	}
 
@@ -148,18 +176,16 @@ func (h *handler) getMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"user":    toUserJSON(current.User),
 		"devices": toDevicesJSON(devices),
-	}
-	writeJSON(w, http.StatusOK, resp)
+	})
 }
 
 // signOutDevice 退出另一台设备（§10.3）。只能退自己的。
 func (h *handler) signOutDevice(w http.ResponseWriter, r *http.Request) {
-	current := h.current(r)
-	if current == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "还没有身份")
+	current, ok := requireIdentity(w, r)
+	if !ok {
 		return
 	}
 
@@ -181,15 +207,20 @@ func (h *handler) signOutDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// issueClaim 签发交接令牌和认领码（§5.2）。
+// issueClaim 签发交接令牌和认领码（§5.2 修订）。
 func (h *handler) issueClaim(w http.ResponseWriter, r *http.Request) {
-	current := h.current(r)
-	if current == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "还没有身份")
+	current, ok := requireIdentity(w, r)
+	if !ok {
 		return
 	}
 
-	token, code, expiresAt, err := h.svc.IssueClaim(r.Context(), current.User.ID)
+	// 每个用户每小时最多 5 次，免得有效码的数量被推高、撞库变容易（§5.2 修订）。
+	if !h.svc.AllowClaim(current.User.ID) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "签发交接令牌太频繁，请稍后再试")
+		return
+	}
+
+	token, code, expiresAt, err := h.svc.IssueClaim(r.Context(), current.User.ID, netPrefix(clientIP(r)))
 	if err != nil {
 		writeServiceError(w, "签发交接令牌失败", err)
 		return
@@ -202,33 +233,54 @@ func (h *handler) issueClaim(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// redeemClaim 兑换身份：凭 token 或凭 4 位认领码（§5.2、§10.3）。
+// redeemClaim 兑换身份：凭 token 或凭认领码（§5.2 修订、§10.3）。
 //
 // 只有 POST 会消耗 token。抓链接预览的机器人只发 GET，所以不会把一次性 token 用掉。
 func (h *handler) redeemClaim(w http.ResponseWriter, r *http.Request) {
+	current, _ := r.Context().Value(identityKey{}).(*Identity)
+
 	var body struct {
 		Token string `json:"token"`
 		Code  string `json:"code"`
+		// Confirm 表示用户在确认屏上点了「切换成 X」。没有它，服务端不会改动任何东西。
+		Confirm bool `json:"confirm"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "请求体不是合法的 JSON")
 		return
 	}
 
-	current := h.current(r)
-
 	switch {
 	case body.Token != "":
-		currentUserID := ""
+		var currentDeviceID, currentUserID string
 		if current != nil {
-			currentUserID = current.User.ID
+			currentDeviceID, currentUserID = current.Device.ID, current.User.ID
 		}
-		ident, deviceToken, err := h.svc.RedeemByToken(r.Context(), body.Token, r.UserAgent(), currentUserID)
+
+		ident, deviceToken, err := h.svc.RedeemByToken(
+			r.Context(), body.Token, r.UserAgent(), currentDeviceID, currentUserID, body.Confirm)
+
+		var conflict *ClaimConflictError
+		if errors.As(err, &conflict) {
+			// 409：告诉前端这个链接属于谁，让用户自己决定。token 没有被消耗。
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": ErrorBody{
+					Code:    "claim_conflict",
+					Message: "这个链接属于另一个身份，需要确认",
+				},
+				"other_nickname": conflict.OtherNickname,
+			})
+			return
+		}
 		if err != nil {
 			writeRedeemError(w, err)
 			return
 		}
-		h.svc.Cookies().Set(w, deviceToken, CookieMaxAge)
+
+		// 只有新挂了设备才换 cookie；「切换已有设备」那条路沿用原来的 cookie。
+		if deviceToken != "" {
+			h.svc.Cookies().Set(w, deviceToken, CookieMaxAge)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"user": toUserJSON(ident.User)})
 
 	case body.Code != "":
@@ -242,11 +294,14 @@ func (h *handler) redeemClaim(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "尝试太频繁，请稍后再试")
 			return
 		}
-		ident, deviceToken, err := h.svc.RedeemByCode(r.Context(), body.Code, r.UserAgent())
+
+		ident, deviceToken, err := h.svc.RedeemByCode(
+			r.Context(), body.Code, netPrefix(clientIP(r)), r.UserAgent())
 		if err != nil {
 			writeRedeemError(w, err)
 			return
 		}
+
 		h.svc.Cookies().Set(w, deviceToken, CookieMaxAge)
 		writeJSON(w, http.StatusOK, map[string]any{"user": toUserJSON(ident.User)})
 
@@ -273,6 +328,12 @@ func writeServiceError(w http.ResponseWriter, what string, err error) {
 	}
 	slog.Error(what, "err", err)
 	writeError(w, http.StatusServiceUnavailable, "unavailable", "暂时不可用，请稍后再试")
+}
+
+// ErrorBody 是统一的错误体：{"error":{"code":"…","message":"…"}}（§6）。
+type ErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 type userJSON struct {
@@ -315,7 +376,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 // writeError 用统一的错误格式：{"error":{"code":"…","message":"…"}}（§6）。
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]any{
-		"error": map[string]string{"code": code, "message": message},
+		"error": ErrorBody{Code: code, Message: message},
 	})
 }
 

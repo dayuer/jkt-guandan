@@ -6,6 +6,17 @@ function visit(search: string): void {
   window.history.replaceState(null, "", "/" + search);
 }
 
+function stubFetch(status: number, body: unknown) {
+  const mock = vi.fn(async () => ({ ok: status >= 200 && status < 300, status, json: async () => body }));
+  vi.stubGlobal("fetch", mock);
+  return mock;
+}
+
+function sentBody(mock: ReturnType<typeof vi.fn>): unknown {
+  const [, init] = mock.mock.calls[0] as unknown as [string, RequestInit];
+  return JSON.parse(String(init.body));
+}
+
 describe("redeemClaimFromURL", () => {
   afterEach(() => {
     localStorage.clear();
@@ -17,28 +28,21 @@ describe("redeemClaimFromURL", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    expect(await redeemClaimFromURL()).toBeNull();
+    expect(await redeemClaimFromURL()).toEqual({ kind: "none" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("用 POST 兑换，只留一个非敏感标记，并清掉地址栏里的 claim", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ user: { id: "u1", nickname: "老王" } }),
-    }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("兑换成功：用 POST、只写非敏感标记、清掉地址栏里的 claim", async () => {
+    const mock = stubFetch(200, { user: { id: "u1", nickname: "老王" } });
     visit("?claim=abc123&keep=1");
 
-    const user = await redeemClaimFromURL();
+    expect(await redeemClaimFromURL()).toEqual({ kind: "ok", user: { id: "u1", nickname: "老王" } });
 
-    expect(user).toEqual({ id: "u1", nickname: "老王" });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    const [path, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const [path, init] = mock.mock.calls[0] as unknown as [string, RequestInit];
     expect(path).toBe("/api/claim/redeem");
     // 必须是 POST：GET 不能消耗一次性 token（§10.3）。
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({ token: "abc123" });
+    expect(sentBody(mock)).toEqual({ token: "abc123" });
 
     // 只写非敏感标记；凭证留在 HttpOnly cookie 里，前端不存。
     expect(hasIdentityMarker()).toBe(true);
@@ -48,11 +52,29 @@ describe("redeemClaimFromURL", () => {
     expect(window.location.search).toBe("?keep=1");
   });
 
-  it("兑换失败时返回 null，不写标记，地址栏参数留着以便重试", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false })));
+  it("已有身份时服务端返回 409：带回对方称呼，什么也不动", async () => {
+    stubFetch(409, { error: { code: "claim_conflict" }, other_nickname: "小李" });
+    visit("?claim=abc123");
+
+    expect(await redeemClaimFromURL()).toEqual({ kind: "conflict", otherNickname: "小李" });
+    expect(hasIdentityMarker()).toBe(false);
+    // 参数留着：用户确认之后还要用它再提交一次。
+    expect(window.location.search).toBe("?claim=abc123");
+  });
+
+  it("用户确认时带上 confirm: true", async () => {
+    const mock = stubFetch(200, { user: { id: "u2", nickname: "小李" } });
+    visit("?claim=abc123");
+
+    await redeemClaimFromURL(true);
+    expect(sentBody(mock)).toEqual({ token: "abc123", confirm: true });
+  });
+
+  it("其它失败返回 failed，不写标记、不清参数", async () => {
+    stubFetch(400, { error: { code: "claim_invalid" } });
     visit("?claim=bad");
 
-    expect(await redeemClaimFromURL()).toBeNull();
+    expect(await redeemClaimFromURL()).toEqual({ kind: "failed" });
     expect(hasIdentityMarker()).toBe(false);
     expect(window.location.search).toBe("?claim=bad");
   });

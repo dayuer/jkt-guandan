@@ -3,7 +3,9 @@ package identity_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -412,7 +414,7 @@ func TestRedeemByTokenMovesIdentityToNewBrowser(t *testing.T) {
 		t.Fatalf("签发 claim 失败：%d %s", claim.status, claim.raw)
 	}
 	token := claim.str("claim_token")
-	if token == "" || len(claim.str("code")) != 4 {
+	if token == "" || len(claim.str("code")) != identity.ClaimCodeDigits {
 		t.Fatalf("应当同时返回 token 和 4 位认领码：%s", claim.raw)
 	}
 
@@ -561,117 +563,265 @@ func TestRedeemByCodeRejectedWhenAlreadyIdentified(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// 身份合并
-// ---------------------------------------------------------------------------
-
-func TestRedeemMergesAccidentallyCreatedIdentity(t *testing.T) {
+// 回归测试（原审计 PoC `TestAuditPoC_CodeCollisionReturnsOtherUser` 的另一半）：
+// 已用或已过期的同号记录，不能挡住仍然有效的那个码。
+func TestUsedOrExpiredRowDoesNotShadowLiveCode(t *testing.T) {
 	f := newFixture(t, false)
+	owner := f.createIdentity(f.http, "老王")
+	code := f.do(http.MethodPost, "/api/claim", nil).str("code")
 
-	// 老王先在微信里有了身份。
-	primary := f.createIdentity(f.http, "老王")
-
-	// 他在 Safari 里清过存储，于是又填了一次称呼，错建了第二个身份。
-	// 时间要往前走，否则两个身份的 created_at 一样，「先注册的」就没法确定了。
-	f.clk.Advance(time.Minute)
-	safari := f.newBrowser()
-	secondary := f.createIdentity(safari, "老王")
-	if secondary == primary {
-		t.Fatal("两个浏览器应当是不同身份")
-	}
-
-	// 他回到微信拿 claim token，然后跳到 Safari 兑换。
-	token := f.do(http.MethodPost, "/api/claim", nil).str("claim_token")
-	redeemed := f.doWith(safari, http.MethodPost, "/api/claim/redeem", map[string]string{"token": token})
-	if redeemed.status != http.StatusOK {
-		t.Fatalf("兑换失败：%d %s", redeemed.status, redeemed.raw)
-	}
-
-	// 认回的是先注册的那个。
-	if got := redeemed.userField("id"); got != primary {
-		t.Fatalf("应当保留先注册的身份 %s，实际 %s", primary, got)
-	}
-
-	// 错建的身份被标记成已合并，没有删除（§5.2、§14）。
-	var mergedInto string
-	err := f.st.Read().QueryRow(
-		`SELECT COALESCE(merged_into, '') FROM users WHERE id = ?`, secondary).Scan(&mergedInto)
+	// 塞一条同号的旧记录：已经用过、也过期了。
+	err := f.st.Write(context.Background(), func(ctx context.Context, tx *store.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO claim_tokens (token_hash, code, user_id, expires_at, used_at, attempts, issued_net)
+			 VALUES (?, ?, ?, 0, 0, 0, NULL)`,
+			[]byte("stale-hash"), code, owner)
+		return err
+	})
 	if err != nil {
-		t.Fatalf("查旧身份: %v", err)
-	}
-	if mergedInto != primary {
-		t.Fatalf("旧身份应当指向 %s，实际 %q", primary, mergedInto)
+		t.Fatalf("插入旧记录: %v", err)
 	}
 
-	// Safari 现在也是老王的身份了。
-	me := f.doWith(safari, http.MethodGet, "/api/me", nil)
-	if me.userField("id") != primary {
-		t.Fatalf("合并后应当认回主身份，实际 %s", me.userField("id"))
+	fresh := f.newBrowser()
+	r := f.doWith(fresh, http.MethodPost, "/api/claim/redeem", map[string]string{"code": code})
+	if r.status != http.StatusOK || r.userField("id") != owner {
+		t.Fatalf("有效码不该被已用/过期的同号记录挡住，实际 %d %s", r.status, r.raw)
 	}
 }
 
-func TestMergeMovesSeatsAndKeepsEarlierSeat(t *testing.T) {
+// 有效码之间不会重复：连签若干次，所有「未使用且未过期」的码必须互不相同（§5.2 修订第 2 条）。
+func TestLiveClaimCodesNeverCollide(t *testing.T) {
 	f := newFixture(t, false)
 
-	primary := f.createIdentity(f.http, "老王")
-	f.clk.Advance(time.Minute) // 让「先注册的」有确定答案
-	safari := f.newBrowser()
-	secondary := f.createIdentity(safari, "老王")
-
-	// 两个身份各自在一个局里占了座位，其中 secondary 的那个更早。
-	seedGame := func(id, hostID string) {
-		t.Helper()
-		err := f.st.Write(context.Background(), func(ctx context.Context, tx *store.Tx) error {
-			_, err := tx.ExecContext(ctx,
-				`INSERT INTO games (id, short_code, host_id, starts_at, area, venue, kind, status, created_at)
-				 VALUES (?, ?, ?, 0, 'SCBD', 'Pacific Place', 'classic', 'open', 0)`, id, "c"+id, hostID)
-			return err
-		})
-		if err != nil {
-			t.Fatalf("建牌局 %s: %v", id, err)
+	seen := map[string]bool{}
+	// 每个用户同时只有一个有效码，所以要从多个用户那里收集。
+	for i := 0; i < 6; i++ {
+		browser := f.newBrowser()
+		f.createIdentity(browser, "牌友"+string(rune('A'+i)))
+		code := f.doWith(browser, http.MethodPost, "/api/claim", nil).str("code")
+		if len(code) != identity.ClaimCodeDigits {
+			t.Fatalf("认领码应当是 %d 位，实际 %q", identity.ClaimCodeDigits, code)
 		}
-	}
-	seedGame("g1", primary) // 两个人在同一局里都占了座，primary 的座位更早
-	seedGame("g2", primary) // 只有 secondary 占座
-
-	seat := func(gameID, userID string, no int, at int64) {
-		t.Helper()
-		err := f.st.Write(context.Background(), func(ctx context.Context, tx *store.Tx) error {
-			_, err := tx.ExecContext(ctx,
-				`INSERT INTO seats (game_id, seat_no, user_id, created_at) VALUES (?, ?, ?, ?)`,
-				gameID, no, userID, at)
-			return err
-		})
-		if err != nil {
-			t.Fatalf("占座 %s/%s: %v", gameID, userID, err)
+		if seen[code] {
+			t.Fatalf("出现了重复的有效码 %q", code)
 		}
-	}
-	seat("g1", primary, 1, 100)   // 更早
-	seat("g1", secondary, 2, 200) // 更晚：合并后应当被丢掉
-	seat("g2", secondary, 1, 100) // 只有它，应当搬过去
-
-	token := f.do(http.MethodPost, "/api/claim", nil).str("claim_token")
-	if resp := f.doWith(safari, http.MethodPost, "/api/claim/redeem", map[string]string{"token": token}); resp.status != http.StatusOK {
-		t.Fatalf("兑换失败：%d %s", resp.status, resp.raw)
+		seen[code] = true
 	}
 
-	// g1：只留 primary 那个更早的座位。
-	var g1Count, g1Seat int
+	// 库里的有效码也确实两两不同。
+	rows, err := f.st.Read().Query(
+		`SELECT code FROM claim_tokens WHERE used_at IS NULL AND expires_at > ?`, f.clk.Now().Unix())
+	if err != nil {
+		t.Fatalf("查有效码: %v", err)
+	}
+	defer rows.Close()
+
+	live := map[string]bool{}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			t.Fatalf("扫描: %v", err)
+		}
+		if live[c] {
+			t.Fatalf("库里有重复的有效码 %q", c)
+		}
+		live[c] = true
+	}
+	if len(live) != 6 {
+		t.Fatalf("应当有 6 个有效码，实际 %d", len(live))
+	}
+}
+
+// 同一用户只保留一个有效码：签发新码会把旧码作废（§5.2 修订第 3 条）。
+func TestIssuingClaimInvalidatesPreviousCode(t *testing.T) {
+	f := newFixture(t, false)
+	f.createIdentity(f.http, "老王")
+
+	first := f.do(http.MethodPost, "/api/claim", nil).str("code")
+	second := f.do(http.MethodPost, "/api/claim", nil).str("code")
+	if first == second {
+		t.Fatal("两次签发不该拿到同一个码")
+	}
+
+	fresh := f.newBrowser()
+	if r := f.doWith(fresh, http.MethodPost, "/api/claim/redeem", map[string]string{"code": first}); r.status != http.StatusBadRequest {
+		t.Fatalf("旧码应当已经作废，实际 %d %s", r.status, r.raw)
+	}
+	if r := f.doWith(f.newBrowser(), http.MethodPost, "/api/claim/redeem", map[string]string{"code": second}); r.status != http.StatusOK {
+		t.Fatalf("新码应当可用，实际 %d %s", r.status, r.raw)
+	}
+}
+
+// 认领码只能在签发时的同一个网络里兑换（§5.2 修订第 4 条）。
+func TestClaimCodeRejectedFromDifferentNetwork(t *testing.T) {
+	f := newFixture(t, false)
+	owner := f.createIdentity(f.http, "老王")
+	code := f.do(http.MethodPost, "/api/claim", nil).str("code")
+
+	// 签发时记下的是测试客户端的网络（127.0.0.1 → 127.0.0.0/24）。
+	var issuedNet string
 	if err := f.st.Read().QueryRow(
-		`SELECT count(*), COALESCE(min(seat_no), 0) FROM seats WHERE game_id = 'g1'`).Scan(&g1Count, &g1Seat); err != nil {
-		t.Fatalf("查 g1: %v", err)
+		`SELECT COALESCE(issued_net, '') FROM claim_tokens WHERE code = ?`, code).Scan(&issuedNet); err != nil {
+		t.Fatalf("查 issued_net: %v", err)
 	}
-	if g1Count != 1 || g1Seat != 1 {
-		t.Fatalf("g1 应当只剩更早的那个座位，实际 %d 个、座位号 %d", g1Count, g1Seat)
+	if issuedNet != "127.0.0.0/24" {
+		t.Fatalf("签发时应当记下网络前缀，实际 %q", issuedNet)
 	}
 
-	// g2：座位搬到了主身份名下。
-	var g2Owner string
-	if err := f.st.Read().QueryRow(`SELECT user_id FROM seats WHERE game_id = 'g2'`).Scan(&g2Owner); err != nil {
-		t.Fatalf("查 g2: %v", err)
+	// 换个网络兑换：失败，且和别的失败长得一模一样。
+	if _, _, err := f.svc.RedeemByCode(context.Background(), code, "10.9.9.0/24", "other-ua"); !errors.Is(err, identity.ErrClaimInvalid) {
+		t.Fatalf("不同网络应当返回统一的 claim_invalid，实际 %v", err)
 	}
-	if g2Owner != primary {
-		t.Fatalf("g2 的座位应当搬到 %s，实际 %s", primary, g2Owner)
+
+	// 同一个网络兑换：成功。
+	if _, _, err := f.svc.RedeemByCode(context.Background(), code, "127.0.0.0/24", "same-ua"); err != nil {
+		t.Fatalf("同一网络应当可以兑换: %v", err)
+	}
+	_ = owner
+}
+
+// 全站失败预算：失败太多时暂停凭码兑换，但凭 token 兑换不受影响（§5.2 修订第 5 条）。
+func TestGlobalFailureBudgetSuspendsCodeRedeem(t *testing.T) {
+	f := newFixture(t, false)
+	f.createIdentity(f.http, "老王")
+	code := f.do(http.MethodPost, "/api/claim", nil).str("code")
+
+	// 连续失败，把预算打爆。
+	for i := 0; i < 21; i++ {
+		if _, _, err := f.svc.RedeemByCode(context.Background(), "000000", "127.0.0.0/24", "ua"); !errors.Is(err, identity.ErrClaimInvalid) {
+			t.Fatalf("第 %d 次失败应当是 claim_invalid，实际 %v", i, err)
+		}
+	}
+
+	// 现在连正确的码也兑换不了。
+	if _, _, err := f.svc.RedeemByCode(context.Background(), code, "127.0.0.0/24", "ua"); !errors.Is(err, identity.ErrClaimInvalid) {
+		t.Fatalf("暂停期间应当一律返回 claim_invalid，实际 %v", err)
+	}
+
+	// 凭 token 兑换不受影响。用另一个人签发的 token：同一个用户再签一次
+	// 会把上面那个码作废，测不到我们想测的东西。
+	other := f.newBrowser()
+	f.createIdentity(other, "小李")
+	token := f.doWith(other, http.MethodPost, "/api/claim", nil).str("claim_token")
+	if r := f.doWith(f.newBrowser(), http.MethodPost, "/api/claim/redeem", map[string]string{"token": token}); r.status != http.StatusOK {
+		t.Fatalf("暂停只针对凭码兑换，token 应当照常可用，实际 %d %s", r.status, r.raw)
+	}
+
+	// 过了冷却期，凭码兑换恢复。
+	f.clk.Advance(6 * time.Minute)
+	if _, _, err := f.svc.RedeemByCode(context.Background(), code, "127.0.0.0/24", "ua"); err != nil {
+		t.Fatalf("冷却期过后应当恢复: %v", err)
+	}
+}
+
+// 签发交接令牌每用户每小时最多 5 次（§5.2 修订第 3 条）。
+func TestIssueClaimIsRateLimitedPerUser(t *testing.T) {
+	f := newFixture(t, false)
+	f.createIdentity(f.http, "老王")
+
+	for i := 0; i < 5; i++ {
+		if r := f.do(http.MethodPost, "/api/claim", nil); r.status != http.StatusOK {
+			t.Fatalf("第 %d 次签发应当成功，实际 %d %s", i+1, r.status, r.raw)
+		}
+	}
+	r := f.do(http.MethodPost, "/api/claim", nil)
+	if r.status != http.StatusTooManyRequests {
+		t.Fatalf("第 6 次签发应当被限流，实际 %d %s", r.status, r.raw)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 认领链接撞上已有身份（审计 PoC 的回归测试）
+// ---------------------------------------------------------------------------
+
+// 回归测试（原审计 PoC `TestAuditPoC_ClaimLinkMergesVictim`）：
+// 攻击者把自己的 claim 链接发到群里，已有身份的受害者打开。
+// 在用户明确确认之前，受害者的身份、攻击者的身份、这台设备、以及 token 本身都不能变。
+func TestClaimLinkDoesNotSwitchIdentityWithoutConfirm(t *testing.T) {
+	f := newFixture(t, false)
+
+	victim := f.createIdentity(f.http, "受害者")
+	f.clk.Advance(time.Minute)
+	attacker := f.newBrowser()
+	attackerID := f.createIdentity(attacker, "攻击者")
+	token := f.doWith(attacker, http.MethodPost, "/api/claim", nil).str("claim_token")
+
+	// 受害者打开 ?claim=<攻击者的 token>；前端会自动发一次不带 confirm 的请求。
+	r := f.do(http.MethodPost, "/api/claim/redeem", map[string]string{"token": token})
+	if r.status != http.StatusConflict {
+		t.Fatalf("应当返回 409 让用户确认，实际 %d %s", r.status, r.raw)
+	}
+	if r.str("other_nickname") != "攻击者" {
+		t.Fatalf("409 应当带上对方的称呼，实际 %s", r.raw)
+	}
+
+	// 受害者的身份没变。
+	if me := f.do(http.MethodGet, "/api/me", nil); me.userField("id") != victim {
+		t.Fatalf("确认之前受害者的身份不该变，实际 %s", me.userField("id"))
+	}
+	// 攻击者也没拿到受害者的身份。
+	if me := f.doWith(attacker, http.MethodGet, "/api/me", nil); me.userField("id") != attackerID {
+		t.Fatalf("攻击者的身份不该变，实际 %s", me.userField("id"))
+	}
+	// 受害者的身份没有被标记成已合并——压根没有发生合并。
+	var mergedInto sql.NullString
+	if err := f.st.Read().QueryRow(
+		`SELECT merged_into FROM users WHERE id = ?`, victim).Scan(&mergedInto); err != nil {
+		t.Fatalf("查受害者: %v", err)
+	}
+	if mergedInto.Valid {
+		t.Fatalf("不该发生任何合并，受害者的 merged_into = %q", mergedInto.String)
+	}
+
+	// token 没有被消耗：用户确认之后还能用。
+	confirm := f.do(http.MethodPost, "/api/claim/redeem", map[string]any{"token": token, "confirm": true})
+	if confirm.status != http.StatusOK {
+		t.Fatalf("带 confirm 的兑换应当成功，实际 %d %s", confirm.status, confirm.raw)
+	}
+	if confirm.userField("id") != attackerID {
+		t.Fatalf("确认后应当切换成 %s，实际 %s", attackerID, confirm.userField("id"))
+	}
+
+	// 这台设备现在属于新身份了。
+	if me := f.do(http.MethodGet, "/api/me", nil); me.userField("id") != attackerID {
+		t.Fatalf("确认后设备应当切过去，实际 %s", me.userField("id"))
+	}
+	// 原来的身份还在，没有被删也没有被合并（§5.2 修订：只切换，不迁移）。
+	var nickname string
+	if err := f.st.Read().QueryRow(
+		`SELECT nickname FROM users WHERE id = ?`, victim).Scan(&nickname); err != nil {
+		t.Fatalf("原身份应当仍然存在: %v", err)
+	}
+}
+
+// 没有身份的设备凭 token 兑换，行为不变：直接成为那个身份（正常的跳出流程）。
+func TestRedeemTokenWithoutCurrentIdentitySwitchesSilently(t *testing.T) {
+	f := newFixture(t, false)
+	owner := f.createIdentity(f.http, "老王")
+	token := f.do(http.MethodPost, "/api/claim", nil).str("claim_token")
+
+	fresh := f.newBrowser()
+	r := f.doWith(fresh, http.MethodPost, "/api/claim/redeem", map[string]string{"token": token})
+	if r.status != http.StatusOK {
+		t.Fatalf("没有身份时应当直接兑换成功，实际 %d %s", r.status, r.raw)
+	}
+	if r.userField("id") != owner {
+		t.Fatalf("应当认回 %s，实际 %s", owner, r.userField("id"))
+	}
+}
+
+// 同一台设备拿自己身份的 token 兑换：不算冲突，照常换发一台新设备。
+func TestRedeemOwnTokenIsNotAConflict(t *testing.T) {
+	f := newFixture(t, false)
+	me := f.createIdentity(f.http, "老王")
+	token := f.do(http.MethodPost, "/api/claim", nil).str("claim_token")
+
+	r := f.do(http.MethodPost, "/api/claim/redeem", map[string]string{"token": token})
+	if r.status != http.StatusOK {
+		t.Fatalf("自己的 token 不该算冲突，实际 %d %s", r.status, r.raw)
+	}
+	if r.userField("id") != me {
+		t.Fatalf("身份不该变，实际 %s", r.userField("id"))
 	}
 }
 

@@ -1,12 +1,11 @@
 /**
- * 身份相关的前端逻辑（docs/h5-pwa-plan.md §4、docs/server-design.md §10.3）。
+ * 身份相关的前端逻辑（docs/h5-pwa-plan.md §4、docs/server-design.md §10.3、§5.2 修订）。
  *
  * 设备凭证**只存在于 HttpOnly cookie 里**：服务端通过 Set-Cookie 下发，JS 读不到，
  * 也不在 localStorage 或任何 JS 能读的地方留副本。一旦有明文副本，
  * 任何一次 XSS 都能把它偷走，HttpOnly 就白设了——§10.3 的原话是「cookie 被盗等于身份被盗」。
  *
- * cookie 丢了（清缓存、换浏览器环境）就走 claim token 或 4 位认领码找回，
- * 这正是 §5.2 的兜底，不需要前端自己存凭证。
+ * cookie 丢了（清缓存、换浏览器环境）就走 claim token 或认领码找回，这正是 §5.2 的兜底。
  *
  * 这里唯一写 localStorage 的是一个**非敏感**标记，只用来决定首屏显示
  * 「填称呼」还是「欢迎回来」，绝不能当凭证用。
@@ -45,23 +44,46 @@ export function clearIdentityMarker(): void {
   }
 }
 
+/** URL 里有没有等着兑换的认领链接。 */
+export function pendingClaimToken(): string | null {
+  return new URL(window.location.href).searchParams.get("claim");
+}
+
+export type RedeemResult =
+  | { kind: "none" }
+  | { kind: "ok"; user: User }
+  | { kind: "conflict"; otherNickname: string }
+  | { kind: "failed" };
+
 /**
- * URL 里带 `?claim=…` 时用 POST 兑换，成功后清掉地址栏参数。
- * 返回兑换到的用户；没有参数或兑换失败时返回 null。
+ * 用 URL 里的 claim token 兑换身份。
  *
- * 只有 POST 会消耗 token：打开页面（GET）不会，链接预览抓取器也就不会把它用掉（§10.3）。
+ * `confirm=false`（默认）：服务端在「这台设备已经有别人身份」时只会返回 409，
+ * **不会**消耗 token，也不会改动任何东西。所以这个请求本身是只读的，
+ * 它只是用来问出「这个链接属于谁」，好把确认屏渲染出来。
+ * `confirm=true`：用户在确认屏上点了「切换成 X」之后才发，这时服务端才会
+ * 消耗 token 并把这台设备的身份切过去。
+ *
+ * 打开带 claim 的页面（GET）不消耗 token——微信和 WhatsApp 的链接预览抓取器只发 GET，
+ * 所以一次性 token 不会在用户还没点进来的时候就被用掉（§10.3）。
  */
-export async function redeemClaimFromURL(): Promise<User | null> {
+export async function redeemClaimFromURL(confirm = false): Promise<RedeemResult> {
   const url = new URL(window.location.href);
   const token = url.searchParams.get("claim");
-  if (!token) return null;
+  if (!token) return { kind: "none" };
 
   const resp = await fetch("/api/claim/redeem", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify(confirm ? { token, confirm: true } : { token }),
   });
-  if (!resp.ok) return null;
+
+  if (resp.status === 409) {
+    const body = (await resp.json()) as { other_nickname?: string };
+    // 冲突时保留地址栏参数：用户确认完还要用这个 token 再提交一次。
+    return { kind: "conflict", otherNickname: body.other_nickname ?? "" };
+  }
+  if (!resp.ok) return { kind: "failed" };
 
   // 凭证已经通过 Set-Cookie 下来了，这里只留一个非敏感标记。
   markHasIdentity();
@@ -73,5 +95,5 @@ export async function redeemClaimFromURL(): Promise<User | null> {
   const qs = url.searchParams.toString();
   window.history.replaceState(null, "", url.pathname + (qs ? `?${qs}` : "") + url.hash);
 
-  return body.user;
+  return { kind: "ok", user: body.user };
 }

@@ -67,7 +67,9 @@ type Service struct {
 	cookies CookiePolicy
 
 	createLimiter *Limiter // POST /api/me：每 IP 每小时 20 次（§12.3）
-	codeLimiter   *Limiter // 认领码兑换：每 IP 每分钟 10 次（§12.3）
+	issueLimiter  *Limiter // POST /api/claim：每用户每小时 5 次（§5.2 修订）
+	codeLimiter   *Limiter // 凭码兑换：每 IP 每分钟 10 次（§12.3）
+	codeBudget    *codeFailureBudget
 }
 
 // NewService 建身份服务。dev 决定 cookie 策略（§10.3）。
@@ -80,7 +82,9 @@ func NewService(st *store.Store, clk clock.Clock, dev bool) *Service {
 		clk:           clk,
 		cookies:       CookiePolicyFor(dev),
 		createLimiter: NewLimiter(20.0/60, 20, clk),
+		issueLimiter:  NewLimiter(5.0/60, 5, clk),
 		codeLimiter:   NewLimiter(10, 10, clk),
+		codeBudget:    newCodeFailureBudget(clk),
 	}
 }
 
@@ -92,6 +96,9 @@ func (s *Service) AllowCreate(ip string) bool { return s.createLimiter.Allow(ip)
 
 // AllowCodeRedeem 检查这个 IP 现在能不能试认领码。
 func (s *Service) AllowCodeRedeem(ip string) bool { return s.codeLimiter.Allow(ip) }
+
+// AllowClaim 检查这个用户现在能不能签发新的交接令牌（每用户每小时 5 次）。
+func (s *Service) AllowClaim(userID string) bool { return s.issueLimiter.Allow(userID) }
 
 // Current 用设备 token 解析出身份。没有有效身份时返回 ErrNotFound。
 func (s *Service) Current(ctx context.Context, deviceToken string) (*Identity, error) {
@@ -147,7 +154,8 @@ func (s *Service) Current(ctx context.Context, deviceToken string) (*Identity, e
 
 // CreateOrGet 处理「首次填称呼」。已经认出身份的请求直接返回现有身份，不新建用户。
 //
-// 返回的 deviceToken 只在这次真的新建了设备时非空，前端拿到后镜像一份到 localStorage。
+// 返回的 deviceToken 只在这次真的新建了设备时非空，由接口层写进 Set-Cookie；
+// 它不会出现在任何响应体里（§10.3）。
 func (s *Service) CreateOrGet(ctx context.Context, current *Identity, nickname, userAgent string) (Identity, string, error) {
 	clean, err := NormalizeNickname(nickname)
 	if err != nil {
@@ -189,17 +197,55 @@ func (s *Service) CreateOrGet(ctx context.Context, current *Identity, nickname, 
 	return created, deviceToken, nil
 }
 
-// IssueClaim 签发一次性交接令牌和 4 位认领码（§5.2）。
-func (s *Service) IssueClaim(ctx context.Context, userID string) (token, code string, expiresAt time.Time, err error) {
+// IssueClaim 签发一次性交接令牌和 6 位认领码（§5.2 修订）。
+//
+// clientNet 是签发时的网络前缀（netPrefix 的结果），兑换时必须来自同一个网络。
+//
+// 签发时做两件事：把这个用户之前还没用的码作废（同一时刻只留一个有效码），
+// 以及在写事务里保证新码和现有的有效码不重复。
+func (s *Service) IssueClaim(ctx context.Context, userID, clientNet string) (token, code string, expiresAt time.Time, err error) {
 	token = newToken(ClaimTokenBytes)
-	code = newClaimCode()
-	expiresAt = s.clk.Now().Add(ClaimTTL)
+	now := s.clk.Now()
+	expiresAt = now.Add(ClaimTTL)
 
 	err = s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		// 同一用户只保留一个有效码：把旧的标成已经用过（也就是不再可用）。
+		// 这里写 used_at 而不是只改 expires_at，是为了把它的号码从
+		// claim_code_live 唯一索引里腾出来。
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE claim_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL`,
+			now.Unix(), userID); err != nil {
+			return err
+		}
+
+		// 6 位码的空间是 10^6，重试几次就够；一直撞上就报错，不静默返回重复的码。
+		// 查重条件必须和 claim_code_live 索引的谓词一致（used_at IS NULL），
+		// 否则会出现「查重通过但插入撞唯一索引」。
+		for attempt := 0; attempt < 8; attempt++ {
+			candidate, err := newClaimCode()
+			if err != nil {
+				return err
+			}
+			var taken int
+			if err := tx.QueryRowContext(ctx,
+				`SELECT count(*) FROM claim_tokens WHERE code = ? AND used_at IS NULL`,
+				candidate).Scan(&taken); err != nil {
+				return err
+			}
+			if taken > 0 {
+				continue
+			}
+			code = candidate
+			break
+		}
+		if code == "" {
+			return errors.New("连续 8 次都生成了已被占用的认领码")
+		}
+
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO claim_tokens (token_hash, code, user_id, expires_at, used_at, attempts)
-			 VALUES (?, ?, ?, ?, NULL, 0)`,
-			hashToken(token), code, userID, expiresAt.Unix())
+			`INSERT INTO claim_tokens (token_hash, code, user_id, expires_at, used_at, attempts, issued_net)
+			 VALUES (?, ?, ?, ?, NULL, 0, ?)`,
+			hashToken(token), code, userID, expiresAt.Unix(), nullIfEmpty(clientNet))
 		return err
 	})
 	if err != nil {
@@ -208,27 +254,46 @@ func (s *Service) IssueClaim(ctx context.Context, userID string) (token, code st
 	return token, code, expiresAt, nil
 }
 
-// RedeemByToken 用 claim token 兑换身份：换出同一个 user_id，并给这台设备发新的 device_token。
+// ClaimConflictError 表示这台设备已经有一个别人的身份，需要用户明确确认才能切换（§5.2 修订）。
 //
-// 只有前端的 POST 会走到这里。抓取链接预览的机器人只发 GET，所以不会把一次性 token 用掉（§10.3）。
-// currentUserID 是这台设备当前（可能是误建的）身份，会和 token 指向的身份合并。
-func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentUserID string) (Identity, string, error) {
+// 抛出它的时候 token 还没有被消耗，两个身份和这台设备的状态都没变。
+type ClaimConflictError struct {
+	// OtherNickname 是 token 对应身份的称呼，用来在确认屏上告诉用户「这个链接属于 X」。
+	OtherNickname string
+}
+
+func (e *ClaimConflictError) Error() string {
+	return "认领链接属于另一个身份，需要确认"
+}
+
+// RedeemByToken 用 claim token 兑换身份。三种情况：
+//
+//   - 这台设备还没有身份：直接成为 token 对应的身份；
+//   - 已经有同一个身份：照常兑换，只是新挂一台设备；
+//   - 已经有**另一个**身份：**不合并、也不自动切换**，返回 ClaimConflictError（token 不消耗）。
+//     用户在前端确认后带上 confirm 再提交一次，这时才把这台设备的 user_id 切过去。
+//     原来的身份原样保留——它的座位、设备、订阅都不动，也不会被删除。
+//
+// 只有前端的 POST 会走到这里；抓链接预览的机器人只发 GET，不会消耗一次性 token（§10.3）。
+func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentDeviceID, currentUserID string, confirm bool) (Identity, string, error) {
 	if token == "" {
 		return Identity{}, "", ErrClaimInvalid
 	}
 
 	deviceToken := newToken(DeviceTokenBytes)
+	// issuedToken 只有在真的新挂了一台设备时才非空：切换已有设备的那条路不需要新凭证，
+	// 原来那个 cookie 继续用（换成一个没入库的 token 会让用户立刻掉线）。
+	issuedToken := ""
 	now := s.clk.Now()
 
 	var result Identity
 	err := s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		// 这一条语句同时保证「只能用一次」和「过期作废」（§5.2）。
-		var userID string
+		// 先只读一下这个 token 属于谁——不消耗，好让「需要确认」这条路可以原样返回。
+		var ownerID string
 		err := tx.QueryRowContext(ctx, `
-			UPDATE claim_tokens SET used_at = ?
-			 WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
-			RETURNING user_id`,
-			now.Unix(), hashToken(token), now.Unix()).Scan(&userID)
+			SELECT user_id FROM claim_tokens
+			 WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
+			hashToken(token), now.Unix()).Scan(&ownerID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrClaimInvalid
 		}
@@ -236,19 +301,44 @@ func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentUs
 			return err
 		}
 
-		primary := userID
-		if currentUserID != "" && currentUserID != userID {
-			primary, err = mergeUsers(ctx, tx, currentUserID, userID)
+		if currentUserID != "" && currentUserID != ownerID {
+			if !confirm {
+				owner, err := loadUser(ctx, tx, ownerID)
+				if err != nil {
+					return err
+				}
+				return &ClaimConflictError{OtherNickname: owner.Nickname}
+			}
+			// 用户确认过了：只把这台设备切过去，不做任何数据迁移。
+			if err := consumeClaimToken(ctx, tx, token, now); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE devices SET user_id = ? WHERE id = ?`, ownerID, currentDeviceID); err != nil {
+				return err
+			}
+			user, err := loadUser(ctx, tx, ownerID)
 			if err != nil {
 				return err
 			}
+			device, err := loadDevice(ctx, tx, currentDeviceID)
+			if err != nil {
+				return err
+			}
+			result = Identity{User: user, Device: device}
+			return nil
 		}
 
-		device, err := insertDevice(ctx, tx, now, primary, deviceToken, userAgent)
+		// 没有身份，或者本来就是同一个人：消耗 token，给这台设备挂一条新记录。
+		if err := consumeClaimToken(ctx, tx, token, now); err != nil {
+			return err
+		}
+		device, err := insertDevice(ctx, tx, now, ownerID, deviceToken, userAgent)
 		if err != nil {
 			return err
 		}
-		user, err := loadUser(ctx, tx, primary)
+		issuedToken = deviceToken
+		user, err := loadUser(ctx, tx, ownerID)
 		if err != nil {
 			return err
 		}
@@ -258,12 +348,35 @@ func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentUs
 	if err != nil {
 		return Identity{}, "", err
 	}
-	return result, deviceToken, nil
+	return result, issuedToken, nil
 }
 
-// RedeemByCode 用 4 位认领码兑换身份。只允许还没有身份的设备使用（§5.2）。
-func (s *Service) RedeemByCode(ctx context.Context, code, userAgent string) (Identity, string, error) {
-	if !isClaimCode(code) {
+// consumeClaimToken 消耗一次性 token：这一条语句同时保证「只能用一次」和「过期作废」（§5.2）。
+func consumeClaimToken(ctx context.Context, tx *store.Tx, token string, now time.Time) error {
+	var ownerID string
+	err := tx.QueryRowContext(ctx, `
+		UPDATE claim_tokens SET used_at = ?
+		 WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+		RETURNING user_id`,
+		now.Unix(), hashToken(token), now.Unix()).Scan(&ownerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrClaimInvalid
+	}
+	return err
+}
+
+// RedeemByCode 用 6 位认领码兑换身份。只允许还没有身份的设备使用（§5.2 修订）。
+//
+// 多层防护：
+//   - 只查「有效」的记录（未使用且未过期），所以旧记录不会挡住新的同号码；
+//   - 签发和兑换必须来自同一个网络前缀；
+//   - 单个码最多试 5 次；
+//   - 全站失败太多时整体暂停凭码兑换（s.codeBudget）。
+//
+// 所有失败都返回同一个 ErrClaimInvalid，不透露码是否存在（§10.3）。
+func (s *Service) RedeemByCode(ctx context.Context, code, clientNet, userAgent string) (Identity, string, error) {
+	if !isClaimCode(code) || s.codeBudget.suspended() {
+		s.codeBudget.recordFailure()
 		return Identity{}, "", ErrClaimInvalid
 	}
 
@@ -276,15 +389,15 @@ func (s *Service) RedeemByCode(ctx context.Context, code, userAgent string) (Ide
 			rowid     int64
 			userID    string
 			attempts  int
-			expiresAt int64
-			usedAt    sql.NullInt64
+			issuedNet sql.NullString
 		)
+		// 只看有效的记录：用过的、过期的都不参与，也就挡不住后续的同号码。
 		err := tx.QueryRowContext(ctx, `
-			SELECT rowid, user_id, attempts, expires_at, used_at
+			SELECT rowid, user_id, attempts, issued_net
 			  FROM claim_tokens
-			 WHERE code = ?
-			 ORDER BY rowid DESC LIMIT 1`, code).
-			Scan(&rowid, &userID, &attempts, &expiresAt, &usedAt)
+			 WHERE code = ? AND used_at IS NULL AND expires_at > ?
+			 ORDER BY rowid DESC LIMIT 1`, code, now.Unix()).
+			Scan(&rowid, &userID, &attempts, &issuedNet)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrClaimInvalid
 		}
@@ -292,19 +405,18 @@ func (s *Service) RedeemByCode(ctx context.Context, code, userAgent string) (Ide
 			return err
 		}
 
-		// 已经试满 5 次的码直接作废，连尝试都不再记（§5.2）。
+		// 只能在签发时的同一个网络里兑换。
+		if issuedNet.Valid && issuedNet.String != "" && issuedNet.String != clientNet {
+			return ErrClaimInvalid
+		}
+
+		// 已经试满 5 次的码直接作废，连尝试都不再记。
 		if attempts >= ClaimCodeMaxAttempts {
 			return ErrClaimInvalid
 		}
-		// 不管这次成不成，都记一次尝试。
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE claim_tokens SET attempts = attempts + 1 WHERE rowid = ?`, rowid); err != nil {
 			return err
-		}
-
-		// 已经用过、或者过期了，都返回同一个错误（§10.3）。
-		if usedAt.Valid || expiresAt <= now.Unix() {
-			return ErrClaimInvalid
 		}
 
 		if _, err := tx.ExecContext(ctx,
@@ -324,9 +436,31 @@ func (s *Service) RedeemByCode(ctx context.Context, code, userAgent string) (Ide
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, ErrClaimInvalid) {
+			s.codeBudget.recordFailure()
+		}
 		return Identity{}, "", err
 	}
 	return result, deviceToken, nil
+}
+
+// loadDevice 读一台设备。
+func loadDevice(ctx context.Context, tx *store.Tx, deviceID string) (Device, error) {
+	var (
+		d    Device
+		seen int64
+	)
+	err := tx.QueryRowContext(ctx,
+		`SELECT id, COALESCE(ua, ''), last_seen FROM devices WHERE id = ?`, deviceID).
+		Scan(&d.ID, &d.UserAgent, &seen)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Device{}, ErrNotFound
+	}
+	if err != nil {
+		return Device{}, err
+	}
+	d.LastSeen = time.Unix(seen, 0)
+	return d, nil
 }
 
 // Devices 列出某个用户的全部设备，供 10「我的」显示（§10.3）。
@@ -452,9 +586,9 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
-// isClaimCode 检查是不是 4 位数字。
+// isClaimCode 检查是不是 ClaimCodeDigits 位数字。
 func isClaimCode(code string) bool {
-	if len(code) != 4 {
+	if len(code) != ClaimCodeDigits {
 		return false
 	}
 	for _, r := range code {
