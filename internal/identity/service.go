@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
@@ -61,11 +62,21 @@ type Identity struct {
 	Device Device
 }
 
+// Publisher 是身份系统用到的实时能力（internal/realtime 的 Hub）。都只在写事务提交后调用。
+type Publisher interface {
+	// Publish 把事件发给订阅者。
+	Publish(topic, eventType string, data any)
+	// KickDevice 立刻断开这台设备的实时连接：设备被退出、切换到别的身份之后，
+	// 它已经建立的连接不能再收到 user:{旧id} 的事件（#43）。
+	KickDevice(deviceID string)
+}
+
 // Service 是身份系统的业务入口。
 type Service struct {
 	st      *store.Store
 	clk     clock.Clock
 	cookies CookiePolicy
+	pub     Publisher // 可以为 nil：不发实时事件
 
 	createLimiter *ratelimit.Limiter // POST /api/me：每 IP 每小时 20 次（§12.3）
 	issueLimiter  *ratelimit.Limiter // POST /api/claim：每用户每小时 5 次（§5.2 修订）
@@ -87,6 +98,83 @@ func NewService(st *store.Store, clk clock.Clock, dev bool) *Service {
 		codeLimiter:   ratelimit.New(10, 10, clk),
 		codeBudget:    newCodeFailureBudget(clk),
 	}
+}
+
+// SetPublisher 接上实时事件（§5.5）。启动时调用一次；不调用就不发事件。
+func (s *Service) SetPublisher(p Publisher) { s.pub = p }
+
+// publishClaimRedeemed 登记一个提交后回调：认领成功后通知 user:{ownerID} 的订阅者，
+// 发起认领的那一页（比如微信里的 12 屏）随即显示「✓ 已在浏览器中打开」（原型 H1）。
+// 事务回滚时回调不执行，所以不会发出没真正成功的认领。
+func (s *Service) publishClaimRedeemed(tx *store.Tx, ownerID string, device Device) {
+	if s.pub == nil {
+		return
+	}
+	tx.AfterCommit(func(context.Context) {
+		s.pub.Publish("user:"+ownerID, "claim.redeemed", map[string]any{
+			"device_id": device.ID,
+			"ua":        device.UserAgent,
+		})
+	})
+}
+
+// kickDeviceAfterCommit 登记一个提交后回调，断开这台设备的实时连接（#43）。回滚时不执行。
+func (s *Service) kickDeviceAfterCommit(tx *store.Tx, deviceID string) {
+	if s.pub == nil {
+		return
+	}
+	tx.AfterCommit(func(context.Context) { s.pub.KickDevice(deviceID) })
+}
+
+// ErrBanned 表示用户或设备被封禁（guandan admin ban）。
+var ErrBanned = errors.New("identity: 已被封禁")
+
+// ForRealtime 是 WebSocket 握手时的身份识别（§5.5）：没有身份返回空字符串；被封禁返回 ErrBanned，
+// 握手随之 403。和心跳时的 StillValid 是同一套规则。
+func (s *Service) ForRealtime(r *http.Request) (userID, deviceID string, err error) {
+	ident := s.FromRequest(r)
+	if ident == nil {
+		return "", "", nil
+	}
+	banned, err := s.Banned(r.Context(), ident)
+	if err != nil {
+		return "", "", err
+	}
+	if banned {
+		return "", "", ErrBanned
+	}
+	return ident.User.ID, ident.Device.ID, nil
+}
+
+// StillValid 是实时连接每次心跳时的复查（#43 的兜底）：这台设备还在，并且（顺着合并关系）
+// 还属于握手时的那个用户，用户和设备都没有被封禁。读连接池上两次查询，开销很小。
+func (s *Service) StillValid(ctx context.Context, userID, deviceID string) bool {
+	var owner string
+	err := s.st.Read().QueryRowContext(ctx, `SELECT user_id FROM devices WHERE id = ?`, deviceID).Scan(&owner)
+	if err != nil {
+		// 查不到就是设备被删了；读失败（库出问题）时也断开，客户端会重连并重新认身份。
+		return false
+	}
+	root, err := s.resolveMergedUser(ctx, owner)
+	if err != nil || root.ID != userID {
+		return false
+	}
+	// 被 guandan admin ban 封禁：那是另一个进程，通知不到 Hub，靠这里在下一次心跳时断开。
+	banned, err := s.st.IsBanned(ctx, userID, deviceID)
+	return err == nil && !banned
+}
+
+// FromRequest 用请求里的设备 cookie 认出身份；没有或无效时返回 nil。
+func (s *Service) FromRequest(r *http.Request) *Identity {
+	token, ok := s.cookies.Read(r)
+	if !ok {
+		return nil
+	}
+	ident, err := s.Current(r.Context(), token)
+	if err != nil {
+		return nil
+	}
+	return ident
 }
 
 // Cookies 让接口层用同一份 cookie 策略读写（§10.3）。
@@ -323,6 +411,8 @@ func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentDe
 				`UPDATE devices SET user_id = ? WHERE id = ?`, ownerID, currentDeviceID); err != nil {
 				return err
 			}
+			// 这台设备原来的连接认的是旧身份，断开它，让它以新身份重连（#43）。
+			s.kickDeviceAfterCommit(tx, currentDeviceID)
 			user, err := loadUser(ctx, tx, ownerID)
 			if err != nil {
 				return err
@@ -332,6 +422,7 @@ func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentDe
 				return err
 			}
 			result = Identity{User: user, Device: device}
+			s.publishClaimRedeemed(tx, ownerID, device)
 			return nil
 		}
 
@@ -349,6 +440,7 @@ func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentDe
 			return err
 		}
 		result = Identity{User: user, Device: device}
+		s.publishClaimRedeemed(tx, ownerID, device)
 		return nil
 	})
 	if err != nil {
@@ -439,6 +531,7 @@ func (s *Service) RedeemByCode(ctx context.Context, code, clientNet, userAgent s
 			return err
 		}
 		result = Identity{User: user, Device: device}
+		s.publishClaimRedeemed(tx, userID, device)
 		return nil
 	})
 	if err != nil {
@@ -509,6 +602,8 @@ func (s *Service) SignOutDevice(ctx context.Context, userID, deviceID string) er
 		if n == 0 {
 			return ErrDeviceNotFound
 		}
+		// 被退出的设备（可能是被盗的会话）立刻断开实时连接（§10.3、#43）。
+		s.kickDeviceAfterCommit(tx, deviceID)
 		return nil
 	})
 }

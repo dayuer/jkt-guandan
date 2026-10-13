@@ -4,6 +4,8 @@ go 1.27.2
 
 require (
 	filippo.io/age v1.3.2
+	github.com/coder/websocket v1.8.15
+	go.uber.org/goleak v1.3.0
 	golang.org/x/sys v0.48.0
 	modernc.org/sqlite v1.60.1
 )

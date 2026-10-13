@@ -31,6 +31,8 @@ export default defineConfig({
       "/api": "http://localhost:8080",
       "/healthz": "http://localhost:8080",
       "/g": "http://localhost:8080",
+      // 实时连接（§5.5）：要透传 Upgrade 头。
+      "/ws": { target: "ws://localhost:8080", ws: true },
     },
   },
   test: {

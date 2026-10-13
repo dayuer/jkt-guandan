@@ -11,6 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
+	"github.com/dayuer/jkt-guandan/internal/games"
+	"github.com/dayuer/jkt-guandan/internal/realtime"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
 )
@@ -196,5 +200,38 @@ func TestMetricsCommandPrintsLocalMetrics(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "guandan_build_info") {
 		t.Fatalf("输出 %q", out.String())
+	}
+}
+
+// games 的事件经适配器原样进 Hub（主题、类型、版本号、数据都不丢）：#4 的 seat.taken 等由此推出去。
+func TestGamesPublisherForwardsToHub(t *testing.T) {
+	hub := realtime.NewHub()
+	srv := httptest.NewServer(realtime.Handler(realtime.Options{Hub: hub, AllowOrigin: func(string) bool { return true }}))
+	defer srv.Close()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = hub.Shutdown(ctx)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws",
+		&websocket.DialOptions{HTTPHeader: http.Header{"Origin": {"http://x"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	_, _, _ = c.Read(ctx) // hello
+	_ = c.Write(ctx, websocket.MessageText, []byte(`{"op":"sub","topics":["game:8K2"]}`))
+	_, _, _ = c.Read(ctx) // subscribed
+
+	gamesPublisher{hub}.Publish(games.Event{Topic: games.GameTopic("8K2"), Type: games.EventSeatTaken, V: 7, Data: map[string]int{"missing": 1}})
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); got != `{"topic":"game:8K2","type":"seat.taken","v":7,"data":{"missing":1}}` {
+		t.Fatalf("收到 %s", got)
 	}
 }
