@@ -110,7 +110,9 @@ export function Home({ me, onOpen, onCreate, toast }: Props) {
           <p class="empty">
             这几天还没有局。
             <br />
-            要不你开一个？
+            <button class="link" style={{ marginTop: 12 }} onClick={onCreate}>
+              开一局 ›
+            </button>
           </p>
         )}
 
@@ -153,26 +155,21 @@ export function Home({ me, onOpen, onCreate, toast }: Props) {
         <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
       </div>
 
-      <TabBar
-        onEgg={() => toast("「蛋蛋」还在做，快了")}
-        onOther={(name) => toast(`「${name}」还在做`)}
-      />
-
-      <div class="actionbar single">
-        <button class="btn primary" onClick={onCreate}>
-          开一局
-        </button>
-      </div>
+      <TabBar onCreate={onCreate} onTodo={(name) => toast(`「${name}」还在做`)} />
     </>
   );
 }
 
-/** 底部 Tab（设计稿 A2）。中间那颗「蛋」是 07 屏，其余几屏在别的 issue 里。 */
-function TabBar({ onEgg, onOther }: { onEgg: () => void; onOther: (name: string) => void }) {
+/**
+ * 底部 Tab（设计稿 A2）。中间那颗是「约局」，点一下直接打开 D4 开局表单——
+ * 蛋蛋 Agent 要到阶段 3（#11）才做，阶段 1 先用这个入口。
+ * 「学牌」「牌友」「我的」分别在别的 issue 里，先提示一下。
+ */
+function TabBar({ onCreate, onTodo }: { onCreate: () => void; onTodo: (name: string) => void }) {
   const tabs = [
     { key: "games", label: "牌局", glyph: "♠", on: true },
     { key: "learn", label: "学牌", glyph: "♣", on: false },
-    { key: "egg", label: "蛋蛋", glyph: "蛋", on: false, egg: true },
+    { key: "create", label: "约局", glyph: "蛋", on: false, egg: true },
     { key: "friends", label: "牌友", glyph: "♦", on: false },
     { key: "me", label: "我的", glyph: "♥", on: false },
   ];
@@ -183,7 +180,7 @@ function TabBar({ onEgg, onOther }: { onEgg: () => void; onOther: (name: string)
           key={t.key}
           class={`tab${t.on ? " on" : ""}${t.egg ? " egg" : ""}`}
           aria-current={t.on ? "page" : undefined}
-          onClick={() => (t.egg ? onEgg() : t.on ? undefined : onOther(t.label))}
+          onClick={() => (t.egg ? onCreate() : t.on ? undefined : onTodo(t.label))}
         >
           <span class="g" aria-hidden="true">
             {t.glyph}
