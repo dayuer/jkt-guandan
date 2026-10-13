@@ -78,7 +78,7 @@
 
 - 前端：Preact + Vite 构建成 H5，加上 Service Worker 和 Web App Manifest，构建产物用 `embed` 打进 Go 二进制。
 - 服务端：一个 Go 进程，负责 API、静态页面、`/g/:code` 的 OG 注入、海报和 OG 图渲染、.ics、outbox 定时提醒和 Web Push。
-- 数据库：SQLite（WAL 模式），数据文件放在 `/data` 卷；每天在进程内备份一次。
+- 数据库：SQLite（WAL 模式），数据文件放在 `/data` 卷；每小时快照，并加密上传异地（上线前必须配置）。
 - 部署：雅加达或新加坡的 VPS，`docker run` 一个容器；内置 autocert 签发 HTTPS 证书，主域名和备用域名可以同时配置。
 
 ## 8. 指标
