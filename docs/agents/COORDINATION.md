@@ -18,11 +18,11 @@
 
 | 角色 | 标签 | 职责 |
 |---|---|---|
-| `coord` | `owner:coord` | 分诊，定优先级和阶段，维护协调看板。**合并只能由 coord 执行** |
+| `coord` | `owner:coord` | 分诊，定优先级和阶段，维护协调看板。合并其他角色发起的 PR（自己发起的 PR 由仓库所有者合并，见 §4.1） |
 | `impl` | `owner:impl` | 按计划实现、修复审计发现、开 PR |
 | `auditor` | `owner:auditor` | 审计代码和 PR、提交发现、复审修复，在真机或浏览器上做验证 |
 | `design` | `owner:design` | 设计稿、设计改版提示词、UX 文案、海报和 OG 图的视觉 |
-| `user` | — | 仓库所有者，唯一的批准人。带 `needs-user` 的事项由他决定 |
+| `user` | — | 仓库所有者，唯一的批准人。带 `needs-user` 的事项由他决定；负责复审并合并 coord 发起的 PR |
 
 正文、提交信息和 PR 描述里**不得**出现 AI 助手的署名或尾注，比如指向 AI 的 `Co-Authored-By`、"Generated with …" 之类。作者和提交者一律是仓库所有者。CI 的 `protocol` 任务会检查这一点。
 
@@ -68,12 +68,30 @@
   <理由，逐条>
   ```
 - **复审之后又推送了新提交**：作者必须评论 `PUSHED sha=<新 SHA>` 并说明原因，之后需要重新 `REVIEW`。
-- **合并只由 coord 执行**，必须同时满足以下条件：
-  1. 最近一次 `REVIEW: approve` 的 sha 等于当前 head。合并时用 `gh pr merge --match-head-commit <该 SHA>` 锁定；
+- **合并条件**，必须同时满足：
+  1. 有一条**有效的** `REVIEW: approve`（见下面的「复审独立性」），并且它的 sha 等于当前 head。合并时用 `gh pr merge --match-head-commit <该 SHA>` 锁定；
   2. CI 全绿。要求首跑即绿；靠重跑才通过的，需要在 PR 里说明原因；
   3. 关联的 `P0` 发现都已处理；
   4. 仓库所有者批准过这个 PR，或批准过它所属的阶段。
-- **代码 PR 至少要有一个非作者角色给出 `REVIEW: approve`**：impl 的 PR 由 coord 或 auditor 复审；auditor 和 design 的 PR 由 coord 复审。
+
+### 4.1 复审独立性
+
+所有 agent 共用仓库所有者的账号，GitHub 和权限系统都只能看到「这个账号在批准自己的 PR」。所以复审是否独立，要靠**会话**来区分，而不是靠角色标签：
+
+- **作者会话不复审、不合并自己的 PR**。哪怕它换一个角色标签去写 `REVIEW: approve`，也视为无效。判断依据是评论里的 `<!-- agent: … -->` 标记：它和 PR 描述里的标记相同，就算作者本人。
+- **复审必须来自另一个 agent 会话**，并且这个会话的角色不能和作者相同：
+
+  | PR 作者 | 复审方 | 合并方 |
+  |---|---|---|
+  | `impl` | `auditor`（首选）或 `coord` | `coord` |
+  | `design` | `coord` | `coord` |
+  | `auditor` | `coord` | `coord` |
+  | `coord` | **仓库所有者** | **仓库所有者** |
+
+- **coord 自己发起的 PR**（协议、流程、看板脚本等）由仓库所有者复审并合并。仓库所有者可以在 GitHub 上直接合并，也可以评论 `REVIEW: approve sha=<SHA>` 留个记录。合并之后，coord 只负责回写看板和相关 issue。
+- **复审会话的标记**要写清楚角色和位置，比如 `<!-- agent: auditor-remote -->`。同一个会话在整个 PR 期间只能用同一个标记。
+- **没有可用的复审会话时**，PR 停在合并队列里，在 PR 下评论 `BLOCKED: 等复审`。不得由作者会话代为复审。
+- **看板会自动识别**：`board.sh` 生成合并队列时，会忽略标记和 PR 作者相同的 `REVIEW`，并把这类评论标成「⚠️ 作者自审，无效」。
 - **design 的 PR 必须附上改动屏的截图**，放在 `design/guandan-offline/screenshots/`。
 
 ## 5. 协调看板

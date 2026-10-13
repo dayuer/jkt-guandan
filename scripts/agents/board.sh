@@ -35,14 +35,25 @@ trap 'rm -f "$tmp"' EXIT
     printf '%s\n' '- 无'
   else
     printf '%s\n' "$prs" | while IFS="$(printf '\t')" read -r num head ref title; do
-      last=$(gh pr view "$num" --repo "$REPO" --json comments \
-        --jq '[.comments[].body | capture("REVIEW: (?<v>approve|changes) sha=(?<s>[0-9a-f]{40})")] | last | if . then "\(.v) \(.s)" else "" end')
-      verdict=${last%% *}; sha=${last#* }
-      if [ -z "$last" ]; then state='待复审'
+      # COORDINATION.md §4.1: a REVIEW whose agent marker equals the PR body's marker is the author
+      # reviewing itself and does not count. Reviews without a marker (the repo owner) always count.
+      res=$(gh pr view "$num" --repo "$REPO" --json body,comments --jq '
+        def marker: ([capture("<!-- agent: (?<a>[^ ]+) -->")][0].a // "");
+        (.body | marker) as $author
+        | [.comments[].body
+           | select(test("REVIEW: (approve|changes) sha=[0-9a-f]{40}"))
+           | capture("REVIEW: (?<v>approve|changes) sha=(?<s>[0-9a-f]{40})") + {a: marker}]
+        | (map(select($author == "" or .a != $author)) | last) as $ok
+        | (any(.[]; $author != "" and .a == $author)) as $self
+        | "\($ok.v // "-") \($ok.s // "-") \(if $self then "self" else "-" end)"')
+      verdict=${res%% *}; rest=${res#* }; sha=${rest%% *}; self=${rest#* }
+      short=$(printf '%.12s' "$sha")
+      if [ "$verdict" = - ]; then state='待复审'
       elif [ "$verdict" = approve ] && [ "$sha" = "$head" ]; then state='✅ approve，与 head 一致'
-      elif [ "$verdict" = approve ]; then state="⚠️ approve 的是 ${sha%"${sha#????????????}"}，head 已变，需重新 REVIEW"
-      else state="❌ changes requested (${sha%"${sha#????????????}"})"
+      elif [ "$verdict" = approve ]; then state="⚠️ approve 的是 $short，head 已变，需重新 REVIEW"
+      else state="❌ changes requested ($short)"
       fi
+      [ "$self" = self ] && state="$state；⚠️ 含作者自审，无效"
       printf -- '- #%s `%s` head=`%.12s` — %s — %s\n' "$num" "$ref" "$head" "$state" "$title"
     done
   fi
