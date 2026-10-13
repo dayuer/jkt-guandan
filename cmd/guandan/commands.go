@@ -23,7 +23,7 @@ import (
 //
 //	guandan healthcheck [--ready]                 请求本机 /healthz（或 /readyz），200 退出 0
 //	guandan metrics                               打印本机 /metrics
-//	guandan backup [now]                          立刻做一次备份（快照 + 加密上传）
+//	guandan backup [now] [--local] [--if-exists]  立刻做一次备份（快照 + 加密上传），不迁移数据库
 //	guandan backup list                           列出本地快照和异地备份
 //	guandan backup keygen                         生成 age 密钥对
 //	guandan restore [-i 私钥文件] <快照|对象名|latest>   从备份恢复，必须先停服务
@@ -40,7 +40,7 @@ const usage = `用法：guandan [子命令]
   不带子命令          启动服务
   healthcheck [--ready]
   metrics
-  backup [now|list|keygen]
+  backup [now [--local] [--if-exists]|list|keygen]
   restore [-i 私钥文件] <本地快照路径 | 异地对象名 | latest>
   seed [--force]
   admin ban <用户或设备 id>
@@ -118,13 +118,34 @@ type usageError struct{ msg string }
 
 func (e usageError) Error() string { return e.msg }
 
-// openExisting 打开已有的数据库并补跑迁移。数据库不存在时报错，免得在错误的目录里建出一个空库。
+// openExisting 打开已有的数据库，**不迁移**。数据库不存在时报错，免得在错误的目录里建出一个空库。
+//
+// 子命令可能用和线上服务不同版本的镜像执行（比如 deploy-remote.sh 用新镜像做冷备份，或者回滚时用旧镜像
+// 查看快照）。这时如果顺手迁移，一个本意只读的命令就会改掉生产库的 schema，做出来的快照也不再是迁移前的
+// 状态。所以只有服务启动和 seed 会迁移（#34 复审第 3 条）。
 func openExisting(ctx context.Context, cfg config.Config) (*store.Store, error) {
 	path := filepath.Join(cfg.DataDir, backup.DBFile)
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("数据库 %s 不存在（GUANDAN_DATA 设对了吗？）: %w", path, err)
 	}
-	return openAndMigrate(ctx, cfg)
+	return store.Open(cfg.DataDir)
+}
+
+// requireCurrentSchema 给会写库的 admin 命令用：schema 必须和本程序一致。
+// 库比本程序旧（还有没执行的迁移），新代码写进去可能缺列；库里有本程序不认识的 breaking 迁移，旧代码写进去可能写坏。
+func requireCurrentSchema(ctx context.Context, st *store.Store) error {
+	pending, unknown, err := st.MigrationStatus(ctx)
+	if err != nil {
+		return err
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("数据库的 schema 比本程序旧（还没执行 %s）；先发布这个版本，由服务启动时迁移，再执行这条命令",
+			strings.Join(pending, "、"))
+	}
+	if len(unknown) > 0 {
+		return fmt.Errorf("数据库里有本程序不认识的不兼容迁移 %s；请用和线上服务相同版本的镜像执行", strings.Join(unknown, "、"))
+	}
+	return nil
 }
 
 func openAndMigrate(ctx context.Context, cfg config.Config) (*store.Store, error) {
@@ -164,11 +185,31 @@ func (c cmdIO) backup(ctx context.Context, args []string) error {
 	}
 	switch sub {
 	case "now":
+		fs := flag.NewFlagSet("backup now", flag.ContinueOnError)
+		fs.SetOutput(c.errOut)
+		local := fs.Bool("local", false, "只做本地快照，不上传异地（发布时的冷备份用）")
+		ifExists := fs.Bool("if-exists", false, "数据库还不存在时跳过，退出码 0（首次发布）")
+		fs.Bool("no-migrate", true, "不迁移数据库（总是如此，写出来只为让调用方意图明确）")
+		if len(args) > 0 {
+			args = args[1:]
+		}
+		if err := fs.Parse(args); err != nil {
+			return usageError{err.Error()}
+		}
+		if *ifExists {
+			if _, err := os.Stat(filepath.Join(cfg.DataDir, backup.DBFile)); errors.Is(err, os.ErrNotExist) {
+				fmt.Fprintln(c.out, "还没有数据库，跳过备份")
+				return nil
+			}
+		}
 		st, err := openExisting(ctx, cfg)
 		if err != nil {
 			return err
 		}
 		defer st.Close()
+		if *local {
+			cfg.BackupURL = ""
+		}
 		r, err := newBackupRunner(cfg, st, c.clk)
 		if err != nil {
 			return err
@@ -317,11 +358,23 @@ func (c cmdIO) admin(ctx context.Context, args []string) error {
 		return err
 	}
 	open := func() (*store.Store, error) { return openExisting(ctx, cfg) }
+	// 会写库的命令要求 schema 和本程序一致。
+	openForWrite := func() (*store.Store, error) {
+		st, err := openExisting(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		if err := requireCurrentSchema(ctx, st); err != nil {
+			st.Close()
+			return nil, err
+		}
+		return st, nil
+	}
 	now := c.clk.Now()
 
 	switch {
 	case args[0] == "ban" && len(args) == 2:
-		st, err := open()
+		st, err := openForWrite()
 		if err != nil {
 			return err
 		}
@@ -334,7 +387,7 @@ func (c cmdIO) admin(ctx context.Context, args []string) error {
 		return nil
 
 	case len(args) == 3 && args[0] == "game" && args[1] == "cancel":
-		st, err := open()
+		st, err := openForWrite()
 		if err != nil {
 			return err
 		}
@@ -359,7 +412,7 @@ func (c cmdIO) admin(ctx context.Context, args []string) error {
 		if !*yes {
 			return errors.New("删除用户数据不可撤销，确认无误后加 --yes 再执行")
 		}
-		st, err := open()
+		st, err := openForWrite()
 		if err != nil {
 			return err
 		}

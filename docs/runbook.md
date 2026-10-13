@@ -10,12 +10,12 @@
                    └─ /api/ /ws /g/ /healthz /readyz → 127.0.0.1:18200 → 容器 guandan（:8080）
 ```
 
-- **服务器**：新加坡 `root@43.156.128.95`，Debian 12，Docker 26，nginx 1.22。**同机跑着很多其他生产服务**：可用内存约 1.4 GB，磁盘已用 67%。
+- **服务器**：新加坡那台（地址见 #12；本机执行脚本前设 `export SSH_HOST=root@<服务器>`），Debian 12，Docker 26，nginx 1.22。**同机跑着很多其他生产服务**：可用内存约 1.4 GB，磁盘已用 67%。
 - **容器**：`guandan`，镜像 `guandan:<短 SHA>`，只映射到 `127.0.0.1:18200`（宿主机的 8080、8443 被别的服务占着，**绝不能映射到这两个端口**）。参数：`--read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m`。数据卷 `guandan-data`。不设 `GUANDAN_DOMAIN`，容器内只走 HTTP；`GUANDAN_PUBLIC_URL=https://guandan.synon.ai`。
 - **nginx 站点**：`/etc/nginx/sites-available/guandan.synon.ai` 加片段 `/etc/nginx/snippets/guandan-security.conf`，由 coord 维护。仓库里的 [deploy/nginx/](../deploy/nginx/) 照抄线上配置。改动先改模板，过 `scripts/check-nginx.sh`（CI 也跑），再同步到服务器并执行 `nginx -t`。站点里关掉了 `open_file_cache`，所以切换 `current` 后**不需要 reload nginx**。
   - **每个反向代理的 location 都要写全 `Host`、`X-Real-IP`、`X-Forwarded-For`、`X-Forwarded-Proto`**：location 里只要写了一条 `proxy_set_header`，就不再继承 server 级的设置。漏了 `X-Real-IP` 的话，客户端可以伪造 IP。
   - 证书由 certbot 续期，webroot 是 `/var/www/certbot`。
-  - 检查线上文件：`ssh root@43.156.128.95 sh -s /etc/nginx/sites-available/guandan.synon.ai < scripts/check-nginx.sh`。
+  - 检查线上文件：`ssh $SSH_HOST sh -s /etc/nginx/sites-available/guandan.synon.ai < scripts/check-nginx.sh`。
 - **客户端 IP**：DNS 只做解析，不走 Cloudflare 代理。nginx 用 `$remote_addr` 覆盖设置 `X-Real-IP`，用 `$proxy_add_x_forwarded_for` 设置 `X-Forwarded-For`。应用默认不信任任何代理；env 文件里设了 `GUANDAN_TRUSTED_PROXIES=172.17.0.1/32`（容器看到的对端就是网桥网关），只有来自它的这两个头才被采用。启动日志里的 `trusted_proxies` 字段会显示生效值。
 - **不要在服务器上改别的站点、别的服务，也不要改全局 nginx 配置。**
 
@@ -79,10 +79,10 @@ docker run --rm guandan:<短 SHA> backup keygen
 
 ## 2. 发布
 
-在本机（需要 Docker、git，并且能 `ssh root@43.156.128.95`）执行：
+在本机（需要 Docker、git，并且能 `ssh $SSH_HOST`）执行：
 
 ```bash
-scripts/deploy.sh            # 发布当前 HEAD；也可以写成 scripts/deploy.sh <git 引用>
+SSH_HOST=root@<服务器> scripts/deploy.sh            # 发布当前 HEAD；也可以写成 scripts/deploy.sh <git 引用>
 ```
 
 **本机部分**（`scripts/deploy.sh`）：
@@ -96,41 +96,42 @@ scripts/deploy.sh            # 发布当前 HEAD；也可以写成 scripts/deplo
 **服务器部分**（`scripts/deploy-remote.sh`，通过 ssh 执行）：
 
 0. 预检：镜像和静态目录都在；`current` 要么不存在，要么是符号链接。**如果 `current` 是一个真目录就停下**，因为 `ln -sfn` 会把链接建到目录里面去。任何东西都还没动；
-1. 在旧容器里做一次 `guandan backup now`，留一个最新的恢复点；
-2. `docker stop -t 30` 优雅停掉旧容器，改名为 `guandan-prev`；
+1. `docker stop -t 30` 优雅停掉旧容器，改名为 `guandan-prev`；
+2. **用新镜像做一次冷备份**：`docker run --rm … <新镜像> backup now --local --if-exists --no-migrate`。在停服之后做，快照就是旧版本最后的状态；`backup` 从不迁移数据库，所以快照是迁移前的；这一步也不依赖旧版本有没有 `backup` 子命令。**备份失败就中止发布**，旧容器原样拉起来，因为回滚靠的就是这份快照；
 3. 用上面第 0 节的参数启动新容器，最多等 60 秒 `/readyz`。新容器退出或崩溃重启时立刻判为失败；
 4. 用 `rename(2)` 原子地把 `current` 切到新版本；
 5. 经 nginx 确认 `https://guandan.synon.ai/readyz` 和首页都正常；
 6. 成功：删掉 `guandan-prev`，只保留最近 5 个版本的静态目录和镜像。当前版本和上一个版本无论如何都保留。
 
-**第 3–5 步任何一步失败**：删掉新容器，把 `guandan-prev` 改回原名并启动，`current` 指回原来的版本。脚本退出码为 1，并打印新容器最近的日志。
+**第 3–5 步任何一步失败**：删掉新容器，把 `guandan-prev` 改回原名并启动，`current` 指回原来的版本。脚本退出码为 1，并打印新容器最近的日志。**如果旧容器起不来**（新版本已经执行了旧版本不认识的迁移），脚本会停下旧容器，用新镜像把第 2 步的快照 `restore` 回去，再启动旧容器；从发布前到回滚之间的写入会丢失，日志里会写明。
 
 可以用环境变量覆盖的项：`SSH_HOST`、`WEB_ROOT`、`IMAGE_SOURCE`、`PORT`、`MEMORY`、`PUBLIC_URL`、`ENV_FILE`、`SITE_URL`、`READY_TIMEOUT`、`KEEP`。
 
-`make deploy-test` 会在本机用 Docker 验证服务器部分（不需要 nginx 和 ssh），覆盖以下场景：首次发布、升级并清理旧版本、新版本起不来、`current` 是真目录、切换后站点检查失败、新版本跑完一条兼容迁移后才失败。CI 每次都会跑这个测试。
+`make deploy-test` 会在本机用 Docker 验证服务器部分（不需要 nginx 和 ssh），覆盖以下场景：首次发布、升级并清理旧版本、新版本起不来、`current` 是真目录、切换后站点检查失败、新版本跑完一条兼容迁移后才失败、**从线上版本（0e45b18，遇到任何不认识的迁移都拒绝启动）升级、新版本迁移后失败，靠冷备份自动恢复**。CI 每次都会跑这个测试。
 
 ### 2.1 手动回滚到更早的版本
 
 服务器上保留着最近几个版本的镜像和静态目录，直接用服务器部分的脚本切回去：
 
 ```bash
-ssh root@43.156.128.95 'ls -t /var/www/guandan; docker image ls guandan'
-ssh root@43.156.128.95 'env SHA=<旧短 SHA> sh -s' < scripts/deploy-remote.sh
+ssh $SSH_HOST 'ls -t /var/www/guandan; docker image ls guandan'
+ssh $SSH_HOST 'env SHA=<旧短 SHA> sh -s' < scripts/deploy-remote.sh
 ```
 
 ### 2.2 迁移和回滚
 
 迁移默认必须向前兼容（§12.1：只加表、加列）。旧版本的程序遇到库里多出来、自己不认识的兼容迁移时，会记一条 warn 日志，然后照常启动。所以**普通发布的自动回滚始终有效**：即使新版本跑完迁移之后才失败，旧版本也能起来。`make deploy-test` 的场景 6 验证的就是这一点。
 
-只有标记了 breaking 的迁移会让旧版本拒绝启动（见 2.3）。如果发布 breaking 迁移之后需要回滚，旧容器会起不来，日志里出现「不兼容迁移」。这时在服务器上执行：
+只有标记了 breaking 的迁移会让旧版本拒绝启动（见 2.3），#34 之前的版本则会拒绝**任何**不认识的迁移（见 2.5）。这两种情况下回滚时旧容器起不来，`deploy-remote.sh` 会自动用发布前的冷备份恢复（见上面「第 3–5 步任何一步失败」）。
+
+脚本自己的恢复也失败时，在服务器上手动执行（`backup` 和 `restore` 都不会迁移数据库，用新旧哪个镜像都可以）：
 
 ```bash
 docker rm -f guandan                       # 确保没有容器在用数据卷
-# 用发布前那份快照恢复（2. 的第 1 步做的，在本地快照目录里，未加密）
 docker run --rm -v guandan-data:/data -e GUANDAN_PUBLIC_URL=https://guandan.synon.ai \
-  guandan:<旧短 SHA> backup list
+  guandan:<旧短 SHA> backup list            # 找到发布前那份（发布日志里也打印了）
 docker run --rm -v guandan-data:/data -e GUANDAN_PUBLIC_URL=https://guandan.synon.ai \
-  guandan:<旧短 SHA> restore /data/backup/guandan-<发布前的时间>.db
+  guandan:<新短 SHA> restore /data/backup/guandan-<发布前的时间>.db
 ```
 
 然后在本机按 2.1 发布旧版本。从发布前备份到回滚之间写入的数据会丢失。
@@ -151,6 +152,15 @@ docker run --rm -v guandan-data:/data -e GUANDAN_PUBLIC_URL=https://guandan.syno
 | **GHCR** | `IMAGE_SOURCE=ghcr scripts/deploy.sh` | 本机执行过 `docker login ghcr.io`（token 要有 `write:packages`）；服务器能拉到镜像：要么仓库所有者在 GitHub 的 Packages 设置里把 `jkt-guandan` 设为公开，要么在服务器上执行 `docker login ghcr.io`（token 只给 `read:packages`） |
 
 两种方式下，服务器上的镜像名都是 `guandan:<短 SHA>`；GHCR 方式拉下来之后会重新打成这个名字，并删掉 GHCR 的标签。
+
+### 2.5 这一次的过渡发布：从 0e45b18 升级到 #34
+
+线上现在跑的是 0e45b18（#35）。它和 #34 之前的所有版本一样：遇到**任何**不认识的迁移都拒绝启动，也没有 `backup` 子命令。#34 带来了新迁移 `0003_bans.sql`，所以这一次发布如果在新版本跑完迁移之后失败，旧版本就起不来。按下面的步骤做：
+
+1. 照常执行 `SSH_HOST=… scripts/deploy.sh`。脚本会在停掉旧容器之后用**新镜像**做冷备份（第 2 步），所以不依赖旧版本；冷备份失败就中止，旧版本原样恢复。
+2. 如果新版本没有就绪，脚本回滚时会发现旧版本起不来，然后自动用冷备份恢复，再拉起旧版本。日志最后一行应是「已从发布前快照恢复，旧版本恢复服务」。这条路径已经在 `make deploy-test` 的场景 7 里用 0e45b18 的镜像实际验证过。
+3. 发布日志里会打印冷备份的路径（`发布前冷备份：/data/backup/guandan-….db`）。**把这一行记下来**，脚本自己的恢复也失败时按 2.2 手动恢复。
+4. 这次发布成功之后，线上就有了「兼容迁移只记 warn」的规则，以后的普通发布回滚不再需要恢复数据。
 
 ## 3. 备份
 

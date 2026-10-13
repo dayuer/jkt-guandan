@@ -404,3 +404,16 @@ func TestSeedIsIdempotentAndValid(t *testing.T) {
 		t.Fatalf("SEED01 局头 %s", got)
 	}
 }
+
+// 封禁一个已合并的旧 id，实际在用的身份也要被封（auditor 在 #34 的建议）。
+func TestBanFollowsMergedInto(t *testing.T) {
+	st := openTest(t)
+	host, guest := seedUsers(t, st)
+	mustExec(t, st, `UPDATE users SET merged_into = ? WHERE id = ?`, host, guest)
+	if kind, err := st.Ban(context.Background(), guest, opsNow); err != nil || kind != "user" {
+		t.Fatalf("封禁: %s %v", kind, err)
+	}
+	if banned, _ := st.IsBanned(context.Background(), host, ""); !banned {
+		t.Fatal("合并后的最终身份也应被封禁")
+	}
+}

@@ -5,12 +5,13 @@
 # 前提（deploy.sh 已经做好）：镜像 guandan:<SHA> 已 docker load，静态文件已放在 $WEB_ROOT/<SHA>/。
 # 步骤：
 #   0. 预检：镜像在、静态文件在、$WEB_ROOT/current 要么不存在、要么是符号链接（是目录就停）
-#   1. 旧容器里做一次发布前备份
-#   2. 停旧容器（优雅关闭），改名为 guandan-prev
+#   1. 停旧容器（优雅关闭），改名为 guandan-prev
+#   2. 用新镜像做一次冷备份（不迁移、只做本地快照）；失败就中止发布、旧容器原样拉起来
 #   3. 启动新容器，等 /readyz，最多 READY_TIMEOUT 秒
 #   4. 原子切换 current 符号链接（rename(2)；nginx 站点关了 open_file_cache，不用 reload）
 #   5. 切换后经 nginx 再确认一次（SITE_URL）
 #   任何一步失败：删新容器、旧容器原样启动回来、current 指回原来的版本，退出码 1。
+#   旧容器起不来（新版本已经执行了它不认识的迁移）时，用第 2 步的快照恢复数据库再拉起旧容器。
 #   6. 成功：删 guandan-prev，只保留最近 KEEP 个版本的静态目录和镜像（服务器磁盘紧张）。
 #
 # 只动这几样东西：容器 $NAME / $NAME-prev、镜像 guandan:<SHA>、$WEB_ROOT 下面的目录。
@@ -57,6 +58,8 @@ start() {
 
 wait_ready() {
   i=0
+  # 重启次数是容器整个生命周期累计的（回滚时拉起的旧容器以前可能重启过），所以和开始等待时比。
+  restarts0=$(docker container inspect -f '{{.RestartCount}}' "$NAME")
   while [ "$i" -lt "$READY_TIMEOUT" ]; do
     if docker exec "$NAME" /guandan healthcheck --ready >/dev/null 2>&1; then
       return 0
@@ -66,7 +69,7 @@ wait_ready() {
       return 1
     fi
     # --restart unless-stopped 会把崩溃的进程一直拉起来，看重启次数才知道它其实起不来。
-    if [ "$(docker container inspect -f '{{.RestartCount}}' "$NAME")" -gt 0 ]; then
+    if [ "$(docker container inspect -f '{{.RestartCount}}' "$NAME")" -gt "$restarts0" ]; then
       log "容器 $NAME 启动后崩溃重启过"
       return 1
     fi
@@ -108,23 +111,47 @@ if exists "$PREV"; then
   docker rm -f "$PREV" >/dev/null
 fi
 
-# ---- 1、2. 备份、停旧 ----
+# ---- 1、2. 停旧、冷备份 ----
+# 先停旧容器，再用**新镜像**做一次冷备份（不迁移、只做本地快照）：
+#   - 不依赖旧二进制有没有 backup 子命令（#34 之前的版本没有）；
+#   - 停服之后做，快照就是旧版本最后的状态；
+#   - backup 子命令从不迁移数据库（#34 复审第 3 条），快照是迁移前的。
+# 备份失败就中止发布、把旧容器原样拉起来：回滚靠的就是这份快照，没有它就没有退路。
+cold_backup() {
+  # 只传本站地址（config 校验要用）；不读 env 文件，所以不会去异地上传。
+  docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
+    -v "$VOLUME:/data" -e GUANDAN_PUBLIC_URL="$PUBLIC_URL" \
+    "$IMAGE" backup now --local --if-exists --no-migrate
+}
+
 HAD_PREV=0
+SNAPSHOT=""
 if exists "$NAME"; then
   HAD_PREV=1
   log "旧版本：$(docker container inspect -f '{{.Config.Image}}' "$NAME")"
-  if running "$NAME"; then
-    # 给回滚留一个最新的恢复点：新版本如果跑了 breaking 迁移，旧版本会拒绝启动（runbook §2.2）。
-    if docker exec "$NAME" /guandan backup now >/dev/null 2>&1; then
-      log "发布前备份完成"
-    else
-      log "警告：发布前备份失败，继续发布"
-    fi
-  fi
   log "停止旧容器（优雅关闭，最多 30 秒）"
   docker stop -t 30 "$NAME" >/dev/null
   docker rename "$NAME" "$PREV"
 fi
+if ! out=$(cold_backup 2>&1); then
+  printf '%s\n' "$out" | sed 's/^/[deploy]   /'
+  log "发布前冷备份失败，中止发布"
+  if [ "$HAD_PREV" = 1 ]; then
+    docker rename "$PREV" "$NAME"
+    docker start "$NAME" >/dev/null
+    if wait_ready; then log "旧版本已原样恢复服务"; else log "旧版本没有就绪，请人工检查"; fi
+  fi
+  exit 1
+fi
+SNAPSHOT=$(printf '%s\n' "$out" | sed -n 's/^本地快照：//p')
+log "发布前冷备份：${SNAPSHOT:-（还没有数据库，跳过）}"
+
+# restore_snapshot 用新镜像把发布前的快照放回数据卷（旧容器必须已经停下，restore 要拿数据目录锁）。
+restore_snapshot() {
+  docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
+    -v "$VOLUME:/data" -e GUANDAN_PUBLIC_URL="$PUBLIC_URL" \
+    "$IMAGE" restore "$SNAPSHOT"
+}
 
 rollback() {
   log "最近的日志："
@@ -143,8 +170,27 @@ rollback() {
   docker start "$NAME" >/dev/null
   if wait_ready; then
     log "已回滚，旧版本恢复服务"
+    exit 1
+  fi
+  # 旧版本起不来，多半是新版本已经执行了它不认识的迁移（#34 之前的版本遇到任何不认识的迁移都拒绝启动；
+  # 之后的版本只拒绝 breaking 迁移）。用发布前的冷备份恢复，再拉起旧版本。
+  if [ -z "$SNAPSHOT" ]; then
+    log "回滚后旧版本也没有就绪，并且没有发布前快照可用，请按 docs/runbook.md §2.2 人工处理"
+    exit 1
+  fi
+  log "旧版本起不来，用发布前的快照恢复数据库：$SNAPSHOT（新版本运行期间的写入会丢失）"
+  docker stop -t 30 "$NAME" >/dev/null
+  if ! rout=$(restore_snapshot 2>&1); then
+    printf '%s\n' "$rout" | sed 's/^/[deploy]   /'
+    log "恢复失败，请按 docs/runbook.md §2.2 人工处理"
+    exit 1
+  fi
+  printf '%s\n' "$rout" | sed 's/^/[deploy]   /'
+  docker start "$NAME" >/dev/null
+  if wait_ready; then
+    log "已从发布前快照恢复，旧版本恢复服务"
   else
-    log "回滚后旧版本也没有就绪。日志里如果是「不兼容迁移」，按 docs/runbook.md §2.2 用发布前的快照恢复"
+    log "恢复快照后旧版本仍然没有就绪，请人工检查"
   fi
   exit 1
 }

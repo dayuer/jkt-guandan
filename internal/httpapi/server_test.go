@@ -445,7 +445,8 @@ func TestBuildHeaderAndRequestMetrics(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	for _, path := range []string{"/healthz", "/healthz", "/api/nope"} {
+	// 不用 SPA 兜底的路径：没先构建前端时 /api/nope 会是 503（auditor 在 #34 的建议）。
+	for _, path := range []string{"/healthz", "/readyz", "/healthz"} {
 		resp, err := http.Get(srv.URL + path)
 		if err != nil {
 			t.Fatal(err)

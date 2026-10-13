@@ -68,21 +68,63 @@ func Restore(ctx context.Context, dataDir string, src Source, now time.Time) (Re
 
 	dst := filepath.Join(dataDir, DBFile)
 	stamp := now.UTC().Format(timeLayout)
+	type moved struct{ from, to string }
+	var moves []moved
+	// undo 把挪开的文件按相反顺序挪回原位。最后一步失败时用它：否则数据目录里没有 guandan.db，
+	// 下次启动 store.Open 会建出一个空库并以空数据对外服务（#34 复审第 2 条）。
+	undo := func() error {
+		var first error
+		for i := len(moves) - 1; i >= 0; i-- {
+			if err := rename(moves[i].to, moves[i].from); err != nil && first == nil {
+				first = err
+			}
+		}
+		if err := syncDir(dataDir); err != nil && first == nil {
+			first = err
+		}
+		return first
+	}
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		p := dst + suffix
 		if _, err := os.Stat(p); errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		aside := dst + ".before-restore-" + stamp + suffix
-		if err := os.Rename(p, aside); err != nil {
-			return res, fmt.Errorf("挪开原数据库文件 %s: %w", p, err)
+		if err := rename(p, aside); err != nil {
+			if uerr := undo(); uerr != nil {
+				return res, fmt.Errorf("挪开原数据库文件 %s: %w（挪回原位也失败：%v，请手动把 *.before-restore-%s* 改回原名）", p, err, uerr, stamp)
+			}
+			return res, fmt.Errorf("挪开原数据库文件 %s: %w（已挪回原位，原库未改动）", p, err)
 		}
-		res.MovedAside = append(res.MovedAside, aside)
+		moves = append(moves, moved{from: p, to: aside})
 	}
-	if err := os.Rename(tmpName, dst); err != nil {
-		return res, fmt.Errorf("放置恢复的数据库: %w", err)
+	if err := rename(tmpName, dst); err != nil {
+		if uerr := undo(); uerr != nil {
+			return res, fmt.Errorf("放置恢复的数据库: %w（原库挪回原位也失败：%v，请手动把 *.before-restore-%s* 改回原名）", err, uerr, stamp)
+		}
+		return res, fmt.Errorf("放置恢复的数据库: %w（原库已挪回原位，未改动）", err)
+	}
+	// 改名的结果落盘，掉电后也不会回到「原库挪开了、新库还没到位」的状态。
+	if err := syncDir(dataDir); err != nil {
+		return res, fmt.Errorf("同步数据目录: %w", err)
+	}
+	for _, m := range moves {
+		res.MovedAside = append(res.MovedAside, m.to)
 	}
 	return res, nil
+}
+
+// rename 在测试里可以换成会失败的版本，用来验证最后一步失败时原库会被挪回去。
+var rename = os.Rename
+
+// syncDir 对目录做 fsync，让目录项的改动（改名）落盘。
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func fetch(ctx context.Context, tmpDir string, dst io.Writer, src Source, res *RestoreResult) error {

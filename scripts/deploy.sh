@@ -17,7 +17,7 @@
 #   4. 在服务器上执行 scripts/deploy-remote.sh：换容器 → 等 /readyz → 切 current → 失败就全部回滚。
 #
 # 环境变量：
-#   SSH_HOST      默认 root@43.156.128.95
+#   SSH_HOST      必填，如 root@<服务器>（不写进仓库，见 runbook §2）
 #   WEB_ROOT      默认 /var/www/guandan
 #   IMAGE_SOURCE  ssh（默认）或 ghcr
 #   GHCR_REPO     默认 ghcr.io/dayuer/jkt-guandan
@@ -25,7 +25,7 @@
 set -eu
 
 REF=${1:-HEAD}
-SSH_HOST=${SSH_HOST:-root@43.156.128.95}
+SSH_HOST=${SSH_HOST:?"设置 SSH_HOST，如 SSH_HOST=root@<服务器> scripts/deploy.sh"}
 WEB_ROOT=${WEB_ROOT:-/var/www/guandan}
 IMAGE_SOURCE=${IMAGE_SOURCE:-ssh}
 GHCR_REPO=${GHCR_REPO:-ghcr.io/dayuer/jkt-guandan}

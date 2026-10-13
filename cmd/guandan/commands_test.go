@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,5 +150,86 @@ func TestParseSince(t *testing.T) {
 		if _, err := parseSince(bad); err == nil {
 			t.Errorf("parseSince(%q) 应报错", bad)
 		}
+	}
+}
+
+// #34 复审第 3 条：backup、admin stats 只打开数据库不迁移；schema 落后时写库的 admin 命令拒绝执行。
+// 用「库停在上一个版本」来模拟：迁移完再把 0003 撤掉。
+func TestCommandsDoNotMigrate(t *testing.T) {
+	r := cmdRun{t: t, clk: clock.NewFake(time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC))}
+	dataDir, remote := t.TempDir(), t.TempDir()
+	_, recipient, _ := backup.Keygen()
+	setEnv(t, dataDir, remote, recipient)
+	r.ok("seed")
+
+	st, err := store.Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		for _, q := range []string{
+			`ALTER TABLE users DROP COLUMN banned_at`,
+			`ALTER TABLE devices DROP COLUMN banned_at`,
+			`DELETE FROM schema_migrations WHERE name = '0003_bans.sql'`,
+		} {
+			if _, err := tx.ExecContext(ctx, q); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	pendingOf := func() []string {
+		st, err := store.Open(dataDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		p, _, err := st.MigrationStatus(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	if p := pendingOf(); len(p) != 1 || p[0] != "0003_bans.sql" {
+		t.Fatalf("准备失败：pending=%v", p)
+	}
+
+	if out := r.ok("backup", "now", "--local", "--no-migrate"); !strings.Contains(out, "未配置 GUANDAN_BACKUP_URL") {
+		t.Fatalf("--local 不该上传：%s", out)
+	}
+	if entries, _ := os.ReadDir(remote); len(entries) != 0 {
+		t.Fatalf("--local 不该往异地写东西：%d 个", len(entries))
+	}
+	r.ok("admin", "stats")
+	if p := pendingOf(); len(p) != 1 {
+		t.Fatalf("backup 和 admin stats 不该迁移，pending=%v", p)
+	}
+
+	code, _, errOut := r.run("admin", "ban", "seed-lily")
+	if code != 1 || !strings.Contains(errOut, "先发布这个版本") {
+		t.Fatalf("schema 落后时写库的命令应拒绝：%d %s", code, errOut)
+	}
+	if p := pendingOf(); len(p) != 1 {
+		t.Fatalf("被拒绝的命令也不该迁移，pending=%v", p)
+	}
+}
+
+func TestBackupNowIfExists(t *testing.T) {
+	r := cmdRun{t: t, clk: clock.NewFake(time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC))}
+	dataDir := t.TempDir()
+	setEnv(t, dataDir, t.TempDir(), "")
+	t.Setenv("GUANDAN_BACKUP_URL", "")
+	if out := r.ok("backup", "now", "--if-exists"); !strings.Contains(out, "还没有数据库") {
+		t.Fatalf("输出 %s", out)
+	}
+	if code, _, _ := r.run("backup", "now"); code != 1 {
+		t.Fatal("不带 --if-exists 时没有数据库应报错")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, backup.DBFile)); err == nil {
+		t.Fatal("不该建出空库")
 	}
 }

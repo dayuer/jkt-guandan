@@ -532,3 +532,30 @@ func countKV(t *testing.T, st *store.Store, k string) int {
 	}
 	return n
 }
+
+// 只读的子命令靠 MigrationStatus 判断 schema 状态，它自己不能改库。
+func TestMigrationStatusIsReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	fresh, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, unknown, err := fresh.MigrationStatus(context.Background())
+	if err != nil || len(pending) < 2 || len(unknown) != 0 {
+		t.Fatalf("新库：pending=%v unknown=%v err=%v", pending, unknown, err)
+	}
+	if got := tables(t, fresh); len(got) != 0 {
+		t.Fatalf("MigrationStatus 不该建表：%v", got)
+	}
+	_ = fresh.Close()
+
+	st := openDir(t, dir)
+	pending, _, err = st.MigrationStatus(context.Background())
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("迁移完：pending=%v err=%v", pending, err)
+	}
+	mustExec(t, st, `INSERT INTO schema_migrations (name, applied_at, breaking) VALUES ('9999_x.sql', 0, 1)`)
+	if _, unknown, _ := st.MigrationStatus(context.Background()); len(unknown) != 1 || unknown[0] != "9999_x.sql" {
+		t.Fatalf("unknown breaking = %v", unknown)
+	}
+}

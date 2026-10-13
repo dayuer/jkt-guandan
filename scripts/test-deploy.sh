@@ -1,4 +1,6 @@
 #!/bin/sh
+# 场景 7 在子 shell 里换了 NAME、VOLUME，是故意只在那里生效的。
+# shellcheck disable=SC2030,SC2031
 # 在本机或 CI 上验证 scripts/deploy-remote.sh（服务器端的发布逻辑），不需要 nginx 和 ssh：
 # 用一个临时目录当 /var/www/guandan，用容器自己的端口当 SITE_URL。
 # 用法：scripts/test-deploy.sh <已经 build 好的镜像，如 guandan:ci>
@@ -15,7 +17,9 @@ export NAME=guandan-deploytest VOLUME=guandan-deploytest-data IMAGE_REPO=$REPO P
 cleanup() {
   docker rm -f "$NAME" "$NAME-prev" >/dev/null 2>&1 || true
   docker volume rm "$VOLUME" >/dev/null 2>&1 || true
-  for t in good0 good1 good2 good3 broken migrated-base migrated; do docker rmi "$REPO:$t" >/dev/null 2>&1 || true; done
+  docker rm -f "$NAME-old" "$NAME-old-prev" >/dev/null 2>&1 || true
+  docker volume rm "$VOLUME-old" >/dev/null 2>&1 || true
+  for t in good0 good1 good2 good3 broken migrated-base migrated prod; do docker rmi "$REPO:$t" >/dev/null 2>&1 || true; done
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -98,4 +102,26 @@ docker logs "$NAME" 2>&1 | grep -q "不认识的兼容迁移" || { echo "失败�
 docker logs "$NAME" 2>&1 | grep "不认识的兼容迁移" | tail -1
 curl -fsS "http://127.0.0.1:$PORT/readyz"; echo
 
-echo "== 通过：发布、清理旧版本、四种失败的回滚都符合预期"
+echo "== 7. 从线上版本（#34 之前：遇到任何不认识的迁移都拒绝启动）升级，新版本迁移后失败（#34 复审第 1 条）"
+# 线上跑的是 0e45b18（#35）。用它的源码构建「旧版本」，在一个新数据卷上先发布它。
+PROD_REF=${PROD_REF:-0e45b187c0f10caba5bcce15dff095f06d8bcc7a}
+git cat-file -e "$PROD_REF^{commit}" 2>/dev/null || git fetch -q --depth=1 origin "$PROD_REF"
+prod="$work/prod"
+mkdir -p "$prod"
+git archive "$PROD_REF" | tar -x -C "$prod"
+docker build -q -t "$REPO:prod" "$prod" >/dev/null
+stage prod
+(
+  # 子 shell：换一套容器名和数据卷，不影响上面的场景。
+  NAME="$NAME-old" VOLUME="$VOLUME-old"
+  export NAME VOLUME
+  deploy prod
+  # 新版本（带 0003 和一条额外迁移，迁移完才退出）：旧版本不认识这些迁移，回滚时起不来，
+  # 必须用发布前的冷备份恢复。
+  deploy migrated "已从发布前快照恢复，旧版本恢复服务"
+) || exit 1
+expect "镜像" "$(docker container inspect -f '{{.Config.Image}}' "$NAME-old")" "$REPO:prod"
+docker exec "$NAME-old" /guandan healthcheck >/dev/null || { echo "失败：恢复后的旧版本不健康"; exit 1; }
+echo "旧版本恢复服务"
+
+echo "== 通过：发布、清理旧版本、五种失败的回滚都符合预期"

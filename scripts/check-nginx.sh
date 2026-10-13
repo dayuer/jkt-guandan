@@ -1,7 +1,7 @@
 #!/bin/sh
 # 检查 guandan 的 nginx 站点配置（docs/runbook.md §0）。仓库里的模板和服务器上的线上文件都能查：
 #   scripts/check-nginx.sh deploy/nginx/guandan.synon.ai.conf
-#   ssh root@43.156.128.95 sh -s /etc/nginx/sites-available/guandan.synon.ai < scripts/check-nginx.sh
+#   ssh $SSH_HOST sh -s /etc/nginx/sites-available/guandan.synon.ai < scripts/check-nginx.sh
 #
 # 规则：
 #   1. 每个含 proxy_pass 的 location 都要自己写全 Host、X-Real-IP、X-Forwarded-For、X-Forwarded-Proto。

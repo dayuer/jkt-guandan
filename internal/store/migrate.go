@@ -216,3 +216,47 @@ func apply(ctx context.Context, db *sql.DB, name, body string) error {
 	}
 	return nil
 }
+
+// MigrationStatus 只读地比较库里的迁移记录和本程序带的迁移，不做任何修改：
+// pending 是本程序有、库里还没执行的；unknownBreaking 是库里有、本程序不认识、并且标记了 breaking 的。
+// 给不该改 schema 的子命令（backup、admin）用：它们只打开数据库，不迁移。
+func (s *Store) MigrationStatus(ctx context.Context) (pending, unknownBreaking []string, err error) {
+	names, err := migrationNames()
+	if err != nil {
+		return nil, nil, err
+	}
+	var exists int
+	if err := s.read.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&exists); err != nil {
+		return nil, nil, fmt.Errorf("读取迁移记录: %w", err)
+	}
+	applied := map[string]bool{}
+	if exists > 0 {
+		has, err := hasBreakingColumn(ctx, s.read)
+		if err != nil {
+			return nil, nil, err
+		}
+		if has {
+			applied, err = appliedMigrations(ctx, s.read)
+		} else {
+			applied, err = legacyAppliedMigrations(ctx, s.read)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	known := make(map[string]bool, len(names))
+	for _, n := range names {
+		known[n] = true
+		if _, ok := applied[n]; !ok {
+			pending = append(pending, n)
+		}
+	}
+	for n, breaking := range applied {
+		if !known[n] && breaking {
+			unknownBreaking = append(unknownBreaking, n)
+		}
+	}
+	sort.Strings(unknownBreaking)
+	return pending, unknownBreaking, nil
+}

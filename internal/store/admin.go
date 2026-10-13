@@ -28,6 +28,10 @@ func (s *Store) Ban(ctx context.Context, id string, now time.Time) (kind string,
 			}
 			if n, _ := r.RowsAffected(); n > 0 {
 				kind = k
+				if k == "user" {
+					// 被合并过的旧 id：顺着 merged_into 把实际在用的那个身份也封掉（auditor 在 #34 的建议）。
+					return banMergedRoot(ctx, tx, id, now)
+				}
 				return nil
 			}
 		}
@@ -153,4 +157,23 @@ func (s *Store) Stats(ctx context.Context, since time.Time) (Stats, error) {
 		st.Events = append(st.Events, e)
 	}
 	return st, rows.Err()
+}
+
+// banMergedRoot 顺着 merged_into 找到最终的用户并封禁。最多跟 10 层，防止数据里有环。
+func banMergedRoot(ctx context.Context, tx *Tx, id string, now time.Time) error {
+	for i := 0; i < 10; i++ {
+		var next sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT merged_into FROM users WHERE id = ?`, id).Scan(&next); err != nil {
+			return err
+		}
+		if !next.Valid || next.String == "" || next.String == id {
+			return nil
+		}
+		id = next.String
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET banned_at = COALESCE(banned_at, ?) WHERE id = ?`, now.Unix(), id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
