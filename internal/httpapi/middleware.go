@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 
 	"github.com/dayuer/jkt-guandan/internal/store"
@@ -78,8 +80,14 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 }
 
 // limitConcurrency 限制同时处理的请求数，超出直接 503（§12.3）。
+// /healthz 和 /readyz 不占名额：过载时存活检查也返回 503 的话，
+// Docker 会把一个其实健康、只是忙的进程重启掉（§12.5）。
 func (s *Server) limitConcurrency(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		select {
 		case s.sem <- struct{}{}:
 			defer func() { <-s.sem }()
@@ -124,6 +132,8 @@ func (s *Server) limitBody(next http.Handler) http.Handler {
 }
 
 // statusRecorder 记住写出去的状态码，供日志和 panic 兜底使用。
+// 它透传 Hijack 和 Flush，并实现 Unwrap 供 http.ResponseController 使用，
+// 否则包了这一层之后 WebSocket 升级（#18）和流式响应都会失败。
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -144,6 +154,28 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 		r.WriteHeader(http.StatusOK)
 	}
 	return r.ResponseWriter.Write(b)
+}
+
+// Unwrap 让 http.ResponseController 能找到底层的 ResponseWriter。
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// Flush 透传给底层的 http.Flusher。
+func (r *statusRecorder) Flush() {
+	if !r.wrote {
+		r.WriteHeader(http.StatusOK)
+	}
+	_ = http.NewResponseController(r.ResponseWriter).Flush()
+}
+
+// Hijack 透传给底层连接。接管之后响应不再经过这里，
+// 日志记 101，panic 兜底也不能再往连接上写 500。
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(r.ResponseWriter).Hijack()
+	if err == nil && !r.wrote {
+		r.status = http.StatusSwitchingProtocols
+		r.wrote = true
+	}
+	return conn, rw, err
 }
 
 func newRequestID() string {

@@ -20,6 +20,7 @@ func clearEnv(t *testing.T) {
 // §12.1 第 1 步：值不合法就直接退出。
 func TestLoadRejectsBackupURLWithoutKey(t *testing.T) {
 	clearEnv(t)
+	t.Setenv("GUANDAN_PUBLIC_URL", "https://guandan.id")
 	t.Setenv("GUANDAN_BACKUP_URL", "s3://bucket/backup")
 
 	if _, err := config.Load(); err == nil {
@@ -36,8 +37,30 @@ func TestLoadRejectsAutocertWithoutAdminEmail(t *testing.T) {
 	}
 }
 
+// 非开发模式下不知道本站域名，CSRF 会把所有写请求拒掉，所以启动时就要报错。
+func TestLoadRequiresPublicURLOrDomainOutsideDev(t *testing.T) {
+	clearEnv(t)
+	if _, err := config.Load(); err == nil {
+		t.Fatal("非开发模式下 GUANDAN_PUBLIC_URL 和 GUANDAN_DOMAIN 都没设，应当报错")
+	}
+
+	t.Setenv("GUANDAN_DEV", "1")
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("开发模式可以不设: %v", err)
+	}
+}
+
+func TestLoadRejectsMalformedPublicURL(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("GUANDAN_PUBLIC_URL", "guandan.id")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("没有 scheme 的 GUANDAN_PUBLIC_URL 应当报错")
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	clearEnv(t)
+	t.Setenv("GUANDAN_PUBLIC_URL", "http://127.0.0.1:8080")
 
 	cfg, err := config.Load()
 	if err != nil {

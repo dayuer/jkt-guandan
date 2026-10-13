@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,9 @@ func newFixture(t *testing.T, cfg config.Config, routes func(*http.ServeMux)) *f
 		t.Fatalf("打开数据库: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("迁移: %v", err)
+	}
 
 	clk := clock.NewFake(time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC))
 	group := supervise.New(clk)
@@ -320,5 +324,100 @@ func TestUnknownPathFallsBackToIndex(t *testing.T) {
 	}
 	if !strings.Contains(body, `id="app"`) {
 		t.Fatalf("没有回落到 index.html：%.200s", body)
+	}
+}
+
+// 256 个并发名额全部占满时，新的业务请求返回 503，
+// 但 /healthz 和 /readyz 不排队，照常返回 200（§12.3、§12.5；PR #25 复审第 4 条）。
+func TestProbesBypassConcurrencyLimit(t *testing.T) {
+	const limit = 256 // 与 maxConcurrentRequests 一致
+	var entered sync.WaitGroup
+	entered.Add(limit)
+	release := make(chan struct{})
+	f := newFixture(t, config.Config{}, func(mux *http.ServeMux) {
+		mux.HandleFunc("GET /api/slow", func(w http.ResponseWriter, r *http.Request) {
+			entered.Done()
+			<-release
+			w.WriteHeader(http.StatusNoContent)
+		})
+	})
+
+	client := &http.Client{Transport: &http.Transport{}}
+	defer client.CloseIdleConnections()
+	var done sync.WaitGroup
+	for i := 0; i < limit; i++ {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			if resp, err := client.Get(f.srv.URL + "/api/slow"); err == nil {
+				resp.Body.Close()
+			}
+		}()
+	}
+	entered.Wait() // 名额已全部占满
+	defer func() { close(release); done.Wait() }()
+
+	status := func(path string) int {
+		resp, err := client.Get(f.srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := status("/api/slow"); got != http.StatusServiceUnavailable {
+		t.Fatalf("名额满时业务请求应返回 503，实际 %d", got)
+	}
+	if got := status("/healthz"); got != http.StatusOK {
+		t.Fatalf("名额满时 /healthz 应返回 200，实际 %d", got)
+	}
+	if got := status("/readyz"); got != http.StatusOK {
+		t.Fatalf("名额满时 /readyz 应返回 200，实际 %d", got)
+	}
+}
+
+// 经过中间件之后，ResponseWriter 仍然能 Hijack 和 Flush（#18 的 WebSocket 升级要用；
+// PR #25 复审第 6 条）。这里真的接管连接，手写一个 101 响应。
+func TestMiddlewareKeepsHijackerAndFlusher(t *testing.T) {
+	f := newFixture(t, config.Config{}, func(mux *http.ServeMux) {
+		mux.HandleFunc("GET /api/flush", func(w http.ResponseWriter, r *http.Request) {
+			if _, ok := w.(http.Flusher); !ok {
+				t.Error("ResponseWriter 应实现 http.Flusher")
+			}
+			if err := http.NewResponseController(w).Flush(); err != nil {
+				t.Errorf("Flush: %v", err)
+			}
+		})
+		mux.HandleFunc("GET /api/upgrade", func(w http.ResponseWriter, r *http.Request) {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("ResponseWriter 应实现 http.Hijacker")
+				return
+			}
+			conn, rw, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("Hijack: %v", err)
+				return
+			}
+			defer conn.Close()
+			_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n")
+			_ = rw.Flush()
+		})
+	})
+
+	if resp, _ := f.get(t, "/api/flush"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("/api/flush 状态码 %d", resp.StatusCode)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, f.srv.URL+"/api/upgrade", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "test")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("请求: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("接管连接后应收到 101，实际 %d", resp.StatusCode)
 	}
 }

@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -27,7 +29,14 @@ import (
 // minFreeBytes 是启动时要求的数据目录剩余空间（§12.1 第 3 步）。
 const minFreeBytes = 500 << 20
 
+// drainTimeout 是优雅关闭时等进行中请求的上限（§12.4 第 3 步）。
+const drainTimeout = 20 * time.Second
+
 func main() {
+	// distroless 镜像里没有 curl，Docker 的 HEALTHCHECK 调这个子命令（§12.5）。
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck(os.Getenv("GUANDAN_ADDR")))
+	}
 	if err := run(); err != nil {
 		slog.Error("启动失败", "err", err)
 		os.Exit(1)
@@ -45,6 +54,11 @@ func run() error {
 	}
 	setupLogging(cfg)
 	slog.Info("启动", "data", cfg.DataDir, "addr", cfg.Addr, "dev", cfg.Dev, "tls", cfg.TLSEnabled())
+
+	// 锁文件放在数据目录里，所以目录要先存在。
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		return fmt.Errorf("创建数据目录 %s: %w", cfg.DataDir, err)
+	}
 
 	// §12.1 第 2 步：独占文件锁。两个容器挂同一个卷时，第二个起不来。
 	lock, err := store.LockDataDir(cfg.DataDir)
@@ -64,21 +78,33 @@ func run() error {
 	}
 	defer func() { _ = st.Close() }()
 
-	// §12.1 第 4 步：quick_check。失败就提示从备份恢复（§13.3）。
+	// §12.1 第 4 步：先 quick_check，库已经损坏就不要再往上跑迁移。失败就提示从备份恢复（§13.3）。
 	checkCtx, cancelCheck := context.WithTimeout(context.Background(), 30*time.Second)
 	err = st.QuickCheck(checkCtx)
 	cancelCheck()
 	if err != nil {
 		return fmt.Errorf("%w（考虑从备份恢复，见 docs/server-design.md §13.3）", err)
 	}
+
+	// §12.1 第 5 步：迁移。
+	migrateCtx, cancelMigrate := context.WithTimeout(context.Background(), 2*time.Minute)
+	err = st.Migrate(migrateCtx)
+	cancelMigrate()
+	if err != nil {
+		return err
+	}
 	slog.Info("数据库就绪", "path", st.Path())
 
-	// 根 ctx：收到信号就取消，所有后台任务据此退出（§12.4）。
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// 信号只用来触发关闭。后台任务用自己的 ctx，等 HTTP 排空之后才取消（§12.4 第 3、4 步），
+	// 否则收到信号的同一刻后台任务就停了，还在处理的请求依赖的东西（比如提醒 worker）先没了。
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+	bgCtx, stopBackground := context.WithCancel(context.Background())
+	defer stopBackground()
 
-	// 后台任务都从这里启动：#18 的 WebSocket Hub、#20 的备份、§13.1 的清理任务。
+	// 后台任务都用 group.Go(bgCtx, …) 启动：#18 的 WebSocket Hub、#20 的备份、§13.1 的清理任务。
 	group := supervise.New(clk)
+	_ = bgCtx
 
 	srv := &http.Server{
 		Addr: cfg.Addr,
@@ -106,20 +132,34 @@ func run() error {
 	select {
 	case err := <-serveErr:
 		return err
-	case <-ctx.Done():
+	case <-sigCtx.Done():
 	}
+	// 再收到一次信号就按默认行为直接退出，给卡住的关闭留一个出口。
+	stopSignals()
 
-	// 优雅关闭（§12.4）。第 1、2 步（readyz 立刻返回 503、给 WebSocket 发关闭码 1012）
-	// 由 #18 补上，这里先做 3–6：停止收新连接 → 等请求做完 → 停后台任务 → checkpoint → 释放锁。
 	slog.Info("收到停止信号，开始优雅关闭", "uptime_ms", time.Since(started).Milliseconds())
+	shutdown(srv, stopBackground, group, st, lock)
+	slog.Info("已停止")
+	return nil
+}
 
-	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 20*time.Second)
+// shutdown 按 §12.4 的顺序停机。第 1、2 步（/readyz 立刻返回 503、给 WebSocket 发关闭码 1012）
+// 由 #18 补上，这里做 3–6，每一步都等上一步做完：
+//
+//  3. srv.Shutdown：停止收新连接，等进行中的请求做完（最多 drainTimeout）；
+//  4. 取消后台任务的 ctx，等它们退出——一定在第 3 步之后，请求排空期间后台任务还在跑；
+//  5. WAL checkpoint，关闭数据库；
+//  6. 释放数据目录的文件锁。
+//
+// 顺序由 TestShutdownDrainsHTTPBeforeStoppingBackground 验证。
+func shutdown(srv *http.Server, stopBackground context.CancelFunc, group *supervise.Group, st *store.Store, lock *store.DirLock) {
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancelDrain()
 	if err := srv.Shutdown(drainCtx); err != nil {
 		slog.Warn("等待进行中的请求超时", "err", err)
 	}
 
-	stop()
+	stopBackground()
 	group.Wait()
 
 	closeCtx, cancelClose := context.WithTimeout(context.Background(), 10*time.Second)
@@ -133,16 +173,50 @@ func run() error {
 	if err := lock.Release(); err != nil {
 		slog.Warn("释放数据目录锁出错", "err", err)
 	}
+}
 
-	slog.Info("已停止")
-	return nil
+// healthcheck 请求本机的 /healthz，200 时返回 0，否则返回 1。
+// 给 Dockerfile 的 HEALTHCHECK 用：distroless 镜像里没有 curl（§12.5）。
+func healthcheck(addr string) int {
+	url, err := healthzURL(addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck:", err)
+		return 1
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck:", err)
+		return 1
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintln(os.Stderr, "healthcheck: /healthz 返回", resp.StatusCode)
+		return 1
+	}
+	return 0
+}
+
+// healthzURL 把监听地址（GUANDAN_ADDR，默认 :8080）换成本机能访问的 /healthz 地址。
+// 监听在所有网卡（空主机名、0.0.0.0、::）时走 127.0.0.1。
+func healthzURL(addr string) (string, error) {
+	if addr == "" {
+		addr = ":8080"
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("GUANDAN_ADDR=%q 不是 host:port: %w", addr, err)
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/healthz", nil
 }
 
 // checkDataDir 确认数据目录可写、剩余空间够用（§12.1 第 3 步）。
 func checkDataDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("创建数据目录 %s: %w", dir, err)
-	}
 	probe := filepath.Join(dir, ".write-probe")
 	if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
 		return fmt.Errorf("数据目录 %s 不可写: %w", dir, err)

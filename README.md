@@ -51,7 +51,7 @@ make docker     # 镜像 guandan:local
 | `GUANDAN_DATA` | `/data` | 数据库、备份、证书缓存，唯一的持久状态 |
 | `GUANDAN_ADDR` | `:8080` | 不启用内置 TLS 时的监听地址 |
 | `GUANDAN_DOMAIN` | 空 | 填了就用 autocert 签 HTTPS，容器内监听 :8080 和 :8443 |
-| `GUANDAN_PUBLIC_URL` | 按域名推导 | 生成分享链接和 OG 图 URL 时用 |
+| `GUANDAN_PUBLIC_URL` | 按域名推导 | 生成分享链接和 OG 图 URL 时用，也是 CSRF 校验认的本站来源；非开发模式下它和 `GUANDAN_DOMAIN` 至少要设一个，否则拒绝启动 |
 | `GUANDAN_ADMIN_EMAIL` | 空 | Let's Encrypt 通知地址，也是 VAPID 的 subject |
 | `GUANDAN_DEV` | 空 | 设为 `1` 进入开发模式：不启用 TLS，cookie 不加 `Secure`，文本日志 |
 | `GUANDAN_BACKUP_URL` | 空 | 异地备份目标（S3 兼容） |
@@ -70,8 +70,9 @@ docker run -d --name guandan --restart unless-stopped \
 ```
 
 nonroot 用户不能监听 1024 以下的端口，所以容器内听 8080 和 8443，由端口映射到 80 和 443。
-迁移在启动时自动执行。`/healthz` 返回 200 说明进程活着，`/readyz` 返回 200 说明写事务、
-后台任务心跳和磁盘空间都正常。
+启动时依次：锁数据目录 → 检查可写和剩余空间 → `quick_check` → 迁移（§12.1）；数据库里有本程序不认识的迁移（降级）时拒绝启动。
+`/healthz` 返回 200 说明进程活着，`/readyz` 返回 200 说明写事务、后台任务心跳和磁盘空间都正常；两者都不占并发名额。
+镜像自带 `HEALTHCHECK`，调用 `/guandan healthcheck` 子命令请求本机的 `/healthz`（distroless 里没有 curl）。
 
 ## 关于 Go 版本
 

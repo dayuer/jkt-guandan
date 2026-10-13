@@ -146,6 +146,20 @@ func TestInvariantsRejectReminderAfterGameEnded(t *testing.T) {
 	}
 }
 
+// ended_at 为空（老数据或写漏了）时 COALESCE 落到 0，没发的开局提醒一律算违规。
+func TestInvariantsRejectReminderWhenEndedAtIsNull(t *testing.T) {
+	st := openTest(t)
+	host, _ := seedUsers(t, st)
+	newGame(t, st, "g1", host, "done")
+	mustExec(t, st, `INSERT INTO outbox (game_id, user_id, kind, send_at, next_try, dedupe_key)
+		VALUES ('g1', ?, 't_minus_1h', 1000, 1000, 'k1')`, host)
+
+	err := check(t, st, "g1")
+	if err == nil || !strings.Contains(err.Error(), "不变量 5") {
+		t.Fatalf("应报不变量 5，实际 %v", err)
+	}
+}
+
 // 结束时间之前就发掉的提醒不算违规。
 func TestInvariantsAllowReminderSentBeforeEnd(t *testing.T) {
 	st := openTest(t)

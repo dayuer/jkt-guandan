@@ -87,7 +87,7 @@ func CheckInvariants(ctx context.Context, q Queryer, gameID string) error {
 			`SELECT count(*) FROM outbox
 			  WHERE game_id = ? AND kind = 't_minus_1h'
 			    AND sent_at IS NULL AND dropped_at IS NULL
-			    AND send_at > COALESCE(?, 0)`, gameID, endedAt.Int64)
+			    AND send_at > COALESCE(?, 0)`, gameID, endedAt)
 		if err != nil {
 			return err
 		}

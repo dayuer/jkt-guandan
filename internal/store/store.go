@@ -11,10 +11,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -27,6 +27,10 @@ const pragmas = "?_pragma=journal_mode(WAL)" +
 	"&_pragma=busy_timeout(5000)" +
 	"&_pragma=foreign_keys(ON)" +
 	"&_pragma=synchronous(NORMAL)"
+
+// readOnly 只加在读连接池上：SQLite 拒绝这些连接上的一切写操作，
+// 保证 Write 是唯一的写入口（§11.1）。放在最后，前面的 journal_mode 先生效。
+const readOnly = "&_pragma=query_only(1)"
 
 // WriteTimeout 是单个写事务的总时限。超时返回 ErrBusy，HTTP 层映射成 503 + Retry-After（§11.1、§12.3）。
 const WriteTimeout = 2 * time.Second
@@ -41,12 +45,10 @@ type Store struct {
 	path  string
 }
 
-// Open 打开（必要时创建）dataDir 下的数据库，并执行尚未应用的迁移。
-// 只负责数据库本身；数据目录的文件锁和磁盘检查在 Open 之前做（见 LockDataDir、FreeBytes）。
+// Open 打开（必要时创建）dataDir 下的数据库，但不执行迁移。
+// 启动顺序见 §12.1：调用方先锁数据目录、检查磁盘，Open 之后先 QuickCheck，再 Migrate。
+// 数据目录由调用方创建。
 func Open(dataDir string) (*Store, error) {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("创建数据目录 %s: %w", dataDir, err)
-	}
 	path := filepath.Join(dataDir, "guandan.db")
 	dsn := "file:" + path + pragmas
 
@@ -55,20 +57,25 @@ func Open(dataDir string) (*Store, error) {
 		return nil, fmt.Errorf("打开数据库: %w", err)
 	}
 	write.SetMaxOpenConns(1)
+	// 先用写连接建出数据库文件并切到 WAL，读连接池（query_only）随后打开的就是现成的库。
+	if err := write.Ping(); err != nil {
+		write.Close()
+		return nil, fmt.Errorf("打开数据库 %s: %w", path, err)
+	}
 
-	read, err := sql.Open("sqlite", dsn)
+	read, err := sql.Open("sqlite", dsn+readOnly)
 	if err != nil {
 		write.Close()
 		return nil, fmt.Errorf("打开读连接池: %w", err)
 	}
 	read.SetMaxOpenConns(4)
 
-	if err := migrate(write); err != nil {
-		write.Close()
-		read.Close()
-		return nil, err
-	}
 	return &Store{write: write, read: read, path: path}, nil
+}
+
+// Migrate 执行尚未应用的迁移（§12.1 第 5 步，在 QuickCheck 之后）。
+func (s *Store) Migrate(ctx context.Context) error {
+	return migrate(ctx, s.write)
 }
 
 // Path 返回数据库文件的绝对路径。
@@ -167,8 +174,11 @@ func (t *Tx) Touch(gameID string) {
 //  3. 提交前对登记过的牌局检查数据不变量，不通过就回滚；
 //  4. 提交成功后依次执行登记的回调。
 //
+// 只要没有提交成功（业务函数出错或 panic、不变量不通过、COMMIT 失败），都会回滚；
+// 回滚也失败时丢弃这条连接，不让开着事务的连接回到池子里卡死后面所有的写。
+//
 // 写事务里不要做任何 I/O（推送、LLM、出图、WebSocket），那些放到 AfterCommit 里。
-func (s *Store) Write(ctx context.Context, fn func(ctx context.Context, tx *Tx) error) error {
+func (s *Store) Write(ctx context.Context, fn func(ctx context.Context, tx *Tx) error) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, WriteTimeout)
 	defer cancel()
 
@@ -187,20 +197,33 @@ func (s *Store) Write(ctx context.Context, fn func(ctx context.Context, tx *Tx) 
 	}
 	recordLockWait(ctx, time.Since(start))
 
+	// 这个 defer 先于 conn.Close 执行，保证连接回池之前事务已经结束。
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		p := recover()
+		if rbErr := rollback(ctx, conn); rbErr != nil {
+			slog.Error("写事务回滚失败，丢弃这条连接", "err", rbErr)
+			discard(conn)
+			if p == nil {
+				err = fmt.Errorf("%w（回滚也失败: %v）", err, rbErr)
+			}
+		}
+		if p != nil {
+			panic(p)
+		}
+	}()
+
 	tx := &Tx{conn: conn}
 	if err := fn(ctx, tx); err != nil {
-		if rbErr := rollback(ctx, conn); rbErr != nil {
-			return fmt.Errorf("%w（回滚也失败: %v）", err, rbErr)
-		}
 		return err
 	}
 
 	for _, gameID := range tx.touched {
 		if err := CheckInvariants(ctx, conn, gameID); err != nil {
-			if rbErr := rollback(ctx, conn); rbErr != nil {
-				return fmt.Errorf("%w（回滚也失败: %v）", err, rbErr)
-			}
-			slog.Error("写事务不变量检查失败，已回滚", "game", gameID, "err", err)
+			slog.Error("写事务不变量检查失败，回滚", "game", gameID, "err", err)
 			return err
 		}
 	}
@@ -208,11 +231,18 @@ func (s *Store) Write(ctx context.Context, fn func(ctx context.Context, tx *Tx) 
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return fmt.Errorf("提交写事务: %w", err)
 	}
+	committed = true
 
 	// 提交已经成功，事件就该发出去，哪怕客户端这时已经断开，
 	// 所以回调拿到的是去掉取消和超时的 ctx。
 	runAfterCommit(context.WithoutCancel(ctx), tx.after)
 	return nil
+}
+
+// discard 让连接池丢掉这条连接：Raw 的回调返回 driver.ErrBadConn 时，
+// database/sql 会关闭底层连接而不是放回池子，下一次 Write 拿到的是新连接。
+func discard(conn *sql.Conn) {
+	_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 }
 
 // lockWaitWarnThreshold 是记 warn 的门槛（§13.7）。

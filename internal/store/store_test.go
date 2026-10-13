@@ -13,11 +13,19 @@ import (
 
 func openTest(t *testing.T) *store.Store {
 	t.Helper()
-	st, err := store.Open(t.TempDir())
+	return openDir(t, t.TempDir())
+}
+
+func openDir(t *testing.T, dir string) *store.Store {
+	t.Helper()
+	st, err := store.Open(dir)
 	if err != nil {
 		t.Fatalf("打开数据库: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("迁移: %v", err)
+	}
 	return st
 }
 
@@ -93,18 +101,8 @@ func TestSeatAndWaitlistTriggersExist(t *testing.T) {
 // 重复打开同一个数据目录不应该重复执行迁移。
 func TestMigrationsAreIdempotent(t *testing.T) {
 	dir := t.TempDir()
-
-	first, err := store.Open(dir)
-	if err != nil {
-		t.Fatalf("首次打开: %v", err)
-	}
-	_ = first.Close()
-
-	second, err := store.Open(dir)
-	if err != nil {
-		t.Fatalf("二次打开: %v", err)
-	}
-	defer second.Close()
+	_ = openDir(t, dir).Close()
+	second := openDir(t, dir)
 
 	var count int
 	if err := second.Read().QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil {
@@ -112,6 +110,40 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("迁移记录应为 1 条，实际 %d 条", count)
+	}
+}
+
+// §12.1：Open 只打开数据库，迁移要等 QuickCheck 之后由调用方显式执行。
+func TestOpenDoesNotMigrate(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("打开数据库: %v", err)
+	}
+	defer st.Close()
+
+	if err := st.QuickCheck(context.Background()); err != nil {
+		t.Fatalf("新库的 quick_check 应该通过: %v", err)
+	}
+	if got := tables(t, st); len(got) != 0 {
+		t.Fatalf("Open 不该建表，实际 %v", got)
+	}
+}
+
+// 库里有本程序不认识的迁移（降级）时拒绝启动。
+func TestMigrateRefusesUnknownMigration(t *testing.T) {
+	dir := t.TempDir()
+	st := openDir(t, dir)
+	mustExec(t, st, `INSERT INTO schema_migrations (name, applied_at) VALUES ('9999_from_the_future.sql', 0)`)
+	_ = st.Close()
+
+	again, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("重新打开: %v", err)
+	}
+	defer again.Close()
+	err = again.Migrate(context.Background())
+	if err == nil || !contains(err.Error(), "9999_from_the_future.sql") {
+		t.Fatalf("应当拒绝不认识的迁移，实际 %v", err)
 	}
 }
 
@@ -343,4 +375,128 @@ func contains(s, sub string) bool {
 			}
 			return false
 		}())
+}
+
+// fn panic 之后，唯一的写连接不能卡在事务里：panic 要原样抛出，事务要回滚，
+// 下一次 Write 必须能正常提交（PR #25 复审第 1 条）。
+func TestWriteRecoversAfterPanic(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+
+	func() {
+		defer func() {
+			if r := recover(); r != "业务函数炸了" {
+				t.Fatalf("panic 应原样抛出，实际 %v", r)
+			}
+		}()
+		_ = st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO kv (k, v) VALUES ('ghost', x'01')`); err != nil {
+				return err
+			}
+			panic("业务函数炸了")
+		})
+	}()
+
+	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO kv (k, v) VALUES ('after', x'01')`)
+		return err
+	}); err != nil {
+		t.Fatalf("panic 之后的 Write 应该成功: %v", err)
+	}
+	if n := countKV(t, st, "ghost"); n != 0 {
+		t.Fatalf("panic 的事务应当回滚，ghost 有 %d 行", n)
+	}
+	if n := countKV(t, st, "after"); n != 1 {
+		t.Fatalf("after 应有 1 行，实际 %d", n)
+	}
+}
+
+// COMMIT 失败时也要回滚。这里用延迟外键检查制造一次真实的 COMMIT 失败：
+// SQLite 在 COMMIT 时才发现外键违规，报错后事务仍然开着（PR #25 复审第 1 条）。
+func TestWriteRecoversAfterCommitFailure(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+
+	err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		if _, err := tx.ExecContext(ctx, `PRAGMA defer_foreign_keys = ON`); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO devices (id, user_id, token_hash, last_seen) VALUES ('d1', 'nobody', x'01', 0)`)
+		return err
+	})
+	if err == nil || !contains(err.Error(), "提交写事务") {
+		t.Fatalf("COMMIT 应当失败，实际 %v", err)
+	}
+
+	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO kv (k, v) VALUES ('after', x'01')`)
+		return err
+	}); err != nil {
+		t.Fatalf("COMMIT 失败之后的 Write 应该成功: %v", err)
+	}
+	var n int
+	if err := st.Read().QueryRow(`SELECT count(*) FROM devices`).Scan(&n); err != nil {
+		t.Fatalf("查询: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("提交失败的事务应当回滚，devices 有 %d 行", n)
+	}
+}
+
+// 回滚本身也失败时，这条连接的状态不可信，不能还回池子。
+// 用连接级的临时表做标记：连接被丢弃后，新连接上看不到它。
+func TestWriteDiscardsConnWhenRollbackFails(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+
+	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE TEMP TABLE conn_marker (x)`)
+		return err
+	}); err != nil {
+		t.Fatalf("建标记表: %v", err)
+	}
+
+	boom := errors.New("业务失败")
+	err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		// 自己先把事务结束掉，Write 随后的 ROLLBACK 就会失败。
+		if _, err := tx.ExecContext(ctx, `ROLLBACK`); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) || !contains(err.Error(), "回滚也失败") {
+		t.Fatalf("应返回原错误并说明回滚失败，实际 %v", err)
+	}
+
+	var markers int
+	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		return tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM temp.sqlite_master WHERE name = 'conn_marker'`).Scan(&markers)
+	}); err != nil {
+		t.Fatalf("回滚失败之后的 Write 应该成功: %v", err)
+	}
+	if markers != 0 {
+		t.Fatal("回滚失败的连接应当被连接池丢弃，实际还在复用")
+	}
+}
+
+// 读连接池是只读的：§11.1 只有 Write 一个写入口（PR #25 复审第 2 条）。
+func TestReadPoolIsQueryOnly(t *testing.T) {
+	st := openTest(t)
+	if _, err := st.Read().Exec(`INSERT INTO kv (k, v) VALUES ('sneaky', x'01')`); err == nil {
+		t.Fatal("通过 Read() 写入应当失败")
+	}
+	if n := countKV(t, st, "sneaky"); n != 0 {
+		t.Fatalf("不该写进去，实际 %d 行", n)
+	}
+}
+
+func countKV(t *testing.T, st *store.Store, k string) int {
+	t.Helper()
+	var n int
+	if err := st.Read().QueryRow(`SELECT count(*) FROM kv WHERE k = ?`, k).Scan(&n); err != nil {
+		t.Fatalf("查询 kv: %v", err)
+	}
+	return n
 }

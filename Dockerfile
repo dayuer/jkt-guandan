@@ -32,4 +32,7 @@ COPY --from=build /out/guandan /guandan
 COPY --from=build --chown=65532:65532 /out/data /data
 VOLUME /data
 EXPOSE 8080 8443
+# 存活检查走 /healthz（§12.5）。镜像里没有 curl，用二进制自带的 healthcheck 子命令请求本机。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD ["/guandan", "healthcheck"]
 ENTRYPOINT ["/guandan"]

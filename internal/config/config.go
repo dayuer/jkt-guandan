@@ -109,6 +109,16 @@ func Load() (Config, error) {
 		c.PublicURL = "https://" + c.Domains()[0]
 	}
 
+	// CSRF 校验只接受本站来源（§10.5）。生产环境不知道本站是谁，所有写请求都会被静默拒成 403，
+	// 所以启动时就报错。开发模式下放行本机来源，可以不设。
+	if !dev && c.PublicURL == "" {
+		return Config{}, fmt.Errorf("非开发模式必须设置 GUANDAN_PUBLIC_URL 或 GUANDAN_DOMAIN，否则无法校验请求来源；本机调试请设 GUANDAN_DEV=1")
+	}
+	if c.PublicURL != "" {
+		if u, err := url.Parse(c.PublicURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return Config{}, fmt.Errorf("GUANDAN_PUBLIC_URL=%q 不是合法的 http(s) 地址", c.PublicURL)
+		}
+	}
 	if c.BackupURL != "" && c.BackupKey == "" {
 		return Config{}, fmt.Errorf("设置了 GUANDAN_BACKUP_URL 就必须同时设置 GUANDAN_BACKUP_KEY（备份必须加密）")
 	}
