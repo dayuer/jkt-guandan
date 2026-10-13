@@ -937,3 +937,57 @@ func (f *fixture) probe(rt identity.Route, _ identity.Role) int {
 
 	return f.do(rt.Method, path, body).status
 }
+
+// 同一个身份在自己的设备上兑换自己的 token：沿用原来的设备记录，
+// 不新挂一条闲置设备（#36），原来的 cookie 也继续有效。
+func TestRedeemOwnTokenReusesDevice(t *testing.T) {
+	f := newFixture(t, false)
+	me := f.createIdentity(f.http, "老王")
+
+	var before int
+	if err := f.st.Read().QueryRow(`SELECT count(*) FROM devices`).Scan(&before); err != nil {
+		t.Fatalf("数设备: %v", err)
+	}
+
+	token := f.do(http.MethodPost, "/api/claim", nil).str("claim_token")
+	r := f.do(http.MethodPost, "/api/claim/redeem", map[string]string{"token": token})
+	if r.status != http.StatusOK {
+		t.Fatalf("兑换自己的 token 应当成功，实际 %d %s", r.status, r.raw)
+	}
+	if r.userField("id") != me {
+		t.Fatalf("身份不该变，实际 %s", r.userField("id"))
+	}
+
+	var after int
+	if err := f.st.Read().QueryRow(`SELECT count(*) FROM devices`).Scan(&after); err != nil {
+		t.Fatalf("数设备: %v", err)
+	}
+	if after != before {
+		t.Fatalf("自己的 token 不该新挂设备记录：%d -> %d", before, after)
+	}
+
+	// 原来那个 cookie 还能用。
+	if got := f.do(http.MethodGet, "/api/me", nil); got.status != http.StatusOK {
+		t.Fatalf("兑换后原来的 cookie 应当仍然有效，实际 %d", got.status)
+	}
+}
+
+// GET /api/me 带上当前设备 id——「不是我」要用它退出（#36）。
+func TestMeReturnsCurrentDeviceID(t *testing.T) {
+	f := newFixture(t, false)
+	f.createIdentity(f.http, "老王")
+
+	me := f.do(http.MethodGet, "/api/me", nil)
+	deviceID := me.str("device_id")
+	if deviceID == "" {
+		t.Fatalf("应当返回当前设备 id，实际 %s", me.raw)
+	}
+
+	// 用它退出之后，这个浏览器就认不出身份了。
+	if r := f.do(http.MethodDelete, "/api/me/devices/"+deviceID, nil); r.status != http.StatusNoContent {
+		t.Fatalf("退出当前设备应当 204，实际 %d %s", r.status, r.raw)
+	}
+	if got := f.do(http.MethodGet, "/api/me", nil); got.status != http.StatusUnauthorized {
+		t.Fatalf("退出之后应当认不出身份，实际 %d", got.status)
+	}
+}

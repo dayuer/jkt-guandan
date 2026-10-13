@@ -177,8 +177,10 @@ func (h *handler) getMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":    toUserJSON(current.User),
-		"devices": toDevicesJSON(devices),
+		"user": toUserJSON(current.User),
+		// 当前这台设备的 id：前端「不是我」要拿它去调用退出接口（#36）。
+		"device_id": current.Device.ID,
+		"devices":   toDevicesJSON(devices),
 	})
 }
 

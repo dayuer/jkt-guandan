@@ -330,7 +330,26 @@ func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentDe
 			return nil
 		}
 
-		// 没有身份，或者本来就是同一个人：消耗 token，给这台设备挂一条新记录。
+		// 同一个人在自己的设备上兑换自己的 token：沿用原来的设备记录，
+		// 不再新挂一条闲置的设备（#36）。cookie 也不用换——原来那个继续有效，
+		// 换成一个新 token 反而会让用户手里的 cookie 作废。
+		if currentUserID == ownerID && currentDeviceID != "" {
+			if err := consumeClaimToken(ctx, tx, token, now); err != nil {
+				return err
+			}
+			user, err := loadUser(ctx, tx, ownerID)
+			if err != nil {
+				return err
+			}
+			device, err := loadDevice(ctx, tx, currentDeviceID)
+			if err != nil {
+				return err
+			}
+			result = Identity{User: user, Device: device}
+			return nil
+		}
+
+		// 这台设备还没有身份：消耗 token，给它挂一条新记录。
 		if err := consumeClaimToken(ctx, tx, token, now); err != nil {
 			return err
 		}
