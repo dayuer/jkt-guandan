@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>随时掼掼蛋 · H5 原型（#7）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ════════ 画布（原型浏览页本身，不属于产品） ════════ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #e9e2d6; color: var(--ink); font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+.canvas-head { padding: 40px 48px 8px; max-width: 1400px; }
+.canvas-head h1 { font-family: var(--font-serif); font-size: 34px; font-weight: 900; color: var(--red); }
+.canvas-head p { color: var(--ink-2); font-size: 14px; margin-top: 6px; line-height: 1.7; max-width: 880px; }
+.canvas-head code { font-size: 12px; background: var(--beige); padding: 1px 6px; border-radius: 4px; }
+.legend { display: flex; gap: 16px; margin-top: 12px; font-size: 12px; color: var(--ink-3); }
+.legend b { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 4px; margin-right: 4px; }
+.group { padding: 28px 48px 8px; }
+.group > h2 { font-family: var(--font-serif); font-size: 22px; display: flex; align-items: baseline; gap: 12px; }
+.group > h2 small { font-family: var(--font-sans); font-size: 13px; color: var(--ink-3); font-weight: 400; }
+.row { display: flex; flex-wrap: wrap; gap: 28px; margin-top: 18px; align-items: flex-start; }
+.shot { width: calc(375px * .72); cursor: zoom-in; }
+.shot .frame { zoom: .72; }
+.shot figcaption { margin-top: 10px; font-size: 13px; line-height: 1.5; }
+.shot figcaption .id { font-weight: 700; margin-right: 6px; }
+.shot figcaption .note { display: block; color: var(--ink-3); font-size: 12px; }
+.tag-new { background: var(--red); color: var(--cream); }
+.tag-core { background: var(--beige); color: var(--ink-2); }
+
+/* 手机外框 */
+.frame { width: 375px; height: 812px; border-radius: 48px; background: #1c1411; padding: 10px; box-shadow: 0 24px 48px -24px rgba(42,28,23,.45); }
+.screen { position: relative; width: 100%; height: 100%; border-radius: 38px; overflow: hidden; background: var(--paper); display: flex; flex-direction: column; }
+.screen.red { background: var(--red); }
+.island { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: 112px; height: 30px; background: #0b0807; border-radius: 20px; z-index: 50; }
+.status { height: 46px; flex: none; display: flex; justify-content: space-between; align-items: center; padding: 0 30px 0 34px; font: 600 15px/1 system-ui, sans-serif; color: var(--ink); position: relative; z-index: 40; }
+.red .status, .status.light { color: #fff; }
+.homebar { position: absolute; bottom: 7px; left: 50%; transform: translateX(-50%); width: 128px; height: 4px; border-radius: 4px; background: var(--ink); opacity: .85; z-index: 60; }
+
+/* ════════ 产品组件 ════════ */
+.body { flex: 1; overflow-y: auto; scrollbar-width: none; position: relative; padding-bottom: 12px; }
+.body::-webkit-scrollbar { display: none; }
+.pad { padding: 0 18px; }
+.serif { font-family: var(--font-serif); }
+button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; transition: transform var(--t-fast) var(--ease-out); }
+button:active { transform: scale(.96); }
+button:focus-visible { outline: none; box-shadow: var(--sh-focus); }
+
+/* 顶部导航 */
+.nav { height: 48px; flex: none; display: grid; grid-template-columns: 48px 1fr 48px; align-items: center; text-align: center; font-weight: 700; font-size: 17px; }
+.nav .ico { font-size: 22px; color: var(--ink); }
+
+/* 底部 Tab：中间是「蛋」 */
+.tabbar { height: 84px; flex: none; background: #fff; border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(5, 1fr); padding-top: 10px; position: relative; z-index: 30; }
+.tab { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 11px; color: var(--ink-4); }
+.tab .g { font-size: 24px; line-height: 1; color: #8a8580; }
+.tab.on { color: var(--red); font-weight: 700; } .tab.on .g { color: var(--red); }
+.tab.egg { margin-top: -28px; }
+.tab.egg .g { width: 56px; height: 56px; border-radius: 50%; background: var(--red); color: var(--cream); font: 900 22px/56px var(--font-serif); border: 4px solid #fff; box-shadow: var(--sh-float); position: relative; }
+.tab.egg .g::after { content: ""; position: absolute; top: 2px; right: 0; width: 12px; height: 12px; border-radius: 3px; background: var(--green); border: 2px solid #fff; }
+
+/* 按钮 */
+.btn { display: flex; align-items: center; justify-content: center; gap: 6px; height: 50px; border-radius: var(--r-pill); font-weight: 700; font-size: 16px; width: 100%; }
+.btn.primary { background: var(--red); color: #fff; }
+.btn.ghost { background: var(--card); border: 1.5px solid var(--line-2); color: var(--ink); }
+.btn.dark-ghost { background: var(--card); border: 1.5px solid var(--ink); color: var(--ink); }
+.btn.soft { background: var(--beige); color: var(--ink-2); }
+.btn.disabled { background: var(--khaki); color: #fff; }
+.btn.danger-ghost { border: 1.5px solid var(--red); color: var(--red); background: var(--card); }
+.link { color: var(--red); font-weight: 700; font-size: 14px; }
+.textlink { color: var(--ink-3); font-size: 14px; text-align: center; display: block; width: 100%; padding: 8px; }
+
+/* 底部操作栏 */
+.actionbar { flex: none; display: grid; grid-template-columns: 1fr 1.8fr; gap: 12px; padding: 14px 18px 30px; background: var(--card); border-top: 1px solid var(--line); }
+.actionbar .btn { height: 52px; border-radius: var(--r-16); }
+.actionbar.single { grid-template-columns: 1fr; }
+
+/* 详情头：日期 + 大时间 */
+.when { text-align: center; padding-top: 6px; }
+.when .d { color: var(--red); font-weight: 700; font-size: 14px; }
+.when .t { font: var(--fw-black) var(--fs-hero)/var(--lh-tight) var(--font-serif); letter-spacing: -1px; }
+.when .s { color: var(--ink-3); font-size: 13px; }
+.when.dim .t { color: var(--ink-4); text-decoration: line-through; text-decoration-thickness: 3px; }
+
+/* ── 牌桌 + 座位（招牌：落座） ── */
+.table-wrap { position: relative; width: 270px; height: 270px; margin: 4px auto 0; }
+.table { position: absolute; inset: 36px; border-radius: var(--r-xl); background: var(--red-deep); box-shadow: var(--sh-table); display: grid; place-items: center; }
+.table::before { content: ""; position: absolute; inset: 18px; border: 1px dashed rgba(233,196,106,.55); border-radius: 14px; }
+.table .count { text-align: center; color: var(--cream); position: relative; }
+.table .count .n { font: 900 38px/1 var(--font-serif); display: inline-block; }
+.table .count .l { font-size: 11px; opacity: .75; margin-top: 4px; }
+.table.closed { background: #8a7f76; box-shadow: inset 0 0 0 6px #6f655d; }
+.seat { position: absolute; width: 64px; height: 64px; transform: translate(-50%, -50%); }
+.seat.top { left: 50%; top: 36px; } .seat.right { left: 234px; top: 50%; }
+.seat.bottom { left: 50%; top: 234px; } .seat.left { left: 36px; top: 50%; }
+.disc { width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center; font: 900 24px/1 var(--font-serif); border: 3px solid var(--card); position: relative; }
+.disc.host { background: var(--red-tint); color: var(--red); border-color: #e7b9b3; }
+.disc.other { background: #efe6d8; color: var(--ink); border-color: var(--line-2); }
+.disc.me { background: var(--gold); color: var(--ink); box-shadow: 0 0 0 6px rgba(233,196,106,.35); }
+.disc.empty { background: transparent; border: 2.5px dashed var(--khaki); }
+.disc .crown { position: absolute; top: -8px; right: -4px; font-size: 10px; background: var(--red); color: #fff; border-radius: 6px; padding: 1px 5px; font-family: var(--font-sans); font-weight: 700; }
+.disc.drop { animation: seatDrop var(--t-base) var(--ease-spring) both; }
+.disc.leave { animation: seatLeave var(--t-base) var(--ease-out) both; }
+@keyframes seatDrop { 0% { transform: translateY(-36px) scale(.6); opacity: 0; } 100% { transform: none; opacity: 1; } }
+@keyframes seatLeave { to { transform: translateY(24px) scale(.6); opacity: 0; } }
+.n.flip { animation: flip var(--t-base) var(--ease-out); }
+@keyframes flip { 0% { transform: translateY(-50%); opacity: 0; } 100% { transform: none; opacity: 1; } }
+
+.names { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: -4px; }
+.chip { font-size: 13px; padding: 5px 12px; border-radius: var(--r-pill); background: var(--card); border: 1px solid var(--line-2); color: var(--ink-2); }
+.chip.wait { border-style: dashed; color: var(--ink-3); }
+
+/* 信息卡 */
+.info { margin: 14px 18px 0; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 2px 18px; }
+.info .r { display: grid; grid-template-columns: 64px 1fr; padding: 13px 0; border-bottom: 1px solid var(--line-2); font-size: 15px; font-weight: 500; }
+.info .r:last-child { border: 0; } .info .r span { color: var(--ink-3); font-size: 13px; font-weight: 400; }
+.disclaimer { text-align: center; color: var(--ink-4); font-size: 11px; margin-top: 12px; }
+
+/* 状态条（提醒等） */
+.strip { margin: 12px 18px 0; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px 16px; display: flex; align-items: center; gap: 12px; }
+.strip .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--khaki); flex: none; }
+.strip .dot.on { background: var(--green); }
+.strip .tx { flex: 1; font-size: 14px; font-weight: 700; } .strip .tx small { display: block; font-weight: 400; color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+
+/* 横幅（页面顶部的事件提示） */
+.banner { margin: 6px 18px 0; border-radius: var(--r-md); padding: 11px 14px; font-size: 13px; display: flex; gap: 10px; align-items: center; background: var(--sand); border: 1px solid #e3cfa9; color: var(--ink); }
+.banner.red { background: var(--red-tint); border-color: #e7b9b3; }
+.banner.ink { background: var(--ink); color: var(--cream); border-color: var(--ink); }
+.banner .x { margin-left: auto; color: var(--ink-3); font-size: 16px; }
+.banner b { font-weight: 700; }
+
+/* 弹层 */
+.scrim { position: absolute; inset: 0; background: var(--scrim); z-index: 20; }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--card); border-radius: var(--r-sheet) var(--r-sheet) 0 0; padding: 12px 22px 44px; z-index: 25; animation: sheetUp var(--t-sheet) var(--ease-out); }
+.sheet .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--line-2); margin: 0 auto 16px; }
+.sheet h3 { font: var(--fw-black) var(--fs-sheet)/1.3 var(--font-serif); }
+.sheet .sub { color: var(--ink-3); font-size: 13px; margin-top: 4px; }
+.sheet .stack { display: grid; gap: 10px; margin-top: 16px; }
+@keyframes sheetUp { from { transform: translateY(100%); } to { transform: none; } }
+.check { width: 64px; height: 64px; margin: 4px auto 12px; border-radius: 50%; background: var(--red); color: #fff; display: grid; place-items: center; font-size: 30px; box-shadow: 0 0 0 10px var(--red-tint); }
+.check.gold { background: var(--gold); color: var(--ink); box-shadow: 0 0 0 10px #f6ebc9; }
+.check.ink { background: var(--ink); box-shadow: 0 0 0 10px var(--beige); }
+.mini { background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-md); padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; margin-top: 14px; }
+.mini > div:first-child { min-width: 0; } .mini .w { font: 900 17px/1.3 var(--font-serif); white-space: nowrap; } .mini .v { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .mini .v { color: var(--ink-3); font-size: 13px; }
+.dots { display: flex; gap: 5px; align-items: center; }
+.dots i { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font: 700 12px/1 var(--font-serif); font-style: normal; }
+
+/* 弹窗（居中） */
+.dialog { position: absolute; left: 28px; right: 28px; top: 50%; transform: translateY(-50%); background: var(--card); border-radius: var(--r-dialog); padding: 22px; z-index: 25; }
+.dialog h3 { font: var(--fw-black) var(--fs-sheet)/1.35 var(--font-serif); }
+.dialog p { color: var(--ink-2); font-size: 14px; line-height: 1.6; margin-top: 8px; }
+.diff { margin-top: 12px; background: var(--paper); border-radius: var(--r-sm); padding: 10px 12px; font-size: 13px; display: grid; gap: 6px; }
+.diff s { color: var(--ink-4); } .diff b { color: var(--red); }
+.dialog .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+.dialog .two .btn { height: 46px; font-size: 15px; }
+
+/* toast */
+.toast { position: absolute; left: 50%; bottom: 112px; transform: translateX(-50%); background: var(--ink); color: var(--cream); font-size: 13px; padding: 10px 16px; border-radius: var(--r-pill); white-space: nowrap; z-index: 40; animation: toastIn var(--t-base) var(--ease-out); }
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* 首页 */
+.home-head { padding: 22px 18px 0; display: flex; justify-content: space-between; align-items: flex-start; }
+.home-head h1 { font: var(--fw-black) var(--fs-display)/var(--lh-tight) var(--font-serif); color: var(--red); }
+.home-head p { color: var(--ink-3); font-size: 13px; margin-top: 4px; }
+.mini-cards { display: flex; gap: 4px; }
+.mini-cards span { width: 30px; height: 40px; border-radius: 5px; background: var(--card); border: 1px solid var(--line-2); display: grid; place-items: center; font-size: 16px; transform: rotate(-6deg); }
+.mini-cards span + span { transform: rotate(6deg); color: var(--red); }
+.seg { margin: 14px 18px 0; background: var(--beige); border-radius: var(--r-16); padding: 4px; display: grid; grid-template-columns: repeat(4, 1fr); }
+.seg span { text-align: center; padding: 9px 0; font-size: 14px; font-weight: 700; color: var(--ink-3); border-radius: var(--r-12); }
+.seg span.on { background: var(--card); color: var(--ink); box-shadow: var(--sh-float); }
+.pills { display: flex; gap: 8px; padding: 12px 18px 0; overflow: hidden; }
+.pill { flex: none; font-size: 13px; padding: 7px 14px; border-radius: var(--r-pill); border: 1px solid var(--line-2); background: var(--card); color: var(--ink-2); }
+.pill.on { background: var(--red); color: #fff; border-color: var(--red); }
+.sec { display: flex; justify-content: space-between; align-items: baseline; padding: 16px 18px 8px; }
+.sec h2 { font: 900 var(--fs-h2)/1.2 var(--font-serif); } .sec span { color: var(--ink-3); font-size: 12px; }
+.gcard { margin: 0 18px 12px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--sh-card); padding: 14px; display: grid; grid-template-columns: 78px 1fr; gap: 14px; position: relative; }
+.gcard .time { background: var(--paper); border-radius: var(--r-sm); display: grid; place-content: center; text-align: center; padding: 10px 0; }
+.gcard .time b { color: var(--red); font-size: 12px; } .gcard .time strong { font: 900 22px/1.15 var(--font-serif); } .gcard .time small { color: var(--ink-3); font-size: 11px; }
+.gcard .meta { font-size: 12px; color: var(--ink-3); } .gcard .meta em { font-style: normal; background: var(--sand); color: var(--ink-2); padding: 1px 7px; border-radius: var(--r-xs); margin-right: 6px; }
+.gcard .venue { font-weight: 700; font-size: 15px; margin: 4px 0 8px; }
+.gcard .bot { display: flex; justify-content: space-between; align-items: center; }
+.gcard .dots i { width: 28px; height: 28px; }
+.need { white-space: nowrap; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 8px; background: var(--red-tint); color: var(--red); }
+.need.hot { background: var(--red); color: #fff; }
+.need.joined { background: var(--card); border: 1.5px solid var(--red); }
+.need.wait { background: var(--card); border: 1.5px dashed var(--ink-3); color: var(--ink-2); }
+.need.full { background: var(--ink); color: var(--cream); }
+.live-pill { position: absolute; top: -9px; right: 14px; background: var(--ink); color: var(--cream); font-size: 10px; padding: 2px 8px; border-radius: var(--r-pill); }
+.newbar { margin: 0 18px 10px; text-align: center; font-size: 13px; font-weight: 700; color: var(--red); background: var(--card); border: 1.5px solid var(--red); border-radius: var(--r-pill); padding: 7px; }
+
+/* 表单 */
+.label { font-weight: 700; font-size: 14px; margin: 14px 0 8px; display: flex; justify-content: space-between; }
+.input { background: var(--paper); border: 1.5px solid var(--line-2); border-radius: var(--r-12); padding: 14px 16px; font-size: var(--fs-15); }
+.input.err { border-color: var(--red); background: #fdf1ef; }
+.errmsg { color: var(--red); font-size: 12px; margin-top: 6px; display: flex; gap: 6px; }
+
+/* 列表（设置、设备） */
+.list { margin: 0 18px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); }
+.list .li { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line-2); }
+.list .li:last-child { border: 0; }
+.list .li .tx { flex: 1; font-size: 15px; font-weight: 700; } .list .li .tx small { display: block; font-weight: 400; color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+.dev-ico { width: 36px; height: 36px; border-radius: 10px; background: var(--paper); display: grid; place-items: center; font-size: 18px; }
+.here { font-size: 11px; color: var(--green); font-weight: 700; }
+.small-title { font-size: 13px; color: var(--ink-3); padding: 18px 18px 8px; font-weight: 700; }
+
+/* 离线点 */
+.net { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-3); background: var(--card); border: 1px solid var(--line-2); padding: 3px 8px; border-radius: var(--r-pill); }
+.net i { width: 7px; height: 7px; border-radius: 50%; background: var(--khaki); }
+
+/* ════════ 现场演示控制台 ════════ */
+.live { display: flex; gap: 36px; align-items: flex-start; flex-wrap: wrap; margin-top: 18px; }
+.console { width: 340px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 20px; box-shadow: var(--sh-card); }
+.console h3 { font: 900 18px/1.3 var(--font-serif); }
+.console p { font-size: 12px; color: var(--ink-3); margin: 6px 0 14px; line-height: 1.6; }
+.console .ctl { display: grid; gap: 8px; }
+.console .ctl button { text-align: left; padding: 10px 14px; border-radius: 12px; background: var(--paper); border: 1px solid var(--line-2); font-size: 13px; font-weight: 500; }
+.console .ctl button span { color: var(--ink-3); font-size: 11px; display: block; font-weight: 400; }
+body.focus > *:not(#focus) { display: none; }
+#focus { display: none; padding: 24px; }
+body.focus #focus { display: flex; gap: 24px; align-items: flex-start; }
+#focus .cap { max-width: 280px; font-size: 14px; line-height: 1.6; }
+#focus .cap .note { color: var(--ink-3); display: block; margin-top: 6px; }
+#focus .cap a { color: var(--red); }
+.frame { flex: none; }
+@media (max-width: 520px) {
+  .canvas-head, .group { padding-left: 16px; padding-right: 16px; }
+  .live > .frame, #focus .frame { zoom: .88; }
+  .console { width: 100%; }
+}
+.console .log { margin-top: 14px; font: 11px/1.6 ui-monospace, monospace; color: var(--ink-2); background: var(--paper); border-radius: 10px; padding: 10px; height: 150px; overflow: auto; }
+</style>
+</head>
+<body>
+
+<header class="canvas-head">
+  <h1>随时掼掼蛋 · H5 原型</h1>
+  <p>依据：<code>design/guandan-offline/掼蛋约局H5.html</code>（A1–H8）＋ <code>docs/server-design.md</code> 新增的服务端能力。
+  这里重绘核心流程用来校准令牌（<code>tokens.css</code>），并补上设计稿里还没有的状态：候补、补位、局头转让与移出、修改冲突、实时、已取消、设备管理、注销、错误与配额。
+  impl 以本页为准实现组件和状态；视觉细节以 A–H 截图为准。</p>
+  <div class="legend"><span><b class="tag-core">核心</b>重绘自 A–H</span><span><b class="tag-new">新增</b>设计稿没有，服务端设计要求的状态</span></div>
+</header>
+
+<section class="group">
+  <h2>招牌交互 · 落座 <small>WebSocket 推来 seat.taken 时，座位从上方落下并回弹（220ms），「差 N 人」翻动</small></h2>
+  <div class="live">
+    <div class="frame" id="live"></div>
+    <div class="console">
+      <h3>模拟实时事件</h3>
+      <p>每个按钮对应一条服务端事件（§5.1、§5.5）。动画时长和曲线取自 <code>tokens.css</code> 的 <code>--t-base</code> 和 <code>--ease-spring</code>，系统开启「减少动态效果」时会自动关闭动画。</p>
+      <div class="ctl">
+        <button data-act="otherJoin">别人报名<span>seat.taken → 落座、计数翻动；满 4 人 game.full</span></button>
+        <button data-act="meJoin">我报名 / 我退出<span>POST 或 DELETE /seat；局满时我进候补</span></button>
+        <button data-act="otherLeave">别人退出<span>seat.left；有候补就自动补位</span></button>
+        <button data-act="hostLeave">局头退出<span>先用候补补位，再把局头转给最早报名的人；没人就取消</span></button>
+        <button data-act="reschedule">局头改时间<span>game.updated → 顶部横幅</span></button>
+        <button data-act="watch">有人在看<span>presence → 「N 人正在看」</span></button>
+        <button data-act="reset">重置</button>
+      </div>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</section>
+
+<section class="group" id="g-core"><h2>核心流程 <small>重绘，用来核对令牌与组件</small></h2><div class="row"></div></section>
+<section class="group" id="g-wait"><h2>候补与补位 <small>§5.1：局满进候补，有人退出队首自动补上</small></h2><div class="row"></div></section>
+<section class="group" id="g-host"><h2>局头 <small>§5.1：转让、移出、取消、修改冲突</small></h2><div class="row"></div></section>
+<section class="group" id="g-life"><h2>实时与生命周期 <small>§5.5、§13.1、§13.4</small></h2><div class="row"></div></section>
+<section class="group" id="g-me"><h2>账号与安全 <small>§10.3、§14</small></h2><div class="row"></div></section>
+<section class="group" id="g-err"><h2>错误与限额 <small>§10.8、§12.2、§14</small></h2><div class="row"></div></section>
+<div style="height:60px"></div>
+<div id="focus"></div>
+
+<script>
+/* ════════ 组件 ════════ */
+const status = (light) => `<div class="island"></div><div class="status${light ? ' light' : ''}"><span>9:41</span><span>●●●● ▭</span></div>`;
+const nav = (title, { back = true, share = false, right = '' } = {}) =>
+  `<div class="nav"><span class="ico">${back ? '‹' : ''}</span><span>${title}</span><span class="ico">${share ? '⇪' : right}</span></div>`;
+const tabbar = (on) => `<div class="tabbar">${[['♠', '牌局'], ['♣', '学牌'], ['蛋', '约局', 'egg'], ['♦', '牌友'], ['♥', '我的']]
+  .map(([g, l, egg]) => `<div class="tab${egg ? ' egg' : ''}${l === on ? ' on' : ''}"><span class="g">${g}</span>${l}</div>`).join('')}</div>`;
+const shell = (inner, { red = false, light = false } = {}) =>
+  `<div class="screen${red ? ' red' : ''}">${status(light)}${inner}<div class="homebar"></div></div>`;
+
+// seats: [top, right, bottom, left]；每个元素 {c:'老', k:'host'|'other'|'me'|'empty', anim}
+const POS = ['top', 'right', 'bottom', 'left'];
+function table(seats, { label = '对家为搭档', closed = false, flip = false } = {}) {
+  const n = seats.filter(s => s.k !== 'empty').length;
+  const discs = seats.map((s, i) => `<div class="seat ${POS[i]}"><div class="disc ${s.k}${s.anim ? ' ' + s.anim : ''}">${s.k === 'empty' ? '' : s.c}${s.crown ? '<span class="crown">局头</span>' : ''}</div></div>`).join('');
+  return `<div class="table-wrap"><div class="table${closed ? ' closed' : ''}"><div class="count"><div><span class="n${flip ? ' flip' : ''}">${n}</span><span class="n" style="font-size:30px">/4</span></div><div class="l">${label}</div></div></div>${discs}</div>`;
+}
+const S = (c, k = 'other', extra = {}) => ({ c, k, ...extra });
+const E = () => ({ k: 'empty' });
+const when = (d, t, s, dim) => `<div class="when${dim ? ' dim' : ''}"><div class="d">${d}</div><div class="t">${t}</div><div class="s">${s}</div></div>`;
+const names = (arr) => `<div class="names">${arr.map(a => `<span class="chip${a.startsWith('候补') ? ' wait' : ''}">${a}</span>`).join('')}</div>`;
+const info = (rows) => `<div class="info">${rows.map(([k, v]) => `<div class="r"><span>${k}</span>${v}</div>`).join('')}</div>`;
+const strip = (title, sub, right, dot = '') => `<div class="strip"><i class="dot ${dot}"></i><div class="tx">${title}<small>${sub}</small></div>${right}</div>`;
+const actions = (left, right, single) => `<div class="actionbar${single ? ' single' : ''}">${left}${right || ''}</div>`;
+const sheet = (inner) => `<div class="scrim"></div><div class="sheet"><div class="grab"></div>${inner}</div>`;
+const dialog = (inner) => `<div class="scrim"></div><div class="dialog">${inner}</div>`;
+const dot = (c, k) => {
+  const st = { host: 'background:var(--red-tint);color:var(--red)', other: 'background:#efe6d8', me: 'background:var(--gold)', empty: 'border:1.5px dashed var(--khaki)' }[k];
+  return `<i style="${st}">${k === 'empty' ? '' : c}</i>`;
+};
+const gcard = ({ day, time, date, area, kind, venue, dots, need, needCls = '', live = '' }) =>
+  `<div class="gcard">${live ? `<span class="live-pill">${live}</span>` : ''}<div class="time"><b>${day}</b><strong>${time}</strong><small>${date}</small></div>
+   <div><div class="meta"><em>${area}</em>${kind}</div><div class="venue">${venue}</div>
+   <div class="bot"><div class="dots">${dots.map(d => dot(...d)).join('')}</div><span class="need ${needCls}">${need}</span></div></div></div>`;
+const detailBase = (o) => shell(`${nav('牌局详情', { share: true })}<div class="body">${o.banner || ''}${when(o.d || '今天 10/13 周二', o.t || '19:30', o.s || '雅加达时间 WIB · 经典掼蛋', o.dim)}${table(o.seats, o.tableOpts)}${names(o.names)}${o.info === false ? '' : info(o.info || [['地点', 'Pacific Place · 鼎泰丰包间'], ['商圈', 'SCBD'], ['局头', o.host || '老王'], ['备注', '打到 A 为止，新手友好。停车 P2。']])}${o.info === false ? '' : '<p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>'}${o.strip || ''}${o.after || ''}</div>${o.actions}${o.overlay || ''}`);
+
+/* ════════ 画面 ════════ */
+const FULL = [S('老', 'host'), S('L'), S('阿'), S('K')];
+const shots = {
+  'g-core': [
+    { id: 'A2', t: '首页 · 牌局列表', note: '分段 + 商圈胶囊 + 牌局卡（卡片底边是「牌边」阴影）', html: shell(`<div class="body"><div class="home-head"><div><h1>随时掼掼蛋</h1><p>📍 Jakarta · 找人凑一桌，就差你一个</p></div><div class="mini-cards"><span>♠</span><span>♥</span></div></div>
+      <div class="seg"><span class="on">全部</span><span>今天</span><span>明天</span><span>周末</span></div>
+      <div class="pills"><span class="pill on">全部</span><span class="pill">SCBD</span><span class="pill">PIK</span><span class="pill">Central Park</span><span class="pill">Kemang</span></div>
+      <div class="sec"><h2>可报名的局</h2><span>4 桌在等人</span></div>
+      ${gcard({ day: '今天', time: '19:30', date: '10/13', area: 'SCBD', kind: '经典掼蛋', venue: 'Pacific Place · 鼎泰丰包间', dots: [['老', 'host'], ['L', 'other'], ['阿', 'other'], ['', 'empty']], need: '差 1 人', needCls: 'hot' })}
+      ${gcard({ day: '今天', time: '20:00', date: '10/13', area: 'PIK', kind: '不升级', venue: 'PIK Avenue · 茶室二楼', dots: [['陈', 'host'], ['小', 'other'], ['', 'empty'], ['', 'empty']], need: '差 2 人' })}
+      ${gcard({ day: '明天', time: '14:00', date: '10/14', area: 'Central Park', kind: '新手教学局', venue: 'Central Park Mall · 咖啡厅', dots: [['K', 'host'], ['', 'empty'], ['', 'empty'], ['', 'empty']], need: '差 3 人' })}
+      </div>${tabbar('牌局')}`) },
+    { id: 'B1', t: '详情 · 未报名', note: '牌桌：上=局头，顺时针；空座虚线', html: detailBase({ seats: [S('老', 'host'), S('L'), S('阿'), E()], names: ['局头 · 老王', 'Lily', '阿杰'], actions: actions(`<button class="btn dark-ghost">⇪ 分享</button>`, `<button class="btn primary">报名占座</button>`) }) },
+    { id: 'B3', t: '详情 · 已报名', note: '「我」金色 + 光晕；提醒状态条', html: detailBase({ t: '20:00', s: '雅加达时间 WIB · 不升级', host: '陈姐', seats: [S('陈', 'host'), S('小'), S('阿', 'me'), E()], names: ['局头 · 陈姐', '小周', '阿明（我）'], info: [['地点', 'PIK Avenue · 茶室二楼'], ['局头', '陈姐']], strip: strip('开局前提醒你？', '开了才收得到成局和改时间的消息', '<span class="link">开启</span>'), actions: actions(`<button class="btn dark-ghost">⇪ 分享</button>`, `<button class="btn ghost">已报名 · 退出</button>`) }) },
+    { id: 'B4', t: '报名成功弹层', note: '报名之后才问提醒（方案 §3）', html: detailBase({ t: '20:00', seats: [S('陈', 'host'), S('小'), S('阿', 'me'), E()], names: [], info: false, actions: '', overlay: sheet(`<div class="check">✓</div><h3 style="text-align:center">占上了！</h3>
+      <div class="mini"><div><div class="w">周二 10/13 20:00</div><div class="v">PIK Avenue · 茶室二楼</div></div><div class="dots">${dot('陈', 'host')}${dot('小', 'other')}${dot('阿', 'me')}${dot('', 'empty')}<b class="serif" style="color:var(--red);margin-left:4px">3/4</b></div></div>
+      <p style="text-align:center;font-weight:700;margin-top:18px">开局前 1 小时提醒你？</p><div class="stack"><button class="btn primary">提醒我</button><button class="btn ghost">加到日历</button><button class="textlink">先不用</button></div>`) }) },
+  ],
+  'g-wait': [
+    { id: 'W1', n: 1, t: '详情 · 已满，可排候补', note: '满座时主按钮从「报名占座」变成「排候补」；桌心显示候补人数', html: detailBase({ seats: FULL.map(s => ({ ...s })), tableOpts: { label: '已成局 · 2 人候补' }, names: ['局头 · 老王', 'Lily', '阿杰', 'Kevin', '候补 2 人'], actions: actions(`<button class="btn dark-ghost">⇪ 分享</button>`, `<button class="btn primary">排候补 · 第 3 位</button>`) }) },
+    { id: 'W2', n: 1, t: '详情 · 候补中', note: '「我」不在桌上，用虚线胶囊表示排队位置；退出候补不影响别人', html: detailBase({ seats: FULL, tableOpts: { label: '已成局 · 3 人候补' }, names: ['局头 · 老王', 'Lily', '阿杰', 'Kevin', '候补第 2 位（我）'], strip: strip('你是候补第 2 位', '有人退出会自动补上你，并推送通知', '<span class="need wait">候补</span>'), actions: actions(`<button class="btn dark-ghost">⇪ 分享</button>`, `<button class="btn ghost">候补中 · 退出候补</button>`) }) },
+    { id: 'W3', n: 1, t: '补位成功', note: '收到 promoted 推送点开，或页面在前台时收到实时消息；座位落座动画', html: detailBase({ seats: [S('老', 'host'), S('L'), S('阿', 'me', { anim: 'drop' }), S('K')], names: [], info: false, actions: '', overlay: sheet(`<div class="check gold">♥</div><h3 style="text-align:center">有人退出，你补上了！</h3><p class="sub" style="text-align:center">今天 19:30 · Pacific Place · 鼎泰丰包间</p><div class="stack"><button class="btn primary">好的，到时见</button><button class="btn ghost">加到日历</button><button class="textlink">去不了了，让给下一位</button></div>`) }) },
+    { id: 'W4', n: 1, t: '首页 · 卡片上的候补态', note: '已满的局显示「满 · 候补 2」；我在候补的局显示虚线标签', html: shell(`<div class="body"><div class="sec" style="padding-top:20px"><h2>可报名的局</h2><span>4 桌在等人</span></div>
+      ${gcard({ day: '今天', time: '19:30', date: '10/13', area: 'SCBD', kind: '经典掼蛋', venue: 'Pacific Place · 鼎泰丰包间', dots: [['老', 'host'], ['L', 'other'], ['阿', 'other'], ['K', 'other']], need: '满 · 候补 2', needCls: 'full' })}
+      ${gcard({ day: '今天', time: '20:00', date: '10/13', area: 'PIK', kind: '不升级', venue: 'PIK Avenue · 茶室二楼', dots: [['陈', 'host'], ['小', 'other'], ['周', 'other'], ['B', 'other']], need: '候补第 1 位', needCls: 'wait' })}
+      ${gcard({ day: '明天', time: '14:00', date: '10/14', area: 'Central Park', kind: '新手教学局', venue: 'Central Park Mall · 咖啡厅', dots: [['K', 'host'], ['阿', 'me'], ['', 'empty'], ['', 'empty']], need: '已报名 🔔', needCls: 'joined' })}
+      </div>${tabbar('牌局')}`) },
+  ],
+  'g-host': [
+    { id: 'K1', n: 1, t: '局头视角 · 管理座位', note: '局头点别人的座位 → 弹层：移出（不能再报这局）。局头视角的底部操作栏多一个「取消这局」（弹层后方可见）。弹层只显示 §10.4 白名单内的信息：称呼、一起打过几局', html: detailBase({ seats: [S('老', 'me', { crown: true }), S('L'), S('阿'), E()], names: ['局头 · 我', 'Lily', '阿杰'], actions: actions(`<button class="btn danger-ghost">取消这局</button>`, `<button class="btn dark-ghost">⇪ 分享</button>`), overlay: sheet(`<div style="display:flex;gap:14px;align-items:center"><div class="disc other" style="width:52px;height:52px;font-size:20px">阿</div><div><h3 style="font-size:19px">阿杰</h3><p class="sub" style="margin:0">一起打过 6 局</p></div></div><div class="stack" style="margin-top:20px"><button class="btn danger-ghost">移出这局</button><p class="sub" style="text-align:center;margin:-2px 0 4px">移出后 TA 不能再报这局，会收到通知；有候补会自动补上</p><button class="btn soft">取消</button></div>`) }) },
+    { id: 'K2', n: 1, t: '局头转让通知', note: '原局头退出：服务端先用候补补位、再把局头转给最早报名的人（§5.1）。这里没有候补，所以留下空座。牌桌按「局头在上」旋转显示，座位号本身不变', html: detailBase({ banner: `<div class="banner ink">👑 <span><b>老王退出了</b>，你现在是局头。空出的座位已开放报名。</span><span class="x" style="color:var(--cream)">×</span></div>`, seats: [S('L', 'me', { crown: true }), S('阿'), S('K'), E()], names: ['局头 · 我（Lily）', '阿杰', 'Kevin'], host: 'Lily（我）', actions: actions(`<button class="btn dark-ghost">⇪ 分享</button>`, `<button class="btn ghost">管理这局</button>`) }) },
+    { id: 'K3', n: 1, t: '局头取消确认', note: '取消会通知座位上的人和所有候补；不可撤销。有候补就一定满座（§4 不变量 2）', html: detailBase({ seats: [S('老', 'me', { crown: true }), S('L'), S('阿'), S('K')], tableOpts: { label: '已成局 · 2 人候补' }, names: [], info: false, actions: '', overlay: dialog(`<h3>取消今晚这局？</h3><p>会通知 Lily、阿杰、Kevin 和 2 位候补。取消后不能恢复，可以重新开一局。</p><div class="two"><button class="btn soft">再想想</button><button class="btn primary">取消这局</button></div>`) }) },
+    { id: 'K4', n: 1, t: '修改冲突（409）', note: '字段有冲突时才弹这个框：例如局头在另一台设备上也改了时间。无论选哪个，提交时都必须带 409 响应里返回的【新】version 作为 If-Match', html: shell(`${nav('修改牌局', { right: '' })}<div class="body pad"><div class="label">几点</div><div class="input">20:00</div><div class="label">地点</div><div class="input">Pacific Place · 鼎泰丰包间</div></div>${dialog(`<h3>这局刚被改过</h3><p>你在另一台设备上改了时间。要用哪个版本？</p><div class="diff"><span>时间：<s>19:30</s> → <b>20:30</b>（另一台设备）</span><span>你这次改成：<b>20:00</b></span></div><div class="two"><button class="btn soft">用 20:30</button><button class="btn primary">改成 20:00</button></div>`)}`) },
+    { id: 'K5', n: 1, t: '版本变了但字段没冲突', note: '409 最常见的起因：局头编辑期间有人报名或退出（version 也会 +1）。前端用响应里的新 version 自动重提一次，不打扰用户，只给一个 toast', html: shell(`${nav('修改牌局')}<div class="body pad"><div class="label">几点</div><div class="input">20:00</div><div class="label">地点</div><div class="input">Pacific Place · 鼎泰丰包间</div><div style="margin-top:28px"><button class="btn primary">保存</button></div></div><div class="toast">已保存 · 期间有人报名，座位已更新</div>`) },
+    { id: 'K6', n: 1, t: '编辑中局头被转走（403）', note: '编辑期间你退出过、或局头已转给别人：服务端返回 403 not_host，不是 409。丢弃本地修改，回到详情页', html: shell(`${nav('修改牌局')}<div class="body pad"><div class="label">几点</div><div class="input">20:00</div></div>${dialog(`<h3>你已经不是局头了</h3><p>这局的局头现在是 Lily，你的修改没有保存。</p><div class="two" style="grid-template-columns:1fr"><button class="btn primary">回到牌局</button></div>`)}`) },
+  ],
+  'g-life': [
+    { id: 'R1', n: 1, t: '实时 · 正在看 + 改时间', note: 'presence 每 5 秒合并一次；game.updated 推横幅，时间数字翻动', html: detailBase({ banner: `<div class="banner red">🕗 <span>局头把时间改到 <b>20:00</b> 了</span><span class="x">×</span></div>`, t: '20:00', seats: [S('老', 'host'), S('L'), S('阿', 'me'), E()], names: ['局头 · 老王', 'Lily', '阿明（我）', '👀 3 人正在看'], actions: actions(`<button class="btn dark-ghost">⇪ 分享</button>`, `<button class="btn ghost">已报名 · 退出</button>`) }) },
+    { id: 'R2', n: 1, t: '首页 · 实时 + 网络状态', note: '有新局：顶部提示条；连不上 WebSocket 3 次后降级为轮询，标题旁出现「离线」小点', html: shell(`<div class="body"><div class="home-head"><div><h1>随时掼掼蛋</h1><p>📍 Jakarta · 找人凑一桌 &nbsp;<span class="net"><i></i>离线 · 15 秒刷新</span></p></div></div>
+      <div class="sec"><h2>可报名的局</h2><span>5 桌在等人</span></div><div class="newbar">↑ 有 1 个新局</div>
+      ${gcard({ live: '刚刚有人报名', day: '今天', time: '19:30', date: '10/13', area: 'SCBD', kind: '经典掼蛋', venue: 'Pacific Place · 鼎泰丰包间', dots: [['老', 'host'], ['L', 'other'], ['阿', 'other'], ['K', 'other']], need: '满 · 4/4', needCls: 'full' })}
+      ${gcard({ day: '今天', time: '20:00', date: '10/13', area: 'PIK', kind: '不升级', venue: 'PIK Avenue · 茶室二楼', dots: [['陈', 'host'], ['小', 'other'], ['', 'empty'], ['', 'empty']], need: '差 2 人' })}
+      </div><div class="toast" style="bottom:100px">有新版本 · 点我刷新</div>${tabbar('牌局')}`) },
+    { id: 'R3', n: 1, t: '已取消的局', note: '文案按取消原因区分：局头取消 →「局头已取消这局」；局头退出且没人接手 →「局头退出了，没人接手，这局取消了」；开局时只剩局头一人（§13.1）→「人没凑齐，这局自动取消了」', html: detailBase({ dim: true, banner: `<div class="banner">局头已取消这局 · 10/13 17:40</div>`, seats: [E(), E(), E(), E()], tableOpts: { label: '已取消', closed: true }, names: [], actions: actions(`<button class="btn primary">看看其他局</button>`, '', true) }) },
+    { id: 'R4', n: 1, t: '已结束的局', note: '开局 6 小时后自动结束（§13.1）。「原班人马再约」没有专门接口：用这局的数据预填 08 表单（POST /api/games），发起后对原来的人调用 /invites', html: detailBase({ d: '昨天 10/12 周一', seats: [S('老', 'host'), S('L'), S('阿', 'me'), S('K')], tableOpts: { label: '已结束', closed: true }, names: ['局头 · 老王', 'Lily', '阿明（我）', 'Kevin'], actions: actions(`<button class="btn primary">原班人马再约一局</button>`, '', true) }) },
+  ],
+  'g-me': [
+    { id: 'G4', n: 1, t: '我的 · 登录的设备', note: '§10.3：免注册身份被盗无法二次验证，所以必须能看见并踢掉其他设备', html: shell(`${nav('登录的设备')}<div class="body"><div class="small-title">这些设备都是「阿明」</div><div class="list">
+      <div class="li"><span class="dev-ico">📱</span><div class="tx">iPhone · 主屏幕 App<small>刚刚 · 雅加达</small></div><span class="here">本机</span></div>
+      <div class="li"><span class="dev-ico">💬</span><div class="tx">微信内置浏览器<small>2 小时前</small></div></div>
+      <div class="li"><span class="dev-ico">🧭</span><div class="tx">Safari<small>昨天 21:14</small></div></div></div>
+      <div class="pad" style="margin-top:18px"><button class="btn danger-ghost">退出其他设备</button><p class="sub" style="text-align:center;margin-top:10px;font-size:12px;color:var(--ink-3)">不认识的设备？退出后它需要重新填称呼，看不到你的局</p></div></div>`) },
+    { id: 'G5', n: 1, t: '隐私与注销', note: '§14 UU PDP：说明收集什么；注销后座位显示「已注销牌友」', html: shell(`${nav('隐私与数据')}<div class="body"><div class="list" style="margin-top:8px">
+      <div class="li"><div class="tx">我们存了什么<small>称呼、你绑定的 WhatsApp（可选）、登录的设备、你报过的局</small></div></div>
+      <div class="li"><div class="tx">存多久<small>设备 180 天没用自动删除；使用统计 1 年后删除；备份 30 天后删除</small></div></div>
+      <div class="li"><div class="tx">隐私说明<small>完整条款</small></div><span style="color:var(--ink-3)">›</span></div></div>
+      <div class="pad" style="margin-top:22px"><button class="btn danger-ghost">注销并删除我的数据</button></div></div>
+      ${dialog(`<h3>确定注销？</h3><p>你的称呼、WhatsApp、设备和提醒会被删除，无法恢复。已报的 2 局里，你的座位会显示为「已注销牌友」。</p><div class="two"><button class="btn soft">不注销</button><button class="btn primary">注销</button></div>`)}`) },
+  ],
+  'g-err': [
+    { id: 'X1', n: 1, t: '开局表单 · 敏感词', note: '§14：备注或地点命中敏感词表（赌、钱、筹码、judi、taruhan…）时拒绝提交，就地提示，不清空用户输入', html: shell(`${nav('开一局', { back: false, right: '<span style="font-size:14px;color:var(--ink-3)">取消</span>' })}<div class="body pad"><div class="label">商圈 · 地点</div><div class="input">Pacific Place · 鼎泰丰包间</div>
+      <div class="label">备注 <span style="color:var(--ink-4);font-weight:400">选填</span></div><div class="input err">一把 50 块钱，输了请宵夜</div><div class="errmsg">⚠ 请勿涉及金钱：这里只约纯娱乐局</div>
+      <div style="margin-top:28px"><button class="btn disabled">发起并分享</button></div></div>`) },
+    { id: 'X2', n: 1, t: '配额已满', note: '§10.8：同时最多占 5 个座位或候补；告诉用户怎么解决，而不只是报错', html: detailBase({ seats: [S('老', 'host'), S('L'), E(), E()], names: ['局头 · 老王', 'Lily'], actions: actions(`<button class="btn dark-ghost">⇪ 分享</button>`, `<button class="btn primary">报名占座</button>`), overlay: `<div class="toast">你已经占了 5 个座位或候补，先退掉一个再来 · 查看</div>` }) },
+    { id: 'X3', n: 1, t: '被移出后', note: 'game_bans：被移出的人仍能看这局，但不能再报', html: detailBase({ banner: `<div class="banner">局头把你移出了这局</div>`, seats: [S('老', 'host'), S('L'), E(), S('K')], names: ['局头 · 老王', 'Lily', 'Kevin'], actions: actions(`<button class="btn primary">看看其他局</button>`, '', true) }) },
+    { id: 'X4', n: 1, t: '服务繁忙（503）', note: '§12.3：写锁或过载时返回 503 + Retry-After；按钮按 Retry-After 自动重试一次，且必须复用同一个 Idempotency-Key（§11.4），否则可能被执行两次', html: detailBase({ seats: [S('老', 'host'), S('L'), S('阿'), E()], names: ['局头 · 老王', 'Lily', '阿杰'], actions: actions(`<button class="btn dark-ghost">⇪ 分享</button>`, `<button class="btn disabled">人有点多，正在重试…</button>`) }) },
+  ],
+};
+for (const [gid, list] of Object.entries(shots)) {
+  document.querySelector(`#${gid} .row`).innerHTML = list.map(s =>
+    `<figure class="shot" id="shot-${s.id}" title="单独查看：#${s.id}" onclick="location.hash='${s.id}'"><div class="frame">${s.html}</div><figcaption><span class="id">${s.id}</span>${s.t} <b class="${s.n ? 'tag-new' : 'tag-core'}" style="font-size:10px;padding:1px 6px;border-radius:4px">${s.n ? '新增' : '核心'}</b><span class="note">${s.note}</span></figcaption></figure>`).join('');
+}
+
+/* 单屏查看：prototype.html#B1 只显示这一屏，100% 大小 */
+function applyFocus() {
+  const id = location.hash.slice(1);
+  const all = Object.values(shots).flat(); const s = all.find(x => x.id === id);
+  document.body.classList.toggle('focus', !!s);
+  if (s) document.getElementById('focus').innerHTML = `<div class="frame">${s.html}</div><div class="cap"><b>${s.id}</b> ${s.t}<span class="note">${s.note}</span><p style="margin-top:12px"><a href="#">← 返回全部</a></p></div>`;
+}
+window.addEventListener('hashchange', applyFocus); applyFocus();
+
+/* ════════ 现场演示：模拟 WebSocket 事件 ════════ */
+const NAMES = ['杰', 'K', '陈', '周', 'B', 'M', 'Q'];
+let st;
+let seq = 0;
+function reset() { seq = 0; st = { seats: [S('老', 'host', { o: seq++ }), S('L', 'other', { o: seq++ }), E(), E()], wait: [], me: null, t: '19:30', watchers: 0, banner: '', toast: '', flip: false }; }
+function log(m) { const el = document.getElementById('log'); el.textContent = `${new Date().toLocaleTimeString()}  ${m}\n` + el.textContent; }
+function free() { return st.seats.findIndex(s => s.k === 'empty'); }
+function render() {
+  const n = st.seats.filter(s => s.k !== 'empty').length;
+  const meSeated = st.me === 'seat', meWait = st.me === 'wait';
+  const need = 4 - n;
+  const hi = Math.max(0, st.seats.findIndex(s => s.k === 'host' || s.crown));
+  const view = st.seats.slice(hi).concat(st.seats.slice(0, hi));
+  const nm = view.filter(s => s.k !== 'empty').map(s => s.k === 'host' ? `局头 · ${s.c === '老' ? '老王' : s.c}` : s.k === 'me' ? (s.crown ? '局头 · 阿明（我）' : '阿明（我）') : s.c);
+  if (st.wait.length) nm.push(`候补 ${st.wait.length} 人`);
+  if (st.watchers) nm.push(`👀 ${st.watchers} 人正在看`);
+  const right = meSeated ? `<button class="btn ghost" data-act="meJoin">已报名 · 退出</button>`
+    : meWait ? `<button class="btn ghost" data-act="meJoin">候补第 ${st.wait.indexOf('me') + 1} 位 · 退出</button>`
+    : need === 0 ? `<button class="btn primary" data-act="meJoin">排候补 · 第 ${st.wait.length + 1} 位</button>`
+    : `<button class="btn primary" data-act="meJoin">报名占座 · 差 ${need} 人</button>`;
+  document.getElementById('live').innerHTML = detailBase({
+    t: st.t, banner: st.cancelled ? `<div class="banner">局头退出了，没人接手，这局取消了</div>` : st.banner, dim: st.cancelled, seats: view, tableOpts: { flip: st.flip, closed: st.cancelled, label: st.cancelled ? '已取消' : need === 0 ? (st.wait.length ? `已成局 · ${st.wait.length} 人候补` : '已成局') : '对家为搭档' },
+    names: nm, actions: actions(`<button class="btn dark-ghost">⇪ 分享</button>`, right),
+    overlay: st.toast ? `<div class="toast">${st.toast}</div>` : '',
+  });
+  st.seats.forEach(s => delete s.anim); st.flip = false;
+}
+function seatIn(who) {
+  const i = free(); st.seats[i] = who === 'me' ? S('阿', 'me', { anim: 'drop', o: seq++ }) : S(who, 'other', { anim: 'drop', o: seq++ }); st.flip = true;
+  if (free() === -1) { st.toast = '成局了！4 人到齐'; log('→ game.full'); }
+}
+const acts = {
+  otherJoin() {
+    const c = NAMES.find(x => !st.seats.some(s => s.c === x) && !st.wait.includes(x)) || '新';
+    st.toast = '';
+    if (free() === -1) { st.wait.push(c); log(`POST /seat → 202（满座，${c} 进候补；局头收到 host_waitlist）`); return; }
+    seatIn(c); log(`→ seat.taken {${c}}`);
+  },
+  meJoin() {
+    st.toast = '';
+    if (st.me === 'seat') { const i = st.seats.findIndex(s => s.k === 'me'); st.seats[i] = E(); st.me = null; st.flip = true; log('DELETE /seat → seat.left {我}'); promote(i); return; }
+    if (st.me === 'wait') { st.wait = st.wait.filter(x => x !== 'me'); st.me = null; log('DELETE /seat → 退出候补'); return; }
+    if (free() === -1) { st.wait.push('me'); st.me = 'wait'; st.toast = `你是候补第 ${st.wait.length} 位`; log('POST /seat → 202 waitlisted'); return; }
+    seatIn('me'); st.me = 'seat'; log('POST /seat → 201 seated');
+  },
+  otherLeave() {
+    const i = st.seats.findIndex(s => s.k === 'other'); if (i < 0) { log('（没有可以退出的人）'); return; }
+    log(`→ seat.left {${st.seats[i].c}}`); st.seats[i] = E(); st.flip = true; st.toast = ''; promote(i);
+  },
+  hostLeave() {
+    const h = st.seats.findIndex(s => s.k === 'host' || s.crown);
+    if (h < 0) { log('（局已取消）'); return; }
+    const wasMe = st.seats[h].k === 'me'; st.seats[h] = E(); st.flip = true; st.toast = '';
+    log('→ seat.left {局头}'); promote(h);
+    const seated = st.seats.map((s, i) => ({ s, i })).filter(x => x.s.k !== 'empty').sort((a, b) => a.s.o - b.s.o);
+    if (!seated.length) { st.cancelled = true; log('→ game.updated {status: cancelled}（座位上没人了，通知候补 cancelled）'); return; }
+    const nh = seated[0].s;
+    if (nh.k === 'me') { nh.crown = true; st.banner = `<div class="banner ink">👑 <span><b>局头退出了</b>，你现在是局头。</span></div>`; }
+    else { nh.k = 'host'; st.banner = `<div class="banner">局头退出了，现在由 <b>${nh.c}</b> 当局头</div>`; }
+    log(`→ game.updated {host: ${nh.k === 'me' ? '我' : nh.c}}（先补位，再转让给最早报名的人）`);
+    void wasMe;
+  },
+  reschedule() { st.t = st.t === '19:30' ? '20:00' : '19:30'; st.banner = `<div class="banner red">🕗 <span>局头把时间改到 <b>${st.t}</b> 了</span><span class="x">×</span></div>`; log(`→ game.updated {starts_at: ${st.t}}`); },
+  watch() { st.watchers = (st.watchers % 5) + 1; log(`→ presence {${st.watchers}}`); },
+  reset() { reset(); document.getElementById('log').textContent = ''; log('重置'); },
+};
+function promote(i) {
+  if (!st.wait.length) return;
+  const nxt = st.wait.shift();
+  st.seats[i] = nxt === 'me' ? S('阿', 'me', { anim: 'drop', o: seq++ }) : S(nxt, 'other', { anim: 'drop', o: seq++ });
+  if (nxt === 'me') { st.me = 'seat'; st.toast = '有人退出，你补上了！'; }
+  log(`→ seat.taken {${nxt === 'me' ? '我' : nxt}}（候补补位，promoted）`);
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-act]'); if (!b || !(b.dataset.act in acts)) return;
+  if (!b.closest('#live') && !b.closest('.console')) return;
+  acts[b.dataset.act](); render();
+});
+reset(); render(); log('已连接 · hello {build: proto}');
+</script>
+</body>
+</html>
