@@ -51,7 +51,7 @@ export function GameTable({ detail, meID, onSeat }: Props) {
           <div class="n">
             {detail.seats.length}/{detail.game.capacity}
           </div>
-          <div class="l">对家为搭档</div>
+          <div class="l">{centerLabel(detail)}</div>
         </div>
       </div>
 
@@ -93,4 +93,13 @@ export function GameTable({ detail, meID, onSeat }: Props) {
       })}
     </div>
   );
+}
+
+/** 桌心那行小字：满员时是「已成局（· N 人候补）」，否则是搭档提示（原型 W1 / K3）。 */
+function centerLabel(detail: GameDetail): string {
+  if (detail.game.status === "cancelled") return "已取消";
+  if (detail.game.status === "done") return "已结束";
+  if (detail.game.status !== "full") return "对家为搭档";
+  const waiting = detail.waitlist.length;
+  return waiting > 0 ? `已成局 · ${waiting} 人候补` : "已成局";
 }

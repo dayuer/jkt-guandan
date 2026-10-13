@@ -1,6 +1,7 @@
-import { useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, createGame, newIdempotencyKey, type UserRef } from "../api";
 import { weekday } from "../format";
+import { useRetrying } from "../useRetrying";
 
 /** 允许的片区，和 internal/games 里的白名单一致（§12.2：不接受任意字符串）。 */
 const AREAS = ["SCBD", "PIK", "Central Park", "Kemang", "Kuningan", "Senayan", "Kelapa Gading", "BSD", "Other"];
@@ -43,6 +44,15 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated }: Pr
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const retrying = useRetrying();
+
+  // 幂等键代表「这一次提交」（§11.4）。放进状态，只有表单内容变了才换新的：
+  // 固定不变的话，用户改了内容又提交会用同一个键、拿到上一次的结果；
+  // 每次点击都换的话，第一次其实成功了只是响应超时，用户再点一次就会开出两个局。
+  const [idemKey, setIdemKey] = useState(() => newIdempotencyKey());
+  useEffect(() => {
+    setIdemKey(newIdempotencyKey());
+  }, [startsAt, area, venue, kind, note]);
 
   const submit = async (e: Event) => {
     e.preventDefault();
@@ -55,13 +65,10 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated }: Pr
 
     setBusy(true);
     setError("");
-    // 这个键代表「这一次提交」。失败后重试时页面会重新生成一个，
-    // 但用户在同一个页面上重复点按钮，用的是同一个。
-    const key = newIdempotencyKey();
     try {
       const detail = await createGame(
         { starts_at: startsAt, area, venue: venue.trim(), kind, note: note.trim() || undefined },
-        key,
+        idemKey,
       );
       toast("开好了，把链接发到群里吧");
       onCreated(detail.game.short_code);
@@ -160,8 +167,8 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated }: Pr
       </div>
 
       <div class="actionbar single">
-        <button class="btn primary" disabled={busy || venue.trim() === ""} onClick={submit}>
-          {busy ? "正在开…" : "开这一局"}
+        <button class="btn primary" disabled={busy || retrying || venue.trim() === ""} onClick={submit}>
+          {retrying ? "人有点多，正在重试…" : busy ? "正在开…" : "开这一局"}
         </button>
       </div>
     </>

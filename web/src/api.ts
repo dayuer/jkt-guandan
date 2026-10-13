@@ -39,6 +39,39 @@ interface RequestOptions {
   headers?: Record<string, string>;
 }
 
+/**
+ * 过载/写锁超时（§12.3）时要不要自动重试。
+ *
+ * 页面靠它把按钮文案换成「人有点多，正在重试…」（原型 X4）。
+ */
+let retrying = false;
+const retryListeners = new Set<(value: boolean) => void>();
+
+/** 订阅「正在自动重试」的状态，返回取消订阅的函数。 */
+export function subscribeRetry(fn: (value: boolean) => void): () => void {
+  retryListeners.add(fn);
+  fn(retrying);
+  return () => {
+    retryListeners.delete(fn);
+  };
+}
+
+function setRetrying(value: boolean) {
+  if (retrying === value) return;
+  retrying = value;
+  retryListeners.forEach((fn) => fn(value));
+}
+
+/** 服务端说多久后才能再试（Retry-After，秒）。缺省 1 秒，最多等 10 秒。 */
+function retryAfterMs(resp: Response): number {
+  const raw = resp.headers?.get?.("Retry-After");
+  const seconds = raw ? Number(raw) : NaN;
+  if (!Number.isFinite(seconds) || seconds <= 0) return 1000;
+  return Math.min(seconds, 10) * 1000;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { ...opts.headers };
   // 会改数据的请求一律带上，哪怕没有请求体。
@@ -46,11 +79,25 @@ async function request<T>(method: string, path: string, opts: RequestOptions = {
     headers["content-type"] = "application/json";
   }
 
-  const resp = await fetch(path, {
-    method,
-    headers,
-    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-  });
+  const send = () =>
+    fetch(path, {
+      method,
+      headers,
+      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    });
+
+  // 会改数据的请求遇到 503（写锁等待超时或过载）自动重试一次。
+  // 请求体、幂等键、If-Match 都没变，所以重试不会重复建局（§11.4）。
+  let resp = await send();
+  if (resp.status === 503 && method !== "GET" && method !== "HEAD") {
+    setRetrying(true);
+    try {
+      await sleep(retryAfterMs(resp));
+      resp = await send();
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   const text = await resp.text();
   let parsed: any = null;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useMemo, useState } from "preact/hooks";
 import {
   ApiError,
   cancelGame,
@@ -8,24 +8,35 @@ import {
   leaveGame,
   updateGame,
   type GameDetail,
+  type GamePatch,
   type Seat,
   type UserRef,
 } from "../api";
 import { GameTable } from "../components/Table";
+import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
 import { dayLabel, kindLabel, timeHM } from "../format";
+import { useRetrying } from "../useRetrying";
 
 interface Props {
   code: string;
   me: UserRef | null;
   /** 需要身份时弹称呼层，返回填好的身份；用户取消则返回 null。 */
   requireIdentity: () => Promise<UserRef | null>;
-  /** 「我的」那一屏还没做，先只提示。 */
   toast: (text: string) => void;
   onBack: () => void;
 }
 
+/** K4：编辑期间这些字段被别人也改了，需要局头自己选。 */
+interface ConflictState {
+  patch: GamePatch;
+  /** 打开编辑框那一刻的牌局——用来判断冲突是不是和本次修改有关。 */
+  baseline: GameDetail;
+  latest: GameDetail;
+  diffs: FieldDiff[];
+}
+
 /**
- * 03 · 牌局详情（设计稿 B1 / B3，以及 W1 / W2 / R3 / K1 / K3 / K4 / K5）。
+ * 03 · 牌局详情（设计稿 B1 / B3，以及 W1 / W2 / R3 / K1 / K3 / K4 / K5 / K6）。
  *
  * 状态全部来自服务端：`me.role` 说明我在不在这一局里，`missing` 说明还差几个人，
  * `status` 说明这一局还能不能报。前端不自己推断这些。
@@ -34,9 +45,11 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  // 局头改时间时的冲突处理（K4）：服务端返回的最新牌局。
-  const [conflict, setConflict] = useState<GameDetail | null>(null);
+  const [conflict, setConflict] = useState<ConflictState | null>(null);
   const [editOpen, setEditOpen] = useState(false);
+  const [kickTarget, setKickTarget] = useState<Seat | null>(null);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const retrying = useRetrying();
 
   const load = useCallback(async () => {
     try {
@@ -51,6 +64,19 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
     void load();
   }, [load]);
 
+  /** 把错误翻成人话。 */
+  const explain = (err: unknown): string => {
+    if (err instanceof ApiError) {
+      if (err.isClosed) return "这一局已经结束或取消了";
+      if (err.code === "banned") return "你被移出过这一局，不能再报名";
+      if (err.code === "quota_exceeded") return err.message;
+      if (err.code === "game_started") return "这一局已经开始了，问问局头还能不能加";
+      if (err.status === 503) return "人有点多，稍等一下再试";
+      return err.message;
+    }
+    return "操作没成功，请再试一次";
+  };
+
   const run = async (fn: () => Promise<GameDetail | void>) => {
     if (busy) return;
     setBusy(true);
@@ -60,17 +86,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       else await load();
       setError("");
     } catch (err) {
-      if (err instanceof ApiError) {
-        if (err.isVersionConflict) {
-          // 有人抢先改了（§11.3）。K5：如果冲突不在你改的那个字段上，
-          // 拿最新版本自动重试一次就行；否则把最新数据摆出来让用户确认（K4）。
-          setConflict(err.body as GameDetail);
-        } else {
-          setError(err.message);
-        }
-      } else {
-        setError("操作没成功，请再试一次");
-      }
+      setError(explain(err));
     } finally {
       setBusy(false);
     }
@@ -85,8 +101,81 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
     await run(() => joinGame(code));
   };
 
+  // ── 局头改牌局（K4 / K5 / K6）────────────────────────────────────────────
+
+  /**
+   * 提交一次修改。409 之后先判断冲突和本次修改有没有关系：
+   * 没关系就带新版本号自动重提（K5），有关系才弹对比框（K4）。
+   */
+  const submitEdit = async (patch: GamePatch, baseline: GameDetail) => {
+    setBusy(true);
+    setError("");
+    try {
+      const next = await updateGame(code, patch, baseline.game.version);
+      setDetail(next);
+      toast("改好了，已经通知座位上的人");
+      setEditOpen(false);
+    } catch (err) {
+      if (err instanceof ApiError && err.isVersionConflict) {
+        const latest = err.body as GameDetail;
+        if (conflictingFields(patch, baseline, latest).length === 0) {
+          // K5：冲突与本次修改无关（最常见的是期间有人报名）——不打断用户，直接重提一次。
+          await retryEdit(patch, latest);
+          return;
+        }
+        // K4：同一个字段被两个人改了，摆出对比让局头决定。
+        setConflict({ patch, baseline, latest, diffs: describeConflict(patch, baseline, latest) });
+        setEditOpen(false);
+      } else if (err instanceof ApiError && err.code === "not_host") {
+        // K6：编辑期间局头被转给了别人。丢掉本地的修改，重新加载。
+        toast("你已经不是局头了");
+        setEditOpen(false);
+        await load();
+      } else {
+        setError(explain(err));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** K5 的那一次重提；如果又撞上，就交给 K4 让用户选。 */
+  const retryEdit = async (patch: GamePatch, latest: GameDetail) => {
+    try {
+      const next = await updateGame(code, patch, latest.game.version);
+      setDetail(next);
+      toast("已保存 · 期间有人报名");
+      setEditOpen(false);
+    } catch (err) {
+      if (err instanceof ApiError && err.isVersionConflict) {
+        const again = err.body as GameDetail;
+        setConflict({ patch, baseline: latest, latest: again, diffs: describeConflict(patch, latest, again) });
+        setEditOpen(false);
+        return;
+      }
+      setError(explain(err));
+    }
+  };
+
+  /** K4 里选「仍然改成我的」：带最新版本号重提一次。 */
+  const keepMine = async () => {
+    if (!conflict) return;
+    const { patch, latest } = conflict;
+    setConflict(null);
+    setBusy(true);
+    try {
+      setDetail(await updateGame(code, patch, latest.game.version));
+      toast("已按你的版本改好");
+    } catch (err) {
+      setError(explain(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const isHost = !!me && detail?.host.id === me.id;
   const closed = detail ? detail.game.status === "cancelled" || detail.game.status === "done" : false;
+
   const onSeatClick = useMemo(() => {
     if (!isHost || closed) return undefined;
     return (seat: Seat) => {
@@ -94,10 +183,9 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         toast("局头不能移出自己，想走请点「退出」");
         return;
       }
-      if (!confirm(`把 ${seat.user.nickname} 移出这一局？他之后不能再报名。`)) return;
-      void run(() => kickPlayer(code, seat.user.id));
+      setKickTarget(seat);
     };
-  }, [isHost, closed, me?.id, code]);
+  }, [isHost, closed, me?.id, toast]);
 
   if (!detail) {
     return (
@@ -179,38 +267,59 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         {error && <p class="error">{error}</p>}
       </div>
 
-      {conflict && (
-        <ConflictBar
-          latest={conflict}
-          onAccept={() => {
-            setDetail(conflict);
-            setConflict(null);
+      {editOpen && isHost && (
+        <EditSheet detail={detail} onClose={() => setEditOpen(false)} onSubmit={(patch) => void submitEdit(patch, detail)} />
+      )}
+
+      {kickTarget && (
+        <Sheet
+          title={kickTarget.user.nickname}
+          sub="移出后 TA 不能再报这局，会收到通知；有候补会自动补上"
+          actionLabel="移出这局"
+          onClose={() => setKickTarget(null)}
+          onConfirm={() => {
+            const target = kickTarget;
+            setKickTarget(null);
+            void run(() => kickPlayer(code, target.user.id));
           }}
         />
       )}
 
-      {editOpen && isHost && (
-        <EditSheet
-          detail={detail}
-          onClose={() => setEditOpen(false)}
-          onSubmit={(patch) => {
-            setEditOpen(false);
+      {cancelOpen && (
+        <Sheet
+          title="取消这一局？"
+          sub={`会通知 ${seats.length} 位座位上的人${
+            waitlist.length > 0 ? `和 ${waitlist.length} 位候补` : ""
+          }，取消后不能恢复。`}
+          actionLabel="取消这局"
+          onClose={() => setCancelOpen(false)}
+          onConfirm={() => {
+            setCancelOpen(false);
             void run(async () => {
-              const next = await updateGame(code, patch, detail.game.version);
-              toast("改好了，已经通知座位上的人");
-              return next;
+              await cancelGame(code);
+              toast("这一局已取消");
+              await load();
             });
           }}
         />
       )}
 
+      {conflict && (
+        <ConflictDialog
+          state={conflict}
+          onUseTheirs={() => {
+            setDetail(conflict.latest);
+            setConflict(null);
+            toast("已用对方的版本");
+          }}
+          onKeepMine={() => void keepMine()}
+          onCancel={() => setConflict(null)}
+        />
+      )}
+
       <div class="actionbar">
         {myRole.role !== "none" && (
-          <button
-            class="btn ghost"
-            disabled={busy || closed}
-            onClick={() => void run(() => leaveGame(code))}
-          >
+          <button class="btn ghost" disabled={busy || closed} onClick={() => void run(() => leaveGame(code))}>
             {myRole.role === "waitlist" ? "候补中 · 退出候补" : "已报名 · 退出"}
           </button>
         )}
@@ -220,29 +329,22 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
           </button>
         )}
         {isHost && !closed && (
-          <button
-            class="btn danger-ghost"
-            disabled={busy}
-            onClick={() => {
-              if (confirm("取消这一局？座位上的人和候补都会收到通知。")) {
-                void run(async () => {
-                  await cancelGame(code);
-                  toast("这一局已取消");
-                  await load();
-                });
-              }
-            }}
-          >
+          <button class="btn danger-ghost" disabled={busy || retrying} onClick={() => setCancelOpen(true)}>
             取消这局
           </button>
         )}
         {myRole.role === "none" && (
-          <button class="btn primary" disabled={busy || closed} onClick={() => void onJoin()}>
-            {busy ? "稍等…" : missing > 0 ? "报名占座" : `排候补 · 第 ${waitlist.length + 1} 位`}
+          <button class="btn primary" disabled={busy || retrying || closed} onClick={() => void onJoin()}>
+            {retrying
+              ? "人有点多，正在重试…"
+              : busy
+                ? "稍等…"
+                : closed
+                  ? "已结束"
+                  : missing > 0
+                    ? "报名占座"
+                    : `排候补 · 第 ${waitlist.length + 1} 位`}
           </button>
-        )}
-        {myWait && (
-          <span class="sr-only">你排在候补第 {myWait.position} 位</span>
         )}
       </div>
     </>
@@ -261,18 +363,82 @@ function Nav({ title, onBack }: { title: string; onBack: () => void }) {
   );
 }
 
-/** K4：编辑期间有人改过这一局，而且字段冲突了，让用户确认以哪边为准。 */
-function ConflictBar({ latest, onAccept }: { latest: GameDetail; onAccept: () => void }) {
+/** K4：同一个字段被两个人改了，让局头选用哪一边。 */
+function ConflictDialog({
+  state,
+  onUseTheirs,
+  onKeepMine,
+  onCancel,
+}: {
+  state: ConflictState;
+  onUseTheirs: () => void;
+  onKeepMine: () => void;
+  onCancel: () => void;
+}) {
   return (
-    <div class="banner ink" style={{ position: "fixed", left: 0, right: 0, bottom: 0, margin: 0, zIndex: 30 }}>
-      <span>
-        这局刚被改过：现在是人 {latest.seats.length}/{latest.game.capacity}、
-        {timeHM(latest.game.starts_at)} 在 {latest.game.venue}。
-      </span>
-      <button class="x" onClick={onAccept} aria-label="用最新的">
-        知道了
-      </button>
-    </div>
+    <>
+      <div class="scrim" onClick={onCancel} />
+      <div class="dialog" role="dialog" aria-modal="true" data-testid="conflict-dialog">
+        <h3>这局刚被改过</h3>
+        <p class="sub">你改的这几项别人也动了，想用哪一边？</p>
+        <div class="diffs">
+          {state.diffs.map((d) => (
+            <div class="diff" key={d.field}>
+              <div class="label">{d.label}</div>
+              <div class="row">
+                <span class="mine">我：{d.mine}</span>
+                <span class="theirs">现在：{d.theirs}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div class="stack">
+          <button class="btn soft" onClick={onUseTheirs}>
+            用对方的版本
+          </button>
+          <button class="btn primary" onClick={onKeepMine}>
+            仍然改成我的
+          </button>
+          <button class="textlink" onClick={onCancel}>
+            先不改了
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** 底部确认弹层（K1 移出、K3 取消）。微信内置浏览器里原生 confirm 会显示域名，所以自己做。 */
+function Sheet({
+  title,
+  sub,
+  actionLabel,
+  onClose,
+  onConfirm,
+}: {
+  title: string;
+  sub: string;
+  actionLabel: string;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <>
+      <div class="scrim" onClick={onClose} />
+      <div class="sheet" role="dialog" aria-modal="true">
+        <div class="grab" />
+        <h3>{title}</h3>
+        <p class="sub">{sub}</p>
+        <div class="stack">
+          <button class="btn danger-ghost" onClick={onConfirm}>
+            {actionLabel}
+          </button>
+          <button class="btn soft" onClick={onClose}>
+            再想想
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -284,14 +450,10 @@ function EditSheet({
 }: {
   detail: GameDetail;
   onClose: () => void;
-  onSubmit: (patch: { starts_at?: number; venue?: string }) => void;
+  onSubmit: (patch: GamePatch) => void;
 }) {
   const [when, setWhen] = useState(isoLocal(detail.game.starts_at));
   const [venue, setVenue] = useState(detail.game.venue);
-  const first = useRef(true);
-  useEffect(() => {
-    first.current = false;
-  }, []);
 
   return (
     <>
@@ -300,7 +462,7 @@ function EditSheet({
         class="sheet"
         onSubmit={(e) => {
           e.preventDefault();
-          const patch: { starts_at?: number; venue?: string } = {};
+          const patch: GamePatch = {};
           const next = Date.parse(when);
           if (!Number.isNaN(next) && next !== detail.game.starts_at * 1000) {
             patch.starts_at = Math.floor(next / 1000);
