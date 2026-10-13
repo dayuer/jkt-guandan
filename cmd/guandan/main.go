@@ -22,6 +22,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/config"
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
+	"github.com/dayuer/jkt-guandan/internal/identity"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
 )
@@ -107,6 +108,8 @@ func run() error {
 	group := supervise.New(clk)
 	_ = bgCtx
 
+	identitySvc := identity.NewService(st, clk, cfg.Dev)
+
 	srv := &http.Server{
 		Addr: cfg.Addr,
 		Handler: httpapi.New(httpapi.Options{
@@ -114,6 +117,9 @@ func run() error {
 			Store:  st,
 			Group:  group,
 			Clock:  clk,
+			RegisterRoutes: func(mux *http.ServeMux) {
+				identity.Register(mux, identitySvc)
+			},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
