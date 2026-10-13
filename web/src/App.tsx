@@ -4,15 +4,28 @@ import { NicknameSheet } from "./components/NicknameSheet";
 import { clearIdentityMarker, redeemClaimFromURL } from "./identity";
 import { CreateGame } from "./pages/CreateGame";
 import { Detail } from "./pages/Detail";
+import { Devices } from "./pages/Devices";
 import { Home } from "./pages/Home";
+import { Me } from "./pages/Me";
+import { Privacy } from "./pages/Privacy";
 
-type Route = { name: "home" } | { name: "detail"; code: string } | { name: "new" };
+type Route =
+  | { name: "home" }
+  | { name: "detail"; code: string }
+  | { name: "new" }
+  | { name: "me" }
+  | { name: "devices" }
+  | { name: "privacy" };
 
 function parseRoute(): Route {
   const path = window.location.pathname;
   const match = /^\/g\/([0-9A-Za-z]+)\/?$/.exec(path);
   if (match) return { name: "detail", code: match[1] };
   if (path === "/new") return { name: "new" };
+  if (path === "/me") return { name: "me" };
+  if (path === "/me/devices") return { name: "devices" };
+  // 隐私说明不要求登录：还没有填称呼的人也应当能看到（§14）。
+  if (path === "/privacy") return { name: "privacy" };
   return { name: "home" };
 }
 
@@ -172,12 +185,42 @@ export function App() {
           onBack={() => navigate("/")}
           onCreated={(code) => navigate(`/g/${code}`)}
         />
+      ) : route.name === "me" ? (
+        <Me
+          me={me}
+          requireIdentity={requireIdentity}
+          onDevices={() => navigate("/me/devices")}
+          onPrivacy={() => navigate("/privacy")}
+        />
+      ) : route.name === "devices" ? (
+        <Devices
+          me={me}
+          toast={toast}
+          onBack={() => navigate("/me")}
+          onSignedOut={() => {
+            clearIdentityMarker();
+            setMe(null);
+            navigate("/me");
+          }}
+        />
+      ) : route.name === "privacy" ? (
+        <Privacy
+          hasIdentity={!!me}
+          toast={toast}
+          onBack={() => navigate(me ? "/me" : "/")}
+          onDeleted={() => {
+            clearIdentityMarker();
+            setMe(null);
+            navigate("/");
+          }}
+        />
       ) : (
         <Home
           me={me}
           toast={toast}
           onOpen={(code) => navigate(`/g/${code}`)}
           onCreate={() => navigate("/new")}
+          onMe={() => navigate("/me")}
         />
       )}
 
