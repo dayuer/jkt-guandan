@@ -32,7 +32,10 @@ const JoinGrace = 2 * time.Hour
 var Kinds = []string{"classic", "no-level", "teaching"}
 
 // Areas 是允许的片区。§12.2 要求片区只接受固定列表里的值。
-var Areas = []string{"SCBD", "PIK", "Kuningan", "Senayan", "Kelapa Gading", "BSD", "Other"}
+var Areas = []string{
+	"SCBD", "PIK", "Central Park", "Kemang",
+	"Kuningan", "Senayan", "Kelapa Gading", "BSD", "Other",
+}
 
 // 配额（§10.8）。
 const (
@@ -104,10 +107,13 @@ type Detail struct {
 }
 
 // Summary 是 02 屏列表里的条目。
+//
+// 带上座位是因为首页卡片要画座位圆点（显示称呼首字），只给个数字画不出来。
+// 座位里只有 id 和称呼，符合 §10.4 的白名单。
 type Summary struct {
 	Game     Game
 	HostName string
-	SeatsLen int
+	Seats    []Seat
 	Missing  int
 }
 
