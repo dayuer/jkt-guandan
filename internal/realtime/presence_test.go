@@ -1,14 +1,13 @@
 package realtime_test
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/realtime"
 )
 
@@ -97,55 +96,55 @@ func TestPresenceCountsDistinctDevices(t *testing.T) {
 }
 
 // #46：人数频繁变化时，同一牌局两次广播之间至少隔 presenceInterval，中间的变化合并成一次。
+// 用假时钟确定性地推进（#74：原来按墙钟数窗口里的消息，CI 负载高时会不稳定）。
 func TestPresenceIsDebounced(t *testing.T) {
 	e := newEnv(t, 0, 0)
-	const every = 300 * time.Millisecond
+	clk := clock.NewFake(time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC))
+	e.hub.SetClock(clk)
+	const every = 2 * time.Second
 	e.hub.SetPresenceInterval(every)
 	const topic = "game:BUSY"
 
 	watcher := e.dialAs(t, "w")
 	subscribe(t, watcher, topic)
-	waitViewers(t, watcher, topic, 1) // 第一次立即发
+	if n := nextViewers(t, watcher); n != 1 { // 第一次立即发
+		t.Fatalf("第一条应是 1，实际 %d", n)
+	}
 
-	// 窗口内 4 个人进来又走掉 2 个（同一 IP 每秒最多 5 条新连接）。
+	// 间隔之内 3 个人进来、走掉 1 个（同一 IP 每秒最多 5 条新连接）：时钟不走，一条都不发。
 	var conns []*websocket.Conn
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 3; i++ {
 		c := e.dialAs(t, "")
 		subscribe(t, c, topic)
 		conns = append(conns, c)
 	}
-	for _, c := range conns[:2] {
-		_ = c.Close(websocket.StatusNormalClosure, "")
-	}
+	_ = conns[0].Close(websocket.StatusNormalClosure, "")
 	eventually(t, "人数稳定在 3", func() bool { return e.hub.Viewers(topic) == 3 })
 
-	// 收集接下来 2.5 个间隔里的 presence：只该有 1～2 条，且相隔不短于间隔，最后一条是 3。
-	var got []int
-	var at []time.Time
-	ctx, cancel := context.WithTimeout(context.Background(), every*5/2)
-	defer cancel()
+	clk.Advance(every - time.Nanosecond) // 还差一点：不发
+	clk.Advance(time.Nanosecond)         // 满一个间隔：合并成一条
+	if n := nextViewers(t, watcher); n != 3 {
+		t.Fatalf("间隔内的变化应合并成一条 3，实际 %d", n)
+	}
+
+	// 下一个间隔：再进来一个，满间隔后发 4。
+	// 读到的下一条必须是 4，说明上一条之后没有多发、也没有提前发。
+	extra := e.dialAs(t, "")
+	subscribe(t, extra, topic)
+	clk.Advance(every)
+	if n := nextViewers(t, watcher); n != 4 {
+		t.Fatalf("下一条应是 4，实际 %d", n)
+	}
+}
+
+// nextViewers 读到下一条 presence，返回人数（其他消息跳过）。
+func nextViewers(t *testing.T, c *websocket.Conn) int {
+	t.Helper()
 	for {
-		_, data, err := watcher.Read(ctx)
-		if err != nil {
-			break
+		m := readAny(t, c)
+		if m["type"] == realtime.EventPresence {
+			return int(m["data"].(map[string]any)["viewers"].(float64))
 		}
-		var m struct {
-			Type string `json:"type"`
-			Data struct {
-				Viewers int `json:"viewers"`
-			} `json:"data"`
-		}
-		_ = json.Unmarshal(data, &m)
-		if m.Type == realtime.EventPresence {
-			got = append(got, m.Data.Viewers)
-			at = append(at, time.Now())
-		}
-	}
-	if len(got) == 0 || len(got) > 2 || got[len(got)-1] != 3 {
-		t.Fatalf("窗口内的变化应合并成 1～2 条、最后是 3，实际 %v", got)
-	}
-	if len(at) == 2 && at[1].Sub(at[0]) < every*8/10 {
-		t.Fatalf("两次广播只隔了 %v", at[1].Sub(at[0]))
 	}
 }
 
