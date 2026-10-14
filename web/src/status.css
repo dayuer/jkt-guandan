@@ -1,0 +1,79 @@
+/*
+ * 状态提示（#114）：R1 改时间横幅、K2 局头转交横幅、W3 补位弹层、W4 首页卡片标签。
+ * 数值一律取 tokens.css；单独一个文件，免得和别的 PR 在 styles.css 里抢同一段。
+ */
+
+.banner.notice {
+  margin-top: var(--s2);
+  align-items: flex-start;
+  line-height: 1.5;
+}
+
+.banner.notice .ic {
+  flex: none;
+  font-size: var(--fs-h3);
+  line-height: 1.3;
+}
+
+.banner.notice.red .ic {
+  color: var(--red);
+}
+
+.banner.notice.ink .ic {
+  color: var(--gold);
+}
+
+.banner.notice .tx {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font-size: var(--fs-13);
+  color: inherit;
+}
+
+.banner.notice.ink .x {
+  color: var(--line);
+}
+
+/* ── W3 · 补位弹层 ─────────────────────────────────────────── */
+
+.sheet.promoted {
+  text-align: center;
+}
+
+.sheet.promoted .medal {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto var(--s3);
+  border-radius: var(--r-pill);
+  background: var(--gold);
+  box-shadow: 0 0 0 10px var(--sand);
+  color: var(--ink);
+  font-size: var(--fs-display);
+}
+
+.sheet.promoted .sub {
+  margin-top: var(--s1);
+}
+
+/* ── W4 · 首页卡片上「我在这局里」的标签 ──────────────────────── */
+
+.need.mine {
+  background: var(--card);
+  border: 1.5px solid var(--red);
+  color: var(--red);
+}
+
+.need.waiting {
+  background: var(--card);
+  border: 1.5px dashed var(--ink-2);
+  color: var(--ink);
+}
+
+.need.full.waiting {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--cream);
+}

@@ -16,9 +16,11 @@ import { CalendarSheet } from "../components/CalendarSheet";
 import { JoinedSheet } from "../components/JoinedSheet";
 import { PushGuide } from "../components/PushGuide";
 import { ShareSheet } from "../components/ShareSheet";
+import { NoticeBanner, PromotedSheet } from "../components/StatusNotices";
 import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
 import { dayLabel, kindLabel, timeHM } from "../format";
+import { acknowledge, fromDetail, observe, type Notice, type NoticeKind } from "../status";
 import { gameTitle } from "../title";
 import { useBarHeight } from "../useBarHeight";
 import { OfflineDot, useRealtime, useRealtimeStatus } from "../useRealtime";
@@ -73,6 +75,8 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   const [joinedOpen, setJoinedOpen] = useState(false);
   /** 「提醒我」在收不到推送的环境里点下去：跳出 / 加主屏幕引导屏（H1 / H2，#70）。 */
   const [guide, setGuide] = useState(false);
+  // 改时间 / 补位 / 局头转交（#114）：和本机快照比出来的提示，关掉才算知道了。
+  const [notices, setNotices] = useState<Notice[]>([]);
   const retrying = useRetrying();
   // 操作栏在窄屏上会换行（局头有四颗按钮），高度要量出来（#75）。
   const actionBar = useBarHeight<HTMLDivElement>();
@@ -94,6 +98,16 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   useEffect(() => {
     if (detail) document.title = gameTitle(detail);
   }, [detail]);
+
+  // 每拿到一次最新数据（包括实时事件触发的重新拉取）就和快照比一次（#114）。
+  useEffect(() => {
+    if (detail && detail.game.short_code === code) setNotices(observe(fromDetail(detail), me?.id));
+  }, [detail, me?.id, code]);
+
+  const dismiss = (kind: NoticeKind) => {
+    if (detail) acknowledge(fromDetail(detail), me?.id, [kind]);
+    setNotices((list) => list.filter((n) => n.kind !== kind));
+  };
 
   // 从一局跳到另一局时组件是复用的（路由参数变了而已），弹层要跟着关掉，
   // 不然会停在上一个局的分享面板上。
@@ -270,6 +284,11 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       <div class="body has-actionbar">
         <Nav title="牌局详情" onBack={onBack} />
 
+        {!closed &&
+          notices.map((n) =>
+            n.kind === "promoted" ? null : <NoticeBanner key={n.kind} notice={n} onDismiss={() => dismiss(n.kind)} />,
+          )}
+
         {myWait && !closed && (
           <div class="strip">
             <span class="dot" />
@@ -414,6 +433,24 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
             setCalendar(true);
           }}
           onClose={() => setGuide(false)}
+        />
+      )}
+
+      {/* W3：候补转正。实时事件触发的重新拉取，或者下次打开时都会走到这里（#114）。 */}
+      {!closed && !joinedOpen && notices.some((n) => n.kind === "promoted") && (
+        <PromotedSheet
+          startsAt={game.starts_at}
+          venue={game.venue}
+          busy={busy}
+          onOk={() => dismiss("promoted")}
+          onCalendar={() => {
+            dismiss("promoted");
+            setCalendar(true);
+          }}
+          onLeave={() => {
+            dismiss("promoted");
+            void run(() => leaveGame(code));
+          }}
         />
       )}
 

@@ -286,6 +286,7 @@ export function App() {
       ) : (
         <Home
           me={me}
+          toast={toast}
           onOpen={(code) => navigate(`/g/${code}`)}
           onCreate={() => {
             setPrefill(null);

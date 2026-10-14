@@ -191,6 +191,10 @@ export interface GameSummary {
   seats: number;
   missing: number;
   host: UserRef;
+  /** 我在这一局里的位置（W4，#114）。服务端还没给时是 undefined，首页就不显示标签。 */
+  my_role?: "seated" | "waitlist" | "none";
+  /** my_role 是 waitlist 时，排第几位。 */
+  waitlist_pos?: number;
 }
 
 export interface Identity {

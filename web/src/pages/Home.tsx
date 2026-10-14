@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
-import { listGames, type GameSummary, type UserRef } from "../api";
+import { leaveGame, listGames, type GameSummary, type UserRef } from "../api";
+import { NoticeBanner, PromotedSheet } from "../components/StatusNotices";
 import { initial } from "../components/Table";
 import { kindLabel, missingLabel, slashDate, timeHM } from "../format";
+import { acknowledge, fromSummary, observe, type Notice } from "../status";
 import { OfflineDot, useRealtime } from "../useRealtime";
 
 type Day = "today" | "tomorrow" | "weekend" | "";
@@ -33,6 +35,8 @@ interface Props {
   me: UserRef | null;
   onOpen: (code: string) => void;
   onCreate: () => void;
+  /** 补位弹层里「让给下一位」的结果要说一声（#114）。 */
+  toast?: (text: string) => void;
 }
 
 /**
@@ -40,11 +44,14 @@ interface Props {
  *
  * 「今天 / 明天 / 周末」由服务端按 Asia/Jakarta 算（§13.2），前端只传筛选条件。
  */
-export function Home({ me, onOpen, onCreate }: Props) {
+export function Home({ me, onOpen, onCreate, toast }: Props) {
   const [day, setDay] = useState<Day>("");
   const [area, setArea] = useState("");
   const [games, setGames] = useState<GameSummary[] | null>(null);
   const [error, setError] = useState("");
+  // 我在里面的局有没有变化（#114）：改时间、补位、局头转交。
+  const [notices, setNotices] = useState<Notice[]>([]);
+  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -73,6 +80,22 @@ export function Home({ me, onOpen, onCreate }: Props) {
     onEvent: () => void load(),
     refresh: () => void load(),
   });
+
+  // 列表每加载一次就和本机快照比一次。只看服务端给了 my_role 的局：没有它就不知道我还在不在里面。
+  useEffect(() => {
+    if (!games || !me) return;
+    setNotices(games.filter((g) => g.my_role !== undefined).flatMap((g) => observe(fromSummary(g), me.id)));
+  }, [games, me?.id]);
+
+  const dismiss = (n: Notice) => {
+    const g = games?.find((x) => x.short_code === n.code);
+    if (g) acknowledge(fromSummary(g), me?.id, [n.kind]);
+    setNotices((list) => list.filter((x) => !(x.code === n.code && x.kind === n.kind)));
+  };
+
+  const promoted = notices.find((n) => n.kind === "promoted");
+  const promotedGame = promoted && games?.find((g) => g.short_code === promoted.code);
+  const banners = notices.filter((n): n is Exclude<Notice, { kind: "promoted" }> => n.kind !== "promoted");
 
   const waiting = games?.reduce((n, g) => n + g.missing, 0) ?? 0;
 
@@ -113,6 +136,19 @@ export function Home({ me, onOpen, onCreate }: Props) {
             </button>
           ))}
         </div>
+
+        {banners.map((n) => (
+          <NoticeBanner
+            key={`${n.code}-${n.kind}`}
+            notice={n}
+            withVenue
+            onOpen={() => {
+              dismiss(n);
+              onOpen(n.code);
+            }}
+            onDismiss={() => dismiss(n)}
+          />
+        ))}
 
         <div class="listing">
           <h2>可报名的局</h2>
@@ -159,9 +195,16 @@ export function Home({ me, onOpen, onCreate }: Props) {
                     );
                   })}
                 </div>
-                <span class={`need${g.status === "full" ? " full" : ""}`}>
-                  {g.status === "full" ? `满 · ${g.seats}/4` : missingLabel(g.missing)}
-                </span>
+                {/* W4：我在这局里时，标签换成我的位置（#114）。 */}
+                {g.my_role === "seated" ? (
+                  <span class="need mine">已报名</span>
+                ) : g.my_role === "waitlist" ? (
+                  <span class="need waiting">{g.waitlist_pos ? `候补第 ${g.waitlist_pos} 位` : "候补中"}</span>
+                ) : (
+                  <span class={`need${g.status === "full" ? " full" : ""}`}>
+                    {g.status === "full" ? `满 · ${g.seats}/4` : missingLabel(g.missing)}
+                  </span>
+                )}
               </div>
             </div>
           </button>
@@ -169,6 +212,33 @@ export function Home({ me, onOpen, onCreate }: Props) {
 
         <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
       </div>
+
+      {promoted && promotedGame && (
+        <PromotedSheet
+          startsAt={promotedGame.starts_at}
+          venue={promotedGame.venue}
+          busy={busy}
+          onOk={() => dismiss(promoted)}
+          // 日历按钮在详情页上（#6）：直接带过去。
+          onCalendar={() => {
+            dismiss(promoted);
+            onOpen(promoted.code);
+          }}
+          onLeave={async () => {
+            dismiss(promoted);
+            setBusy(true);
+            try {
+              await leaveGame(promoted.code);
+              toast?.("已经让给下一位了");
+            } catch {
+              toast?.("没退成，进这一局再试一次");
+            } finally {
+              setBusy(false);
+              void load();
+            }
+          }}
+        />
+      )}
     </>
   );
 }
