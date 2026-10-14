@@ -76,6 +76,11 @@ describe("我的 · 在别的设备上登录（G3）", () => {
     await click(container, "在别的设备上登录");
     await vi.waitFor(() => expect(container.querySelector("[data-testid=claim-code]")).not.toBeNull());
     expect(container.querySelector(".digits")?.textContent).toBe("482731");
+    // 认领码是主要出口，排在复制链接前面；链接下面明确提醒别外发。
+    const sheet = container.querySelector("[data-testid=claim-sheet]")!;
+    const html = sheet.innerHTML;
+    expect(html.indexOf("claim-code")).toBeLessThan(html.indexOf("复制登录链接"));
+    expect(sheet.querySelector("[data-testid=claim-warn]")?.textContent).toContain("只发给自己，别发群里");
     expect(calls.filter((c) => c.url === "/api/claim")).toHaveLength(1);
 
     await click(container, "复制登录链接");

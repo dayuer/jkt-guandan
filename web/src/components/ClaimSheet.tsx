@@ -71,9 +71,15 @@ export function ClaimSheet({ toast, onClose }: Props) {
 
         <div class="stack">
           {ticket && (
-            <button class="btn ghost" onClick={() => void copyLink()}>
-              复制登录链接
-            </button>
+            <>
+              {/* 链接本身就能登录成你（直到过期或用掉），所以它是次要出口，并且明说别外发。 */}
+              <button class="btn ghost" onClick={() => void copyLink()}>
+                复制登录链接
+              </button>
+              <p class="claim-warn" data-testid="claim-warn">
+                ⚠️ 只发给自己，别发群里：拿到链接的人能直接登录成你
+              </p>
+            </>
           )}
           <button class="textlink" onClick={onClose}>
             关闭

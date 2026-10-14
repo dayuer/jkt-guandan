@@ -1673,3 +1673,12 @@ a.btn {
   font-size: var(--fs-13);
   white-space: nowrap;
 }
+
+/* G3 · 复制登录链接下面的提醒（#116）：链接等于一次性登录凭证 */
+.claim-warn {
+  margin-top: calc(-1 * var(--s1));
+  text-align: center;
+  color: var(--red);
+  font-size: var(--fs-small);
+  font-weight: 700;
+}
