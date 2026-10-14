@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
+
+	"github.com/dayuer/jkt-guandan/internal/textclean"
 )
 
 // 输入校验的长度和范围（§12.2）。
@@ -25,15 +26,9 @@ type CreateInput struct {
 	Note     string
 }
 
-// Clean 去掉控制字符和首尾空白。
+// Clean 去掉控制字符、零宽/BiDi 格式字符和首尾空白。
 func Clean(s string) string {
-	cleaned := strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-	return strings.TrimSpace(cleaned)
+	return textclean.Clean(s)
 }
 
 // Normalize 校验并整理开局的输入。now 由调用方从 clock 取，方便测试。

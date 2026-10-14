@@ -1062,3 +1062,29 @@ func TestBannedDeviceGets403(t *testing.T) {
 		t.Fatalf("被封禁的设备应 403，实际 %d %s", resp.status, resp.errCode())
 	}
 }
+
+func TestNormalizeNicknameInvisible(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+		bad            bool
+	}{
+		{"仅零宽", "\u200b\u200d\ufeff", "", true},
+		{"仅 RLO", "\u202e", "", true},
+		{"RLO 包裹", "\u202etxet\u202c", "txet", false},
+		{"中文夹零宽", "老\u200b王", "老王", false},
+		{"emoji", "🎉牌友", "🎉牌友", false},
+		{"去掉后超长", "一二三四五六七八九十一二三", "", true},
+	}
+	for _, c := range cases {
+		got, err := identity.NormalizeNickname(c.in)
+		if c.bad {
+			if err != identity.ErrNicknameInvalid {
+				t.Errorf("%s：期望 identity.ErrNicknameInvalid，得到 %q, %v", c.name, got, err)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("%s：得到 %q, %v，期望 %q", c.name, got, err, c.want)
+		}
+	}
+}
