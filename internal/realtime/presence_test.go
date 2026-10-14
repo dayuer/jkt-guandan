@@ -3,6 +3,7 @@ package realtime_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -61,11 +62,17 @@ func TestPresenceCountsDistinctDevices(t *testing.T) {
 	// 同一设备的第二个标签页：人数不变，不广播，但它自己订阅后马上收到当前人数。
 	tab2 := e.dialAs(t, "d1")
 	send(t, tab2, map[string]any{"op": "sub", "topics": []string{topic}})
-	if m := readAny(t, tab2); m["type"] != "subscribed" {
-		t.Fatalf("先是订阅回执：%v", m)
-	}
-	if m := readAny(t, tab2); m["type"] != realtime.EventPresence || m["data"].(map[string]any)["viewers"] != float64(1) {
-		t.Fatalf("回执后应紧跟当前人数 1：%v", m)
+	gotAck, gotViewers := false, false
+	for !gotAck || !gotViewers {
+		m := readAny(t, tab2)
+		switch {
+		case m["type"] == "subscribed" && !gotAck:
+			gotAck = true
+		case m["type"] == realtime.EventPresence && !gotViewers && m["data"].(map[string]any)["viewers"] == float64(1):
+			gotViewers = true
+		default:
+			t.Fatalf("订阅后应只收到回执和一条当前人数 1：%v", m)
+		}
 	}
 	if n := e.hub.Viewers(topic); n != 1 {
 		t.Fatalf("同一设备两个标签页应算 1 人，实际 %d", n)
@@ -171,4 +178,41 @@ func TestPresenceDropsKickedDevice(t *testing.T) {
 		t.Fatalf("踢掉之后应只剩 1 人，实际 %d", n)
 	}
 	waitViewers(t, watcher, topic, 1)
+}
+
+// 一条 sub 订满 20 个牌局：不会因为 presence 把发送队列写满而被踢掉，每个牌局恰好收到一条人数
+// （#62 复审：原来问候一条、立即广播一条，最多 42 条挤进 32 格的队列）。
+func TestSubscribeManyGamesAtOnce(t *testing.T) {
+	e := newEnv(t, 0, 0)
+	e.hub.SetPresenceInterval(10 * time.Millisecond)
+	c := e.dialAs(t, "d1")
+	topics := make([]string, realtime.MaxTopicsPerConn)
+	for i := range topics {
+		topics[i] = fmt.Sprintf("game:MANY%02d", i)
+	}
+	send(t, c, map[string]any{"op": "sub", "topics": topics})
+
+	got := map[string]int{}
+	acked := false
+	for !acked || len(got) < len(topics) {
+		m := readAny(t, c)
+		switch m["type"] {
+		case "subscribed":
+			acked = true
+		case realtime.EventPresence:
+			topic := m["topic"].(string)
+			got[topic]++
+			if n := m["data"].(map[string]any)["viewers"]; n != float64(1) || got[topic] > 1 {
+				t.Fatalf("%s：第 %d 条，viewers=%v", topic, got[topic], n)
+			}
+		default:
+			t.Fatalf("意外的消息：%v", m)
+		}
+	}
+	// 之后不该再有重复的 presence；连接还活着：再发一个 sub 能收到回执。
+	time.Sleep(50 * time.Millisecond)
+	send(t, c, map[string]any{"op": "sub", "topics": []string{topics[0]}})
+	if m := readAny(t, c); m["type"] != "subscribed" {
+		t.Fatalf("应只剩回执，实际 %v", m)
+	}
 }

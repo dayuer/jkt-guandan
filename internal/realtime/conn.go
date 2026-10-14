@@ -223,7 +223,6 @@ func (h *handler) readLoop(ctx context.Context, c *conn) {
 		case "sub":
 			ok, rejected := h.opts.Hub.subscribe(c, msg.Topics)
 			c.trySend(map[string]any{"type": "subscribed", "topics": nonNil(ok)})
-			h.opts.Hub.greetPresence(c, ok)
 			for topic, code := range rejected {
 				c.trySend(map[string]any{"type": "error", "code": code, "topic": topic})
 			}

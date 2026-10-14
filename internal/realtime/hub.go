@@ -107,7 +107,14 @@ type presenceState struct {
 	last     int         // 上次广播出去的人数
 	lastSent time.Time   // 上次广播的时间
 	timer    *time.Timer // 已排上的下一次广播；nil 表示没有
+	// greet 是订阅后还没收到过人数的连接。下一次 flush 时：人数变了就广播给所有人（它们也在里面），
+	// 没变就只发给它们。这样一条连接订阅一个牌局只收到一条 presence，不会和广播重复。
+	greet map[*conn]struct{}
 }
+
+// presenceHeadroom：发送队列里至少要留这么多空位才发 presence。presence 只是展示用、可以丢，
+// 不能挤占真正的事件，更不能因为它把客户端当慢客户端踢掉。
+const presenceHeadroom = 4
 
 func NewHub() *Hub {
 	return &Hub{
@@ -185,7 +192,7 @@ func (h *Hub) KickUser(userID string) {
 // 但要等关闭握手结束才 unregister，客户端不回应时可能要几秒；所以踢的时候就排一次广播。
 func (h *Hub) markKickedPresenceLocked(c *conn) {
 	for t := range c.topics {
-		h.markPresenceLocked(t)
+		h.markPresenceLocked(t, nil)
 	}
 }
 
@@ -221,15 +228,19 @@ func presenceMsg(topic string, n int) []byte {
 const EventPresence = "presence"
 
 // markPresenceLocked 在 game: 主题的订阅者变了之后调用：排一次广播，离上次广播不到
-// presenceEvery 就等到满了再发，期间的变化合并成一次。
-func (h *Hub) markPresenceLocked(topic string) {
+// presenceEvery 就等到满了再发，期间的变化合并成一次。newcomer 不为 nil 时，它是刚订阅的连接，
+// 下一次 flush 一定告诉它当前人数。
+func (h *Hub) markPresenceLocked(topic string, newcomer *conn) {
 	if h.closing || !strings.HasPrefix(topic, "game:") {
 		return
 	}
 	st := h.presence[topic]
 	if st == nil {
-		st = &presenceState{}
+		st = &presenceState{greet: make(map[*conn]struct{})}
 		h.presence[topic] = st
+	}
+	if newcomer != nil {
+		st.greet[newcomer] = struct{}{}
 	}
 	if st.timer != nil {
 		return
@@ -254,34 +265,33 @@ func (h *Hub) flushPresence(topic string) {
 		delete(h.presence, topic) // 没人看了，也就没人收；下次有人来重新开始
 		return
 	}
+	greet := st.greet
+	st.greet = make(map[*conn]struct{})
 	if n == st.last {
+		// 人数没变：只告诉新来的（比如同一设备新开的标签页）。
+		if len(greet) > 0 {
+			msg := presenceMsg(topic, n)
+			for c := range greet {
+				sendPresence(c, msg)
+			}
+		}
 		return
 	}
 	st.last, st.lastSent = n, time.Now()
-	h.publishLocked(topic, presenceMsg(topic, n))
+	msg := presenceMsg(topic, n)
+	for c := range h.topics[topic] {
+		sendPresence(c, msg)
+	}
 }
 
-// greetPresence 在订阅回执之后单独告诉这条连接各牌局当前的人数：人数没变时不会广播，
-// 新来的标签页（同一设备的第二个）也得知道。
-func (h *Hub) greetPresence(c *conn, topics []string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if c.isKicked() {
+// sendPresence 往发送队列里放一条 presence；队列快满了就丢掉这条，不踢连接。
+func sendPresence(c *conn, msg []byte) {
+	if c.isKicked() || len(c.send) > cap(c.send)-presenceHeadroom {
 		return
 	}
-	for _, t := range topics {
-		if !strings.HasPrefix(t, "game:") {
-			continue
-		}
-		if _, ok := h.topics[t][c]; !ok {
-			continue
-		}
-		select {
-		case c.send <- presenceMsg(t, h.viewersLocked(t)):
-		default:
-			c.slow()
-			return
-		}
+	select {
+	case c.send <- msg:
+	default:
 	}
 }
 
@@ -354,7 +364,7 @@ func (h *Hub) subscribe(c *conn, topics []string) (ok []string, rejected map[str
 			h.topics[t] = make(map[*conn]struct{})
 		}
 		h.topics[t][c] = struct{}{}
-		h.markPresenceLocked(t)
+		h.markPresenceLocked(t, c)
 		ok = append(ok, t)
 	}
 	return ok, rejected
@@ -378,7 +388,10 @@ func (h *Hub) removeLocked(topic string, c *conn) {
 		if len(subs) == 0 {
 			delete(h.topics, topic)
 		}
-		h.markPresenceLocked(topic)
+		if st := h.presence[topic]; st != nil {
+			delete(st.greet, c)
+		}
+		h.markPresenceLocked(topic, nil)
 	}
 }
 
