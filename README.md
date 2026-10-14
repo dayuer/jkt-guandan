@@ -17,7 +17,7 @@ make seed       # 往 ./.data 写入设计稿里的示例数据（老王、Lily�
 
 ```bash
 make run                  # 一个终端
-cd web && npm run dev     # 另一个终端，http://localhost:5173 ，/api 和 /healthz 代理到 :8080
+cd app/h5 && npm run dev     # 另一个终端，http://localhost:5173 ，/api 和 /healthz 代理到 :8080
 ```
 
 测试和构建：
@@ -33,17 +33,18 @@ make docker     # 镜像 guandan:local
 
 | 路径 | 内容 |
 |---|---|
-| `cmd/guandan/` | 入口：读配置 → 锁数据目录 → 打开数据库 → 迁移 → 启动 HTTP 和后台任务 |
-| `internal/config/` | 环境变量与校验 |
-| `internal/store/` | SQLite 连接、迁移、唯一的写入口 `Write`、数据不变量；所有 SQL 只写在这里 |
-| `internal/clock/` | 时钟接口，测试里可以快进 |
-| `internal/supervise/` | 后台任务监管：panic 恢复、退避重启、心跳 |
-| `internal/httpapi/` | 路由、中间件（CSRF、安全头、限流、日志）、`/healthz` 与 `/readyz`、静态页面 |
-| `internal/realtime/` | WebSocket 实时推送（#18 实现，现在是占位） |
-| `migrations/` | SQL 迁移，`embed` 进二进制，启动时按文件名顺序执行 |
-| `web/` | 前端源码（Preact + Vite），构建产物 `web/dist` 也被 `embed` |
+| `server/cmd/guandan/` | 入口：读配置 → 锁数据目录 → 打开数据库 → 迁移 → 启动 HTTP 和后台任务 |
+| `server/internal/config/` | 环境变量与校验 |
+| `server/internal/store/` | SQLite 连接、迁移、唯一的写入口 `Write`、数据不变量；所有 SQL 只写在这里 |
+| `server/internal/clock/` | 时钟接口，测试里可以快进 |
+| `server/internal/supervise/` | 后台任务监管：panic 恢复、退避重启、心跳 |
+| `server/internal/httpapi/` | 路由、中间件（CSRF、安全头、限流、日志）、`/healthz` 与 `/readyz`、静态页面 |
+| `server/internal/realtime/` | WebSocket 实时推送（#18 实现，现在是占位） |
+| `server/migrations/` | SQL 迁移，`embed` 进二进制，启动时按文件名顺序执行 |
+| `app/h5/` | H5 前端源码（Preact + Vite），构建产物 `app/h5/dist` 也被 `embed` |
+| `app/minigame/` | 微信小游戏（二期，#83 选型原型），用微信开发者工具打开这个目录 |
 
-`web/dist/` 里平时只有一个 `.gitkeep`，是为了让没装 node 的环境也能 `go build` 和 `go test`。
+`app/h5/dist/` 里平时只有一个 `.gitkeep`，是为了让没装 node 的环境也能 `go build` 和 `go test`。
 
 ## 配置
 

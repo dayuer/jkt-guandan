@@ -24,7 +24,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: app/h5/package-lock.json
 
       - name: go vet
         run: go vet ./...
@@ -37,10 +37,10 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
       - name: 安装前端依赖
-        run: cd web && npm ci
+        run: cd app/h5 && npm ci
 
       - name: 前端类型检查与构建
-        run: cd web && npm run build
+        run: cd app/h5 && npm run build
 
       # 放在构建之后，这样 httpapi 的用例能验证真的被打进二进制的前端页面。
       # -race 需要 CGO，只在测试里打开，发布构建仍然是 CGO_ENABLED=0。
@@ -48,10 +48,10 @@ jobs:
         run: go test -race ./...
 
       - name: 前端测试
-        run: cd web && npm test
+        run: cd app/h5 && npm test
 
       - name: 前端依赖审计
-        run: cd web && npm audit --omit=dev
+        run: cd app/h5 && npm audit --omit=dev
 
       - name: docker build
         run: docker build --build-arg BUILD=${{ github.sha }} -t guandan:ci .
@@ -125,21 +125,21 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: app/h5/package-lock.json
 
       - name: 构建二进制（含前端）
         run: make build
 
       - name: 安装 Chromium
-        run: cd web && npx playwright install --with-deps chromium
+        run: cd app/h5 && npx playwright install --with-deps chromium
 
       - name: 端到端冒烟
-        run: cd web && npm run e2e
+        run: cd app/h5 && npm run e2e
 
       - name: 失败时上传 trace
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-traces
-          path: web/test-results/
+          path: app/h5/test-results/
           retention-days: 7

@@ -15,8 +15,8 @@
 | 语言 | Go 1.27.2+ | 单个静态二进制，交叉编译方便，标准库就足以写 HTTP 服务 |
 | HTTP | 标准库 `net/http`，路由用 Go 1.22 起的 `ServeMux` 模式匹配 | 不引入 Web 框架 |
 | 数据库 | SQLite（WAL 模式），驱动 `modernc.org/sqlite` | 纯 Go 实现、无需 CGO，所以能用 `distroless/static` 镜像；数据库就是 `/data` 下的一个文件 |
-| 迁移 | `migrations/*.sql` 用 `embed` 打进二进制，启动时按序执行，执行记录存在 `schema_migrations` 表 | 部署时不需要额外的迁移工具 |
-| 前端 | Preact + Vite 构建出的 `web/dist`，用 `embed.FS` 打进二进制 | 前端和 API 同源，cookie 是第一方的 |
+| 迁移 | `server/migrations/*.sql` 用 `embed` 打进二进制，启动时按序执行，执行记录存在 `schema_migrations` 表 | 部署时不需要额外的迁移工具 |
+| 前端 | Preact + Vite 构建出的 `app/h5/dist`，用 `embed.FS` 打进二进制 | 前端和 API 同源，cookie 是第一方的 |
 | TLS | 两种模式：① 内置 `autocert` 自动申请 Let's Encrypt 证书，监听 80/443；② 只监听 HTTP，放在反向代理后面 | 模式 ① 不需要额外的容器 |
 | 推送 | `github.com/SherClockHolmes/webpush-go` | VAPID 密钥在首次启动时生成，存进数据库 |
 | OG 图和海报 | `golang.org/x/image` + `opentype`，内嵌思源宋体子集和一个无衬线字体 | 服务端出图；渲染结果按「局 + 版本号」缓存 |
@@ -27,19 +27,22 @@
 ## 3. 仓库结构
 
 ```
-cmd/guandan/main.go        入口：读配置 → 打开数据库 → 执行迁移 → 启动 HTTP 和定时任务
-internal/config            环境变量
-internal/store             SQLite 连接、迁移、事务封装。业务包（identity、games…）可以写自己的 SQL，但只能通过 store.Write / store.Read 拿到的事务或连接执行；store 以外不允许持有 *sql.DB
-internal/identity          用户、设备 token、claim token、认领码、设备切换（合并只留给 admin）
-internal/games             牌局、报名（take_seat）、退出、改时间
-internal/notify            outbox 定时任务、Web Push 发送、订阅清理
-internal/realtime          WebSocket 接入、Hub（主题订阅与广播）、心跳、限流
-internal/share             /g/:code 页面的 OG 标签注入、OG 图和海报渲染、.ics 生成
-internal/agent             蛋蛋（phase:3）
-internal/httpapi           路由、中间件（身份、限流、CSRF）、JSON 编解码
-migrations/                0001_init.sql …
-web/                       前端源码（Vite）；构建产物 web/dist 被 embed
-Dockerfile, Makefile
+server/                           服务端（Go）
+  cmd/guandan/main.go             入口：读配置 → 打开数据库 → 执行迁移 → 启动 HTTP 和定时任务
+  internal/config                 环境变量
+  internal/store                  SQLite 连接、迁移、事务封装。业务包（identity、games…）可以写自己的 SQL，但只能通过 store.Write / store.Read 拿到的事务或连接执行；store 以外不允许持有 *sql.DB
+  internal/identity               用户、设备 token、claim token、认领码、设备切换（合并只留给 admin）
+  internal/games                  牌局、报名（take_seat）、退出、改时间
+  internal/notify                 outbox 定时任务、Web Push 发送、订阅清理
+  internal/realtime               WebSocket 接入、Hub（主题订阅与广播）、心跳、限流
+  internal/share                  /g/:code 页面的 OG 标签注入、OG 图和海报渲染、.ics 生成
+  internal/agent                  蛋蛋（phase:3）
+  internal/httpapi                路由、中间件（身份、限流、CSRF）、JSON 编解码
+  migrations/                     0001_init.sql …
+app/                              客户端
+  h5/                             H5 前端源码（Preact + Vite）；构建产物 app/h5/dist 被 embed
+  minigame/                       微信小游戏（二期，#83 选型原型）
+go.mod、Dockerfile、Makefile、scripts/、deploy/、docs/、design/   公用，留在根目录
 ```
 
 ## 4. 数据模型（SQLite）
@@ -221,7 +224,7 @@ CREATE INDEX events_name_at ON events(name, at);
 
 ### 5.2 身份
 
-> 2026-10-14 按 #31（实现）、#32（认领码撞库）和 coord 在 PR #31 里的裁定修订；同日按 #86 逐条对照 `internal/identity` 的代码校正。
+> 2026-10-14 按 #31（实现）、#32（认领码撞库）和 coord 在 PR #31 里的裁定修订；同日按 #86 逐条对照 `server/internal/identity` 的代码校正。
 
 - **首次填称呼**（`POST /api/me`）：创建 user 和 device，生成 32 字节随机的 `device_token`，**只通过 HttpOnly cookie 下发**，任何响应体里都不出现它；前端只在 localStorage 里存一个非敏感标记 `gd_has_identity=1`。数据库只存 token 的 sha256。cookie 的名字和属性只在一个地方决定（§10.3）：
   - 生产环境：`__Host-gd_dev`，`HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=400 天`；
@@ -251,7 +254,7 @@ CREATE INDEX events_name_at ON events(name, at);
   **关于「每个码最多试 5 次」**：这个计数器从来没有生效过，已在 #95 删除（`ClaimCodeMaxAttempts` 常量和 `RedeemByCode` 里的读写都去掉了）。猜错的码查不到记录，本来就数不出每个码被猜了几次；网络不对等失败会让整个写事务回滚，计数也跟着回滚。`claim_tokens.attempts` 列暂时留在库里不再读写，以后在计划好的 breaking 发布里再删。真正限制撞库的是上面第 1–3 条。
 
   按这些限制估算：6 位码共 10⁶ 种，全站每 10 分钟最多大约 200 次失败尝试，而且攻击者必须和受害者在同一个网段，远程撞库几乎不可能成功。
-- **不提供面向用户的身份合并。** 代码里有 `mergeUsers`（`internal/identity/merge.go`），但目前只有测试调用它，`guandan admin` 也还没有合并子命令（§13.6）；任何用户能触发的路径都调不到它。将来做成 admin 命令时，语义以代码为准：
+- **不提供面向用户的身份合并。** 代码里有 `mergeUsers`（`server/internal/identity/merge.go`），但目前只有测试调用它，`guandan admin` 也还没有合并子命令（§13.6）；任何用户能触发的路径都调不到它。将来做成 admin 命令时，语义以代码为准：
   - 以**先注册**的身份为主（`created_at` 更早；相同时取 id 更小的）；
   - 牌局的局头、座位、候补、禁止名单、邀请、幂等键、星标（两个方向）都迁到主身份上。两边在同一局都有座位时，保留更早坐下的那个；其余主键冲突的记录直接丢弃；
   - 设备、推送订阅、outbox 整体改挂到主身份；
@@ -340,7 +343,7 @@ CREATE INDEX events_name_at ON events(name, at);
   - 人数只在进程内存里，不落库；服务重启后随重连重新算出来。
 - 订阅权限：`game:*` 和 `feed:*` 是公开的（和公开的 REST 接口能看到的数据一致）；`user:{id}` 只能订阅自己的。每个连接最多订阅 20 个主题。
 
-**服务端实现（`internal/realtime`）**
+**服务端实现（`server/internal/realtime`）**
 
 - **Hub**：一个 `map[topic]set[*conn]`，用一把互斥锁保护。`Publish(topic, msg)` 只把消息投进每个连接的发送队列，不在锁里做网络写。
 - **只在事务提交后发布**：`games` 和 `identity` 包在写事务提交**之后**才调用 `Publish`。事务回滚就不发，客户端不会看到「幽灵座位」。实现方式是在 `store` 层登记一个提交后回调。
@@ -481,7 +484,7 @@ GET  /*                               内嵌的前端页面（单页应用，未
 - 一次请求总共最多 20 秒（比 `WriteTimeout` 短），超时就按上面的规则退回表单。
 - 模型的输出格式是「一句回复 + `===` + 草稿 JSON」，服务端逐字段校验：片区、玩法不在列表里的丢掉，过长的截断。模型拿不到任何工具（§10.10）。
 
-**路由表**（#41）：所有路由在一张表里（`httpapi.Table`：基础设施的几条，加上 `cmd/guandan` 里拼起来的各包 `Routes`，最后是前端页面兜底）。每条路由声明自己对身份的要求，注册、身份识别、授权都按这张表来：
+**路由表**（#41）：所有路由在一张表里（`httpapi.Table`：基础设施的几条，加上 `server/cmd/guandan` 里拼起来的各包 `Routes`，最后是前端页面兜底）。每条路由声明自己对身份的要求，注册、身份识别、授权都按这张表来：
 
 | 要求 | 含义 | 例子 |
 |---|---|---|
@@ -489,7 +492,7 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `public` | 识别身份，访客也能用；被封禁 403 `banned` | `GET /api/games`、`POST /api/me`、`POST /api/agent`、`GET /ws` |
 | `user` | 必须有身份，访客 401 `unauthorized`；被封禁 403 `banned` | 报名、开局、`GET /api/me` |
 
-`GET /ws` 是唯一的例外（`DeferIdentity`）：中间件不马上识别身份，握手先查 Origin、是否在关闭、每个 IP 的连接数，过了这几关才识别身份、查封禁（同一个 `identity.Service.Resolve`），被封禁的以 403 拒绝。这样连接上限也护住了数据库。「是不是这一局的局头」要看具体是哪一局，属于业务逻辑，在 games 的 service 里判。`cmd/guandan` 的路由表测试把整张表（方法、路径、身份要求、handler）逐条列出；授权矩阵测试按表对每条路由用访客、普通用户、局头、被封禁的用户各打一次。
+`GET /ws` 是唯一的例外（`DeferIdentity`）：中间件不马上识别身份，握手先查 Origin、是否在关闭、每个 IP 的连接数，过了这几关才识别身份、查封禁（同一个 `identity.Service.Resolve`），被封禁的以 403 拒绝。这样连接上限也护住了数据库。「是不是这一局的局头」要看具体是哪一局，属于业务逻辑，在 games 的 service 里判。`server/cmd/guandan` 的路由表测试把整张表（方法、路径、身份要求、handler）逐条列出；授权矩阵测试按表对每条路由用访客、普通用户、局头、被封禁的用户各打一次。
 
 中间件：
 - 身份：唯一的入口（`httpapi.withIdentity`），按路由表的要求从 `__Host-gd_dev` cookie 解析出用户、查一次封禁，放进 ctx；各包用 `identity.FromContext` 取，不再各自查；
@@ -526,10 +529,10 @@ GET  /*                               内嵌的前端页面（单页应用，未
 ```dockerfile
 # 1) 前端
 FROM node:22-alpine AS web
-WORKDIR /src/web
-COPY web/package*.json ./
+WORKDIR /src/app/h5
+COPY app/h5/package*.json ./
 RUN npm ci
-COPY web/ ./
+COPY app/h5/ ./
 RUN npm run build
 
 # 2) Go（CGO_ENABLED=0，因为 modernc.org/sqlite 是纯 Go）
@@ -538,8 +541,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-COPY --from=web /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/guandan ./cmd/guandan
+COPY --from=web /src/app/h5/dist ./app/h5/dist
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/guandan ./server/cmd/guandan
 
 # 3) 运行时
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -722,7 +725,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 
 ### 10.12 安全测试与供应链
 
-- **授权矩阵测试**：从路由表自动生成测试（`cmd/guandan/routes_test.go`），对每个路由分别用「访客、普通用户、局头、被封禁的用户」四种身份发请求，断言授权结果。新增接口时必须在路由表里声明身份要求，路由表测试会把它逐条列出来，漏写或改了要求都会失败。
+- **授权矩阵测试**：从路由表自动生成测试（`server/cmd/guandan/routes_test.go`），对每个路由分别用「访客、普通用户、局头、被封禁的用户」四种身份发请求，断言授权结果。新增接口时必须在路由表里声明身份要求，路由表测试会把它逐条列出来，漏写或改了要求都会失败。
 - **模糊测试**（Go fuzz）：覆盖输入校验函数、.ics 转义、OG 模板渲染、WebSocket 消息解析。
 - 检查所有 HTML 响应都带有 CSP 和其他安全头。
 - CI 运行 `govulncheck` 和 `npm audit --omit=dev`，开启 Dependabot。
@@ -885,9 +888,9 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 ### 13.5 本地开发和 PR 验证
 
 换成自托管后，不再有 Netlify 自动生成的 PR 预览环境，改为本地验证：
-- `GUANDAN_DEV=1 go run ./cmd/guandan`：开发模式，监听 `:8080`，不启用 TLS。前端开发时运行 Vite 的开发服务器，把 `/api` 和 `/ws` 代理到 `:8080`。
+- `GUANDAN_DEV=1 go run ./server/cmd/guandan`：开发模式，监听 `:8080`，不启用 TLS。前端开发时运行 Vite 的开发服务器，把 `/api` 和 `/ws` 代理到 `:8080`。
 - `guandan seed`：写入设计稿里的示例数据（老王、Lily、阿杰，Pacific Place、PIK Avenue……），auditor 和 design 可以直接在页面上看效果。
-- 提交一个只含 `.gitkeep` 的 `web/dist/` 占位目录，保证没装 node 的环境也能执行 `go build` 和 `go test`。
+- 提交一个只含 `.gitkeep` 的 `app/h5/dist/` 占位目录，保证没装 node 的环境也能执行 `go build` 和 `go test`。
 - PR 验证：在本地执行 `docker build` 和 `docker run`，再用 `guandan seed` 写入数据。auditor 在远程环境如果没有 Docker，就用 `go run` 加 `seed`。
 
 ### 13.6 管理（子命令，不做后台页面）

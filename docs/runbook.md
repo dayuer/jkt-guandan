@@ -89,7 +89,7 @@ SSH_HOST=root@<服务器> scripts/deploy.sh            # 发布当前 HEAD；也
 
 1. 用 `git worktree` 取出这个提交的干净副本，未提交的改动不会被发布出去；
 2. 按服务器的 CPU 架构交叉编译镜像 `guandan:<短 SHA>`，构建号写进 `X-App-Build`；
-3. 用 `docker build --target web` 取出前端产物 `web/dist`，取完立刻删掉构建镜像；
+3. 用 `docker build --target web` 取出前端产物 `app/h5/dist`，取完立刻删掉构建镜像；
 4. 把镜像送到服务器（服务器上已有同名镜像就跳过），两种方式见 2.4，默认是 `docker save | gzip | ssh docker load`；
 5. 把静态文件打包传到 `/var/www/guandan/<短 SHA>/`，先解压到临时目录再改名，不会出现解到一半的目录。
 
@@ -141,7 +141,7 @@ docker run --rm -v guandan-data:/data -e GUANDAN_PUBLIC_URL=https://guandan.syno
 会破坏旧版本的迁移（删列、改列的含义、加更严格的约束），文件开头必须写一行 `-- breaking: <原因>`。`migrate` 会在 `schema_migrations` 里给它记上 `breaking=1`。规则：
 
 - **编号由 coord 分配**，在 PR 描述里写「申请 000N」；编号重复时程序拒绝启动。
-- 加 breaking 迁移的 PR 要把文件名加进 `internal/store/migrate_internal_test.go` 的 `confirmedBreaking`，否则测试失败。这样做是为了让作者和复审方必须在 PR 里明确确认。
+- 加 breaking 迁移的 PR 要把文件名加进 `server/internal/store/migrate_internal_test.go` 的 `confirmedBreaking`，否则测试失败。这样做是为了让作者和复审方必须在 PR 里明确确认。
 - **发布前**：先确认这个版本不需要回滚，或者已经接受「回滚要从发布前快照恢复，会丢失这段时间的数据」；选一个低峰时段；发布后盯一会儿日志。
 
 ### 2.4 镜像怎么送到服务器

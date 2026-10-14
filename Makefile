@@ -16,17 +16,17 @@ help:
 	@echo "make restore-drill  用 Docker 演练备份恢复（docs/runbook.md）"
 
 web-install:
-	cd web && $(NPM) ci
+	cd app/h5 && $(NPM) ci
 
 web-build: web-install
-	cd web && $(NPM) run build
+	cd app/h5 && $(NPM) run build
 
 BUILD ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 
 build: web-build
 	CGO_ENABLED=0 $(GO) build -trimpath \
-		-ldflags="-s -w -X github.com/dayuer/jkt-guandan/internal/buildinfo.Build=$(BUILD)" \
-		-o bin/guandan ./cmd/guandan
+		-ldflags="-s -w -X github.com/dayuer/jkt-guandan/server/internal/buildinfo.Build=$(BUILD)" \
+		-o bin/guandan ./server/cmd/guandan
 
 vet:
 	$(GO) vet ./...
@@ -39,14 +39,14 @@ vuln:
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
 web-test: web-install
-	cd web && $(NPM) test
+	cd app/h5 && $(NPM) test
 
 # 先构建前端再跑后端测试，这样 httpapi 的用例能真正验证内嵌进去的页面。
 test: vet web-build race-test web-test
 
-# 浏览器端到端冒烟（#72）。第一次跑之前装一次浏览器：cd web && npx playwright install chromium
+# 浏览器端到端冒烟（#72）。第一次跑之前装一次浏览器：cd app/h5 && npx playwright install chromium
 e2e: build
-	cd web && $(NPM) run e2e
+	cd app/h5 && $(NPM) run e2e
 
 run: build
 	GUANDAN_DEV=1 GUANDAN_DATA=./.data ./bin/guandan
@@ -64,4 +64,4 @@ restore-drill: docker
 	scripts/restore-drill.sh guandan:local
 
 clean:
-	rm -rf bin .data web/dist/*
+	rm -rf bin .data app/h5/dist/*

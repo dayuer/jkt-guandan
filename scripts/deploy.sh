@@ -6,7 +6,7 @@
 # 在本机（或 CI）执行，通过 ssh 操作服务器。生产拓扑见 #12：nginx 管 TLS 和静态前端，
 # 容器只听 127.0.0.1:18200。
 #   1. 用 git worktree 取出这个提交的干净副本，构建镜像 guandan:<短 SHA>（按服务器的 CPU 架构交叉编译）
-#      和前端产物 web/dist（docker build --target web，取完就删构建镜像）；
+#      和前端产物 app/h5/dist（docker build --target web，取完就删构建镜像）；
 #   2. 把镜像送到服务器，两种方式（IMAGE_SOURCE）；服务器上已有同名镜像就跳过：
 #      - ssh（默认）：docker save | gzip | ssh docker load。镜像约 6 MB，不需要任何凭据，
 #        也不用在服务器上构建（构建镜像 350 MB，那台机器磁盘紧张）；
@@ -59,7 +59,7 @@ docker build -q --platform "$PLATFORM" --build-arg BUILD="$FULL" -t "guandan:$SH
 log "构建前端产物"
 docker build -q --target web -t "guandan-web:$SHA" "$src" >/dev/null
 cid=$(docker create "guandan-web:$SHA")
-docker cp "$cid:/src/web/dist" "$work/dist"
+docker cp "$cid:/src/app/h5/dist" "$work/dist"
 docker rm "$cid" >/dev/null
 docker rmi "guandan-web:$SHA" >/dev/null
 [ -f "$work/dist/index.html" ] || { log "前端产物里没有 index.html"; exit 1; }
