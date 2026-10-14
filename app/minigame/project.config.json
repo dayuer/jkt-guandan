@@ -27,6 +27,10 @@
         "value": "src"
       },
       {
+        "type": "folder",
+        "value": "screenshots"
+      },
+      {
         "type": "file",
         "value": "build.mjs"
       },
