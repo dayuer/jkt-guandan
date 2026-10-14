@@ -739,7 +739,8 @@ a.btn {
   align-items: center;
   gap: 6px;
   font-size: var(--fs-small);
-  font-weight: 700;
+  /* C1 里出口文字是常规字重（#67 复审建议）。 */
+  font-weight: 400;
   color: var(--ink-2);
   text-decoration: none;
 }

@@ -18,7 +18,7 @@ import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
 import { dayLabel, kindLabel, timeHM } from "../format";
 import { gameTitle } from "../title";
-import { OfflineDot, useRealtime } from "../useRealtime";
+import { OfflineDot, useRealtime, useRealtimeStatus } from "../useRealtime";
 import { useRetrying } from "../useRetrying";
 
 interface Props {
@@ -56,6 +56,12 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   const [shareOpen, setShareOpen] = useState(false);
   /** 这一局现在有几台设备在看（含自己，#46 / 原型 R1）。 */
   const [viewers, setViewers] = useState(0);
+  // 连接断了（重连中或降级成轮询）就不再有 presence，人数会停在旧值：清零，胶囊跟着藏起来。
+  // 重连后服务端会给新订阅发一次 presence，人数自己回来（#71 复审建议）。
+  const realtimeStatus = useRealtimeStatus();
+  useEffect(() => {
+    if (realtimeStatus !== "online") setViewers(0);
+  }, [realtimeStatus]);
   /** 「加入日历」弹层：手动点开的，或刚报上名时自动弹的（#6）。 */
   const [calendar, setCalendar] = useState<"manual" | "joined" | null>(null);
   const retrying = useRetrying();
@@ -289,7 +295,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
             </span>
           ))}
           {/* 原型 R1：和名字同一排的普通胶囊。人数含自己，只有自己在看时不显示。 */}
-          {viewers > 1 && !closed && (
+          {viewers > 1 && !closed && realtimeStatus === "online" && (
             <span class="chip" data-testid="viewers">
               👀 {viewers} 人正在看
             </span>
