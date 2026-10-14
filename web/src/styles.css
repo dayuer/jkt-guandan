@@ -1657,3 +1657,19 @@ a.btn {
   font-size: var(--fs-13);
   margin-top: var(--s1);
 }
+
+/* G2 · 已绑定的 WhatsApp 号码（#116） */
+.wa-current {
+  text-align: center;
+  font-weight: 700;
+  font-size: var(--fs-h3);
+  color: var(--ink);
+  padding: var(--s2) 0;
+}
+
+/* 我的页每行右侧的状态小字：「去绑定」「+62 812****890」 */
+.list .li .val {
+  color: var(--ink-3);
+  font-size: var(--fs-13);
+  white-space: nowrap;
+}

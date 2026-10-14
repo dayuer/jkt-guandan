@@ -1,10 +1,15 @@
-import type { UserRef } from "../api";
+import { useEffect, useState } from "preact/hooks";
+import { getMe, type UserRef } from "../api";
+import { ClaimSheet } from "../components/ClaimSheet";
 import { initial } from "../components/Table";
+import { WaSheet } from "../components/WaSheet";
+import { maskWaPhone } from "../wa";
 
 interface Props {
   me: UserRef | null;
   /** 还没有身份时，点一下填称呼。 */
   requireIdentity: () => Promise<UserRef | null>;
+  toast: (text: string) => void;
   onDevices: () => void;
   onPrivacy: () => void;
 }
@@ -12,11 +17,26 @@ interface Props {
 /**
  * G1 · 我的。
  *
- * 这一轮只放两项：**登录的设备**（G4，§10.3）和**隐私与数据**（G5，§14）。
- * 「开局提醒」和「换手机也能找回」属于 phase 2（Web Push、WhatsApp 绑定），
- * 先不放，免得点进去是空的。
+ * - 有身份时：**在别的设备上登录**（G3，认领码，#116）、**绑定 WhatsApp**（G2，#116）；
+ * - **登录的设备**（G4，§10.3）和**隐私与数据**（G5，§14）。
  */
-export function Me({ me, requireIdentity, onDevices, onPrivacy }: Props) {
+export function Me({ me, requireIdentity, toast, onDevices, onPrivacy }: Props) {
+  const [waPhone, setWaPhone] = useState<string | undefined>(undefined);
+  const [sheet, setSheet] = useState<"" | "claim" | "wa">("");
+
+  // 绑定的号码只在 /api/me 里给本人看；换了身份就重新问。
+  useEffect(() => {
+    setWaPhone(undefined);
+    if (!me) return;
+    let live = true;
+    getMe()
+      .then((body) => live && setWaPhone(body.wa_phone || undefined))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [me?.id]);
+
   return (
     <div class="body">
       <div class="head">
@@ -50,7 +70,29 @@ export function Me({ me, requireIdentity, onDevices, onPrivacy }: Props) {
         </>
       )}
 
-      <div class="list">
+      {me && (
+        <div class="list" style={{ marginTop: "var(--s3)" }}>
+          <button class="li tap" type="button" onClick={() => setSheet("claim")}>
+            <div class="tx">
+              在别的设备上登录
+              <small>换手机、加到主屏幕后找回自己：给你一串认领码</small>
+            </div>
+            <span class="chev">›</span>
+          </button>
+          <button class="li tap" type="button" onClick={() => setSheet("wa")}>
+            <div class="tx">
+              绑定 WhatsApp
+              <small>可选。清了缓存也能凭号码找回</small>
+            </div>
+            <span class="val" data-testid="wa-status">
+              {waPhone ? maskWaPhone(waPhone) : "去绑定"}
+            </span>
+            <span class="chev">›</span>
+          </button>
+        </div>
+      )}
+
+      <div class="list" style={{ marginTop: "var(--s3)" }}>
         <button class="li tap" type="button" onClick={onDevices} disabled={!me}>
           <div class="tx">
             登录的设备
@@ -68,6 +110,11 @@ export function Me({ me, requireIdentity, onDevices, onPrivacy }: Props) {
       </div>
 
       <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
+
+      {sheet === "claim" && <ClaimSheet toast={toast} onClose={() => setSheet("")} />}
+      {sheet === "wa" && (
+        <WaSheet current={waPhone} toast={toast} onChange={setWaPhone} onClose={() => setSheet("")} />
+      )}
     </div>
   );
 }

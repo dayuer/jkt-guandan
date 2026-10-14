@@ -230,6 +230,7 @@ export function App() {
         <Me
           me={me}
           requireIdentity={requireIdentity}
+          toast={toast}
           onDevices={() => navigate("/me/devices")}
           onPrivacy={() => navigate("/privacy")}
         />
