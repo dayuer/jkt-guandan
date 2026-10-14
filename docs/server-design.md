@@ -87,7 +87,8 @@ CREATE TABLE games (
              CHECK (status IN ('open','full','cancelled','done')),
   version    INTEGER NOT NULL DEFAULT 1,   -- 牌局有任何变化（改时间、改地点、座位变动、换局头）都 +1，用于乐观锁和 WebSocket 消息排序
   created_at INTEGER NOT NULL,
-  ended_at   INTEGER                       -- 变成 cancelled 或 done 的时间
+  ended_at   INTEGER,                      -- 变成 cancelled 或 done 的时间
+  rescheduled_at INTEGER                   -- 局头最近一次改时间或地点的时刻（0005_game_rescheduled_at.sql，#114）；空表示没改过
 );
 CREATE INDEX games_feed ON games(area, starts_at) WHERE status IN ('open','full');
 CREATE TABLE seats (
@@ -320,7 +321,7 @@ CREATE INDEX events_name_at ON events(name, at);
   {"type":"hello","server_time":1760367600}
   ```
 - `v` 是牌局的版本号，加上座位变化计数。客户端收到 `v` 不大于本地已有版本的消息时直接丢弃，所以消息乱序或重复都不会出错。
-- **首页事件**（`feed:{area}`，#46）：`data` 就是 `GET /api/games` 列表里的一项，外加 `version`，客户端按 `short_code` 直接插入或替换那张卡片，不用再拉 REST：
+- **首页事件**（`feed:{area}`，#46）：`data` 就是 `GET /api/games` 列表里的一项（没有 `my_role`、`waitlist_pos`，它们按身份算，广播不带；客户端用自己在列表里的值，报名、退出的结果以 REST 响应为准），外加 `version`，客户端按 `short_code` 直接插入或替换那张卡片，不用再拉 REST：
   ```json
   {"topic":"feed:SCBD","type":"feed.game_changed","v":9,
    "data":{"short_code":"8K2","starts_at":"…","area":"SCBD","venue":"…","kind":"…","status":"open",
@@ -369,7 +370,7 @@ GET  /api/me                          当前身份
 POST /api/claim                       签发 claim token 和认领码
 POST /api/claim/redeem                凭 {token, confirm?} 或 {code} 兑换身份；设备已有别的身份时返回 409 claim_conflict（§5.2）
 DELETE /api/me/devices/{id}           退出这台以外的某个设备（§10.3「退出其他设备」）
-GET  /api/games?area=&day=            首页列表
+GET  /api/games?area=&day=            首页列表。每项带 my_role / waitlist_pos / rescheduled_at（见下面「列表条目」）
 POST /api/games                       开一局
 GET  /api/games/{code}                牌局详情
 PATCH /api/games/{code}               局头修改（版本号 +1）
@@ -390,6 +391,17 @@ GET  /ws                              WebSocket（见 §5.5）
 GET  /g/{code} · /g/{code}/og.png · /g/{code}/poster.png · /g/{code}/game.ics
 GET  /*                               内嵌的前端页面（单页应用，未知路径回落到 index.html）
 ```
+
+**列表条目 `GET /api/games`**（#114）：每一项除了 `short_code`、`starts_at`、`area`、`venue`、`kind`、`status`、`seat_list`、`seats`、`missing`、`host`，还有按当前身份算的：
+
+| 字段 | 含义 |
+|---|---|
+| `my_role` | `seated`（在座位上）/ `waitlist`（在候补里）/ `none`。访客没有身份，一律 `none` |
+| `waitlist_pos` | 候补第几位，从 1 开始；不在候补里是 0 |
+| `rescheduled_at` | 局头最近一次改时间或地点的时刻（Unix 秒）；没改过就没有这一项。改备注、片区或原样重发都不算 |
+
+- `GET /api/games/{code}` 的 `game` 对象里也有 `rescheduled_at`。改期横幅的做法：客户端把「上次看到这一局的 `rescheduled_at`」存在本机，服务端值更大且我在座位上（`my_role` 为 `seated`）就显示「局头把时间改到 X 了」，关掉时把本机的值更新成服务端的。
+- 这两个按身份算的字段只出现在 `GET /api/games` 里，首页事件（`feed:*`）是广播，不带 `my_role`、`waitlist_pos`，带 `rescheduled_at`。
 
 **蛋蛋 `POST /api/agent`**（#11，§10.10）：只出草稿，不写库。
 

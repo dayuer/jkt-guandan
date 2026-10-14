@@ -264,7 +264,7 @@ func TestListDayFilter(t *testing.T) {
 	}
 
 	// 「今天」不含明天那局。
-	todayList, err := f.games.List(ctx, "SCBD", "today", 20, 0)
+	todayList, err := f.games.List(ctx, "", "SCBD", "today", 20, 0)
 	if err != nil {
 		t.Fatalf("今天的列表: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestListDayFilter(t *testing.T) {
 	}
 
 	// 「明天」不含今天那局——它已经过去了。
-	tomorrowList, err := f.games.List(ctx, "SCBD", "tomorrow", 20, 0)
+	tomorrowList, err := f.games.List(ctx, "", "SCBD", "tomorrow", 20, 0)
 	if err != nil {
 		t.Fatalf("明天的列表: %v", err)
 	}
@@ -429,7 +429,7 @@ func TestListHidesGamesPastGrace(t *testing.T) {
 
 	// 开局后 1 小时：还在宽限期内，列表里应当有。
 	advanceTo(f, start.Add(time.Hour))
-	list, err := f.games.List(ctx, "SCBD", "", 20, 0)
+	list, err := f.games.List(ctx, "", "SCBD", "", 20, 0)
 	if err != nil {
 		t.Fatalf("列表: %v", err)
 	}
@@ -439,7 +439,7 @@ func TestListHidesGamesPastGrace(t *testing.T) {
 
 	// 开局后 3 小时：过了宽限期，列表里不该再有。
 	advanceTo(f, start.Add(3*time.Hour))
-	list, err = f.games.List(ctx, "SCBD", "", 20, 0)
+	list, err = f.games.List(ctx, "", "SCBD", "", 20, 0)
 	if err != nil {
 		t.Fatalf("列表: %v", err)
 	}
