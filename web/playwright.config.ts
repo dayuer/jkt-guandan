@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { defineConfig } from "@playwright/test";
 
 /**
@@ -8,9 +11,14 @@ import { defineConfig } from "@playwright/test";
  */
 const PORT = Number(process.env.E2E_PORT ?? 18673);
 
+// 临时数据目录在这里建，由 globalTeardown 删：清理不依赖服务端怎么退出。
+// 配置文件会在 worker 里再加载一次，所以用环境变量保证只建一次。
+process.env.E2E_DATA ??= mkdtempSync(join(tmpdir(), "guandan-e2e."));
+
 export default defineConfig({
   testDir: "e2e",
   testMatch: "*.e2e.ts",
+  globalTeardown: "./e2e/global-teardown.ts",
   timeout: 20_000,
   expect: { timeout: 5_000 },
   workers: 1,
@@ -28,7 +36,7 @@ export default defineConfig({
   webServer: {
     command: "../scripts/e2e-server.sh",
     url: `http://127.0.0.1:${PORT}/healthz`,
-    env: { E2E_PORT: String(PORT) },
+    env: { E2E_PORT: String(PORT), E2E_DATA: process.env.E2E_DATA },
     reuseExistingServer: false,
     timeout: 20_000,
     stdout: "ignore",
