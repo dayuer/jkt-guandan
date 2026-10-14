@@ -318,6 +318,33 @@ describe("详情页的「N 人正在看」", () => {
     await vi.waitFor(() => expect(pill()).toBeNull());
   });
 
+  // #71 复审：断线后不再有 presence，人数会停在旧值，所以连接不是 online 时藏起来。
+  it("掉线后胶囊藏起来，重连后等新的 presence 再出现", async () => {
+    const { container } = await renderDetail(detail(oneSeat));
+    await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+    const pill = () => container.querySelector("[data-testid=viewers]");
+
+    const socket = lastSocket();
+    socket.open();
+    socket.receive({ topic: "game:8K2QXM", type: "presence", data: { viewers: 3 } });
+    await vi.waitFor(() => expect(pill()?.textContent).toBe("👀 3 人正在看"));
+
+    socket.drop();
+    await vi.waitFor(() => expect(pill()).toBeNull());
+
+    // 重连上之后，旧的 3 不会自己冒出来，要等服务端再发。
+    const again = await vi.waitFor(() => {
+      const s = lastSocket();
+      expect(s).not.toBe(socket);
+      return s;
+    }, { timeout: 5000 });
+    again.open();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(pill()).toBeNull();
+    again.receive({ topic: "game:8K2QXM", type: "presence", data: { viewers: 2 } });
+    await vi.waitFor(() => expect(pill()?.textContent).toBe("👀 2 人正在看"));
+  });
+
   it("别的局的 presence 不算到这一局头上", async () => {
     const { container } = await renderDetail(detail(oneSeat));
     await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));

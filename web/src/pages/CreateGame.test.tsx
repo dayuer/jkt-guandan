@@ -1,6 +1,6 @@
 import { render } from "preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CreateGame } from "./CreateGame";
+import { CreateGame, draftTimeLabel } from "./CreateGame";
 import { installFakeSocket } from "../fakeSocket";
 
 function respond(status: number, body: unknown) {
@@ -207,5 +207,20 @@ describe("从 07 蛋蛋退回来（#11）", () => {
     expect(on).toContain("带新手");
     // 蛋蛋给的时间不在三个常用时间里，加成第一个选项并选中。
     expect(container.querySelector(".choices button")?.classList.contains("on")).toBe(true);
+  });
+});
+
+describe("草稿时间的写法和常用时间对齐（#69 复审建议 2）", () => {
+  // 2026-10-14（周三）12:00 WIB
+  const now = Math.floor(Date.UTC(2026, 9, 14, 5, 0) / 1000);
+  const wib = (day: number, h: number, m = 0) => Math.floor(Date.UTC(2026, 9, day, h - 7, m) / 1000);
+
+  it("今天 / 明天带前缀，和「明晚 周四 19:30」同一种写法", () => {
+    expect(draftTimeLabel(wib(14, 21), now)).toBe("今天 周三 21:00");
+    expect(draftTimeLabel(wib(15, 20), now)).toBe("明天 周四 20:00");
+  });
+
+  it("更远的日子写日期", () => {
+    expect(draftTimeLabel(wib(17, 19, 30), now)).toBe("10/17 周六 19:30");
   });
 });

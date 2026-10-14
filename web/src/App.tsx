@@ -211,7 +211,11 @@ export function App() {
             window.history.replaceState(null, "", "/new");
             setRoute(parseRoute());
           }}
-          onCreated={(code) => navigate(`/g/${code}`)}
+          // 同样替换：开局成功后在详情页点返回，不该回到一个已经用完的对话（#69 复审建议 3）。
+          onCreated={(code) => {
+            window.history.replaceState(null, "", `/g/${code}`);
+            setRoute(parseRoute());
+          }}
         />
       ) : route.name === "me" ? (
         <Me
