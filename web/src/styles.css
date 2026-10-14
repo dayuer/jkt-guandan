@@ -740,6 +740,28 @@ button:disabled {
   margin-top: 6px;
 }
 
+/* 「离线 · 15 秒刷新」小点（原型 R2）：WebSocket 连不上、降级成轮询时才出现。
+   连得上时组件什么都不渲染，所以这行字的位置和多出来的这一小段间距都不存在。 */
+.net {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--ink-3);
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  padding: 3px 8px;
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+
+.net i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--khaki);
+}
+
 .areachips {
   display: flex;
   gap: var(--s2);

@@ -1,6 +1,7 @@
 import { render } from "preact";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateGame } from "./CreateGame";
+import { installFakeSocket } from "../fakeSocket";
 
 function respond(status: number, body: unknown) {
   const text = JSON.stringify(body);
@@ -48,6 +49,10 @@ function fill(container: HTMLElement, value: string) {
 function clickSubmit(container: HTMLElement) {
   (container.querySelector(".actionbar .btn") as HTMLButtonElement).click();
 }
+
+beforeEach(() => {
+  installFakeSocket();
+});
 
 afterEach(() => {
   document.body.innerHTML = "";
