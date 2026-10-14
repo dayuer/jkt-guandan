@@ -174,3 +174,39 @@ test("分享面板：375×560 下能滚到「取消」，WhatsApp 链接带的�
   await cancel.click();
   await expect(sheet).toHaveCount(0);
 });
+
+// #75：局头的操作栏有 3–4 个按钮，会折成两行；页面底部留白要跟着变高，不然最后一段内容被压住。
+// #75 修好之前这条预期失败（test.fail）；修好后它会「意外通过」报错，到时去掉 test.fail。
+test("局头视角：操作栏折成两行时，滚到底内容也不被压住（#75）", async ({ page }) => {
+  test.fail(true, "#75 未修：--bar-height 只留了一行");
+  await signIn(page, "E2E 局头丁");
+  const startsAt = Math.floor(Date.now() / 1000) + 3 * 24 * 3600;
+  const res = await page.request.post("/api/games", {
+    data: { starts_at: startsAt, area: "Senayan", venue: "E2E 局头视角", kind: "classic", note: "备注写长一点，确保页面能滚。" },
+    headers: { Origin: ORIGIN, "Idempotency-Key": `e2e-host-${Date.now()}` },
+  });
+  expect(res.ok()).toBeTruthy();
+  const code = (await res.json()).game.short_code as string;
+
+  await page.goto(`/g/${code}`);
+  await expect(page.getByRole("button", { name: "取消这局" })).toBeVisible();
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+
+  const last = await page.locator(".disclaimer").evaluate((el) => el.getBoundingClientRect().bottom);
+  const barTop = await page.locator(".actionbar").evaluate((el) => el.getBoundingClientRect().top);
+  expect(last).toBeLessThanOrEqual(barTop);
+});
+
+// 访客视角：只有「分享」「报名占座」两个按钮，一行；滚到底最后一段内容也必须在操作栏上面。
+// 这条现在就该过——它拦的是「--bar-height 被改小 / 改成 0」这类回归（#77 复审）。
+test("访客视角：滚到底内容不被操作栏压住", async ({ page }) => {
+  await page.goto(`/g/${codes[2]}`);
+  await expect(page.getByRole("button", { name: "报名占座" })).toBeVisible();
+  // 页面确实比一屏长，才谈得上被压住。
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeGreaterThan(667);
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+
+  const last = await page.locator(".disclaimer").evaluate((el) => el.getBoundingClientRect().bottom);
+  const barTop = await page.locator(".actionbar").evaluate((el) => el.getBoundingClientRect().top);
+  expect(last).toBeLessThanOrEqual(barTop);
+});
