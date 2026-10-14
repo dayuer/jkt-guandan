@@ -8,9 +8,21 @@ function positionFor(seatNo: number) {
   return POSITIONS[(seatNo - 1) % POSITIONS.length];
 }
 
-/** 称呼取首字做头像；空称呼兜底成「?」。 */
+/** 跳过的字符：空白、控制字符、标点、符号，以及变体选择符和零宽连接符（emoji 的组成部分）。 */
+const SKIP = /^[\s\p{Cc}\p{P}\p{S}\u{FE00}-\u{FE0F}\u{200D}]$/u;
+
+/**
+ * 座位圆点里的字：称呼里第一个不是标点、符号的字，拉丁字母转大写；一个都没有就是「?」。
+ * 和服务端海报的规则一致（internal/share 的 initial）。按码点取，emoji 和生僻字不会被劈成半个。
+ */
 export function initial(nickname: string): string {
-  return (nickname || "?").trim().slice(0, 1) || "?";
+  for (const ch of nickname) {
+    if (SKIP.test(ch)) continue;
+    const up = ch.toUpperCase();
+    // 「ß」这类大写后变成两个字的，保持原样，和 Go 的 unicode.ToUpper 一样只换单个码点。
+    return [...up].length === 1 ? up : ch;
+  }
+  return "?";
 }
 
 interface Props {
