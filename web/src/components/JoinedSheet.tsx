@@ -3,6 +3,7 @@ import type { GameDetail } from "../api";
 import { dayShort, slashDate, timeHM, weekday } from "../format";
 import { hasPushSubscription, notificationPermission, pushSupport, subscribeToPush, type InAppBrowser, type PushSupport } from "../push";
 import { shareURL, whatsappURL } from "../share";
+import { track } from "../telemetry";
 import { initial } from "./Table";
 
 interface Props {
@@ -81,7 +82,10 @@ export function JoinedSheet({ detail, meID, toast, onCalendar, onGuide, onClose 
 
   const remind = async () => {
     if (busy) return;
+    track("push_prompt", { game: game.short_code });
     if (support.kind === "in-app-browser" || support.kind === "ios-needs-home") {
+      // 要跳出内置浏览器才能开提醒：漏斗里单独记一步（#117）。
+      if (support.kind === "in-app-browser") track("jumpout", { game: game.short_code });
       if (onGuide) onGuide();
       else setMode({ kind: "alt", hint: guideHint(support) });
       return;
@@ -94,6 +98,7 @@ export function JoinedSheet({ detail, meID, toast, onCalendar, onGuide, onClose 
     const result = await subscribeToPush();
     setBusy(false);
     if (result.kind === "ok") {
+      track("push_ok", { game: game.short_code });
       toast("好，开局前 1 小时提醒你");
       onClose();
     } else if (result.kind === "denied") {

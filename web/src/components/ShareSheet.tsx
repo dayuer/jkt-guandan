@@ -10,6 +10,7 @@ import {
   systemShareText,
   whatsappURL,
 } from "../share";
+import { track, type ShareChannel } from "../telemetry";
 
 interface Props {
   detail: GameDetail;
@@ -46,7 +47,10 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
     setPosterFailed(false);
   }, [poster]);
 
+  const channel = (c: ShareChannel) => track("share_channel", { game: detail.game.short_code, channel: c });
+
   const copy = async () => {
+    channel("copy");
     if (await copyText(text)) {
       setCopied(true);
       toast("话术已复制");
@@ -56,6 +60,7 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
   };
 
   const savePoster = () => {
+    channel("poster");
     if (inWeChat) {
       // 微信内置浏览器里 a[download] 基本没用，长按保存是唯一可靠的路子。
       toast("长按上面的海报就能保存");
@@ -71,6 +76,7 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
   };
 
   const shareToSystem = async () => {
+    channel("system");
     const result = await systemShare({
       title: `随时掼掼蛋 · ${detail.game.venue}`,
       // 正文不带链接：链接单独走 url，不然目标 App 里会看到两遍。
@@ -120,7 +126,13 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
             </span>
             复制话术
           </button>
-          <a class="outlet" href={whatsappURL(text)} target="_blank" rel="noopener noreferrer">
+          <a
+            class="outlet"
+            href={whatsappURL(text)}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => channel("whatsapp")}
+          >
             <span class="ico wa" aria-hidden="true">
               <IconWhatsApp />
             </span>

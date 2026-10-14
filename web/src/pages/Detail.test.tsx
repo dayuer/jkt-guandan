@@ -4,6 +4,10 @@ import type { GameDetail, GamePatch } from "../api";
 import { Detail } from "./Detail";
 import { installFakeSocket } from "../fakeSocket";
 
+// 埋点（#117）在这里换成间谍：既能断言漏斗事件，又不会往假后端发 /api/events。
+const telemetry = vi.hoisted(() => ({ track: vi.fn() }));
+vi.mock("../telemetry", () => telemetry);
+
 function detail(version: number, over: Partial<GameDetail["game"]> = {}): GameDetail {
   return {
     game: {
@@ -242,9 +246,13 @@ describe("加入日历", () => {
     const join = [...container.querySelectorAll(".actionbar button")].find((b) =>
       b.textContent?.includes("报名占座"),
     ) as HTMLButtonElement;
+    telemetry.track.mockClear();
     join.click();
     await vi.waitFor(() => expect(container.querySelector(".sheet.joined")).not.toBeNull());
     expect(container.textContent).toContain("占上了");
+    // 漏斗：点报名、报上名（#117）。
+    expect(telemetry.track.mock.calls.map((c) => c[0])).toEqual(["join_click", "join_ok"]);
+    expect(telemetry.track).toHaveBeenCalledWith("join_ok", { game: "ABC123" });
 
     const cal = [...container.querySelectorAll(".sheet.joined button")].find((b) =>
       b.textContent?.includes("加到日历"),
@@ -277,5 +285,27 @@ describe("加入日历", () => {
     expect(requestPermission).not.toHaveBeenCalled();
     // 引导屏盖在报名成功弹层上，关掉引导还回到弹层。
     expect(container.querySelector("[data-testid=joined-sheet]")).not.toBeNull();
+  });
+});
+
+describe("埋点（#117）", () => {
+  beforeEach(() => {
+    installFakeSocket();
+    telemetry.track.mockClear();
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+    vi.unstubAllGlobals();
+  });
+
+  it("打开详情页记一次 detail_view；重新拉数据不重复记；点分享记 share_open", async () => {
+    const { container } = setup(detail(2), []);
+    await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+    await vi.waitFor(() => expect(telemetry.track).toHaveBeenCalledWith("detail_view", { game: "ABC123" }));
+
+    ([...container.querySelectorAll("button")].find((b) => b.textContent?.includes("分享")) as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(telemetry.track).toHaveBeenCalledWith("share_open", { game: "ABC123" }));
+    expect(telemetry.track.mock.calls.filter((c) => c[0] === "detail_view")).toHaveLength(1);
   });
 });

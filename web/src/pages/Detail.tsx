@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "preact/hooks";
+import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import {
   ApiError,
   cancelGame,
@@ -21,6 +21,7 @@ import { JoinedSheet } from "../components/JoinedSheet";
 import { PushGuide } from "../components/PushGuide";
 import { ShareSheet } from "../components/ShareSheet";
 import { NoticeBanner, PromotedSheet } from "../components/StatusNotices";
+import { track } from "../telemetry";
 import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
 import { dayLabel, kindLabel, timeHM } from "../format";
@@ -101,6 +102,15 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
     void load();
   }, [load]);
 
+  // 详情页访问（#117 转化漏斗的第一步）：每打开一局记一次，刷新、实时更新都不重复记。
+  const viewed = useRef("");
+  useEffect(() => {
+    if (detail && viewed.current !== code) {
+      viewed.current = code;
+      track("detail_view", { game: code });
+    }
+  }, [detail, code]);
+
   // 标题和服务端注入的 OG 标题一致（#60）；局头改了时间 / 地点会跟着变。
   useEffect(() => {
     if (detail) document.title = gameTitle(detail);
@@ -175,6 +185,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       if (!identity) return;
       // 拿到身份后接着报名：cookie 已经在浏览器里了。
     }
+    track("join_click", { game: code });
     // 报上名之后问一句要不要提醒（方案 §3）。候补没有确定的座位，不问。
     let seated = false;
     const ok = await run(async () => {
@@ -182,6 +193,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       seated = next.me.role === "seat";
       return next;
     });
+    if (ok) track("join_ok", { game: code });
     if (ok && seated) setJoinedOpen(true);
   };
 
@@ -524,7 +536,13 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       <div class="actionbar" ref={actionBar}>
         {/* 分享对所有能看到这一局的人都可用——报了名的、路过的，都能帮局头拉人（§5.4）。 */}
         {!closed && (
-          <button class="btn dark-ghost" onClick={() => setShareOpen(true)}>
+          <button
+            class="btn dark-ghost"
+            onClick={() => {
+              track("share_open", { game: code });
+              setShareOpen(true);
+            }}
+          >
             ⇪ 分享
           </button>
         )}

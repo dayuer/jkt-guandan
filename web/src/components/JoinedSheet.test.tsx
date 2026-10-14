@@ -22,6 +22,9 @@ vi.mock("../push", () => ({
   },
 }));
 
+const telemetry = vi.hoisted(() => ({ track: vi.fn() }));
+vi.mock("../telemetry", () => telemetry);
+
 import { JoinedSheet } from "./JoinedSheet";
 
 function detail(seated: number): GameDetail {
@@ -75,6 +78,7 @@ beforeEach(() => {
   push.subscribed = false;
   push.result = { kind: "ok" };
   push.subscribeCalls = 0;
+  telemetry.track.mockClear();
 });
 
 afterEach(() => {
@@ -95,6 +99,9 @@ describe("报名成功弹层（B4–B6）", () => {
     await flush();
     expect(push.subscribeCalls).toBe(1);
     expect(toast).toHaveBeenCalledWith("好，开局前 1 小时提醒你");
+    // 漏斗：问提醒、开成提醒（#117）。
+    expect(telemetry.track).toHaveBeenCalledWith("push_prompt", { game: "AB12" });
+    expect(telemetry.track).toHaveBeenCalledWith("push_ok", { game: "AB12" });
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -148,6 +155,7 @@ describe("报名成功弹层（B4–B6）", () => {
     await flush();
     expect(onGuide).toHaveBeenCalled();
     expect(push.subscribeCalls).toBe(0);
+    expect(telemetry.track).toHaveBeenCalledWith("jumpout", { game: "AB12" });
   });
 
   it("没有引导屏可用时：iOS Safari 标签页退回 B5 并说明原因", async () => {
