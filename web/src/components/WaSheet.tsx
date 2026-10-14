@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import { ApiError, clearWaPhone, setWaPhone } from "../api";
+import { tapFocusHandlers } from "../tapFocus";
 import { maskWaPhone, normalizeWaPhone } from "../wa";
 
 interface Props {
@@ -20,6 +21,7 @@ export function WaSheet({ current, toast, onChange, onClose }: Props) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [tap] = useState(() => tapFocusHandlers());
 
   const save = async (e: Event) => {
     e.preventDefault();
@@ -79,6 +81,7 @@ export function WaSheet({ current, toast, onChange, onClose }: Props) {
                 value={value}
                 maxLength={24}
                 onInput={(e) => setValue((e.target as HTMLInputElement).value)}
+                {...tap}
               />
               {error && <p class="error" style={{ margin: 0 }}>{error}</p>}
               <button class="btn primary" type="submit" disabled={busy || value.trim() === ""}>

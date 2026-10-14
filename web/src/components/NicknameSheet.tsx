@@ -1,4 +1,5 @@
 import { useState } from "preact/hooks";
+import { tapFocusHandlers } from "../tapFocus";
 import { ApiError, createMe } from "../api";
 import { markHasIdentity } from "../identity";
 
@@ -17,6 +18,8 @@ export function NicknameSheet({ onDone, onCancel }: Props) {
   const [nickname, setNickname] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // 安卓 WebView：焦点不是点出来的时候，点一下也不弹键盘；先 blur 再让原生聚焦来一遍（P0）。
+  const [tap] = useState(() => tapFocusHandlers());
 
   const submit = async (e: Event) => {
     e.preventDefault();
@@ -46,6 +49,7 @@ export function NicknameSheet({ onDone, onCancel }: Props) {
           <input
             value={nickname}
             onInput={(e) => setNickname((e.target as HTMLInputElement).value)}
+            {...tap}
             onKeyDown={(e) => {
               // 输入法还在拼字时的回车是「上屏」，不是提交；拼完再按回车才提交（#130 第 3 条）。
               if (e.key === "Enter" && !e.isComposing) {

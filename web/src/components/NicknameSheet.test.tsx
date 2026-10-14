@@ -61,6 +61,14 @@ describe("称呼弹层（#130 第 3 条）", () => {
     expect(document.activeElement).not.toBe(input);
   });
 
+  it("安卓 WebView 的「有焦点没键盘」：焦点不是点出来的，按下时先 blur，让这次点击重新聚焦（P0）", () => {
+    const { input } = mount();
+    input.focus(); // 模拟 WebView 自己给的焦点
+    expect(document.activeElement).toBe(input);
+    input.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    expect(document.activeElement).not.toBe(input);
+  });
+
   it("输入框的属性：称呼自动填充、文字键盘、回车键显示「完成」", () => {
     const { input } = mount();
     expect(input.getAttribute("autocomplete")).toBe("nickname");
