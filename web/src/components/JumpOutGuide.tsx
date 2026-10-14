@@ -1,10 +1,11 @@
 import { useEffect, useState } from "preact/hooks";
 import { issueClaim } from "../api";
-import { withClaim, withoutClaim } from "../guide";
+import { jumpOutLabels, withClaim, withoutClaim } from "../guide";
+import type { InAppBrowser } from "../push";
 import "../guides.css";
 
 interface Props {
-  app: "wechat" | "whatsapp";
+  app: InAppBrowser;
   /** iPhone 上微信的菜单项叫「在 Safari 中打开」。 */
   ios: boolean;
   /** 有身份才签发认领令牌；没有身份就只教怎么跳。 */
@@ -15,7 +16,7 @@ interface Props {
 }
 
 /**
- * H1 · 跳出微信 / WhatsApp（设计稿 12）。
+ * H1 · 跳出微信 / WhatsApp / Instagram / Facebook / LINE（设计稿 12）。
  *
  * 一出现就签发 claim 令牌并 `replaceState` 到带令牌的地址（§5.2「跳出微信前」）：
  * 用户在菜单里点「在浏览器中打开」，打开的就是这个地址，浏览器那边启动时自动认回身份。
@@ -46,8 +47,7 @@ export function JumpOutGuide({ app, ios, signedIn, onCalendar, onClose }: Props)
     then();
   };
 
-  const menu = app === "wechat" ? "···" : "⋮";
-  const openItem = app === "wechat" && ios ? "在 Safari 中打开" : "在浏览器中打开";
+  const { menu, item: openItem } = jumpOutLabels(app, ios);
 
   return (
     <div class="jumpout" role="dialog" aria-modal="true" aria-label="在浏览器中打开" data-testid="guide-jumpout">

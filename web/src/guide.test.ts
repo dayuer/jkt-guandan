@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { markWelcomed, normaliseCode, pushGuide, shouldWelcome, withClaim, withoutClaim } from "./guide";
+import { jumpOutLabels, markWelcomed, normaliseCode, pushGuide, shouldWelcome, withClaim, withoutClaim } from "./guide";
 import { isIOS, pushSupport } from "./push";
 
 /** 哪种环境出哪张引导屏（#10 H1–H8）。能力检测本身由 push.test.ts 覆盖，这里从 UA 一路走到屏。 */
@@ -34,6 +34,21 @@ describe("点了「提醒我」之后出哪张引导屏", () => {
 
   it("WhatsApp 内置浏览器 → H1 的 WhatsApp 版", () => {
     expect(screenFor(UA.whatsapp)).toMatchObject({ kind: "jump-out", app: "whatsapp" });
+  });
+
+  it("Instagram / Facebook / LINE 内置浏览器 → H1（印尼常见入口）", () => {
+    expect(screenFor("Mozilla/5.0 (iPhone) Mobile/15E148 Instagram 312.0.0")).toMatchObject({ kind: "jump-out", app: "instagram" });
+    expect(screenFor("Mozilla/5.0 (iPhone) Mobile/15E148 [FBAN/FBIOS;FBAV/450.0]")).toMatchObject({ kind: "jump-out", app: "facebook" });
+    expect(screenFor("Mozilla/5.0 (iPhone) Mobile/15E148 Safari Line/13.17.0")).toMatchObject({ kind: "jump-out", app: "line" });
+  });
+
+  it("H1 的菜单文案按应用区分", () => {
+    expect(jumpOutLabels("wechat", true)).toEqual({ menu: "···", item: "在 Safari 中打开" });
+    expect(jumpOutLabels("wechat", false).item).toBe("在浏览器中打开");
+    expect(jumpOutLabels("whatsapp", false).menu).toBe("⋮");
+    expect(jumpOutLabels("instagram", true).item).toBe("在外部浏览器中打开");
+    expect(jumpOutLabels("facebook", false).item).toBe("在外部浏览器中打开");
+    expect(jumpOutLabels("line", false)).toEqual({ menu: "⋮", item: "用默认浏览器打开" });
   });
 
   it("iPhone Safari 标签页 → H2 加到主屏幕", () => {

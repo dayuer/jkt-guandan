@@ -5,11 +5,11 @@
  * 并且只放纯函数，方便在测试里把各种环境挨个过一遍。
  */
 
-import type { PushSupport } from "./push";
+import type { InAppBrowser, PushSupport } from "./push";
 
 export type PushGuide =
-  /** H1：微信 / WhatsApp 内置浏览器，引导「在浏览器中打开」。 */
-  | { kind: "jump-out"; app: "wechat" | "whatsapp"; ios: boolean }
+  /** H1：应用内置浏览器（微信、WhatsApp、Instagram、Facebook、LINE），引导「在浏览器中打开」。 */
+  | { kind: "jump-out"; app: InAppBrowser; ios: boolean }
   /** H2：iOS Safari 标签页，引导加到主屏幕。 */
   | { kind: "home-screen" }
   /** 能直接订阅，或者这台设备怎么都收不到（交给 B5 的「加到日历」）：不需要引导屏。 */
@@ -24,6 +24,21 @@ export function pushGuide(support: PushSupport, ios: boolean): PushGuide {
       return { kind: "home-screen" };
     default:
       return { kind: "none" };
+  }
+}
+
+/** H1 上每个应用的菜单按钮和「用浏览器打开」那一项叫什么。 */
+export function jumpOutLabels(app: InAppBrowser, ios: boolean): { menu: string; item: string } {
+  switch (app) {
+    case "wechat":
+      return { menu: "···", item: ios ? "在 Safari 中打开" : "在浏览器中打开" };
+    case "whatsapp":
+      return { menu: "⋮", item: "在浏览器中打开" };
+    case "instagram":
+    case "facebook":
+      return { menu: "···", item: "在外部浏览器中打开" };
+    case "line":
+      return { menu: "⋮", item: "用默认浏览器打开" };
   }
 }
 
