@@ -172,6 +172,23 @@ describe("详情页的实时", () => {
     expect(getGets()).toBe(2);
   });
 
+  it("presence（在看人数）不是牌局变化，不重新拉", async () => {
+    const { container, getGets } = await renderDetail(detail(oneSeat));
+    await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+    expect(getGets()).toBe(1);
+
+    const socket = lastSocket();
+    socket.open();
+    socket.receive({ topic: "game:8K2QXM", type: "presence", data: { viewers: 3 } });
+    socket.receive({ topic: "game:8K2QXM", type: "presence", data: { viewers: 4 } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(getGets()).toBe(1);
+
+    // 真正的变化照样重新拉。
+    socket.receive({ topic: "game:8K2QXM", type: "seat.taken", v: 2 });
+    await vi.waitFor(() => expect(getGets()).toBe(2));
+  });
+
   it("连不上三次就降级轮询，并显示「离线 · 15 秒刷新」", async () => {
     vi.useFakeTimers();
     try {
