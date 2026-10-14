@@ -52,6 +52,10 @@ type Config struct {
 	AnthropicKey string
 	// AgentModel 是蛋蛋用的 Claude 模型，读 GUANDAN_AGENT_MODEL；为空用 agent.DefaultModel。
 	AgentModel string
+	// GroupWeChatID、GroupWhatsAppURL 是 09 牌友顶部「雅加达掼蛋群」横幅用的（#108），
+	// 读 GUANDAN_GROUP_WECHAT_ID、GUANDAN_GROUP_WHATSAPP_URL；都为空时前端不显示横幅。
+	GroupWeChatID    string
+	GroupWhatsAppURL string
 }
 
 // Domains 把逗号分隔的域名拆开，去掉空项。
@@ -125,6 +129,9 @@ func Load() (Config, error) {
 		AnthropicKey: strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
 		AgentModel:   strings.TrimSpace(os.Getenv("GUANDAN_AGENT_MODEL")),
 
+		GroupWeChatID:    strings.TrimSpace(os.Getenv("GUANDAN_GROUP_WECHAT_ID")),
+		GroupWhatsAppURL: strings.TrimSpace(os.Getenv("GUANDAN_GROUP_WHATSAPP_URL")),
+
 		BackupRegion:    env("AWS_REGION", "us-east-1"),
 		BackupAccessKey: strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")),
 		BackupSecretKey: strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")),
@@ -182,6 +189,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("GUANDAN_BACKUP_URL=%q 只支持 https://、http:// 或 file://", c.BackupURL)
 		}
 	}
+	// 群链接会原样放进页面的链接里：只接受 https，免得配错成 javascript: 之类。
+	if c.GroupWhatsAppURL != "" {
+		if u, err := url.Parse(c.GroupWhatsAppURL); err != nil || u.Scheme != "https" || u.Host == "" {
+			return Config{}, fmt.Errorf("GUANDAN_GROUP_WHATSAPP_URL=%q 必须是 https 地址", c.GroupWhatsAppURL)
+		}
+	}
+
 	if !dev && len(c.Domains()) > 0 && c.AdminEmail == "" {
 		return Config{}, fmt.Errorf("启用自动签发证书（GUANDAN_DOMAIN）时必须设置 GUANDAN_ADMIN_EMAIL")
 	}

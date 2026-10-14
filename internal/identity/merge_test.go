@@ -92,3 +92,59 @@ func TestMergeUsersMovesSeatsAndKeepsEarlierSeat(t *testing.T) {
 		t.Fatalf("旧身份应当指向 u-primary，实际 %q", mergedInto)
 	}
 }
+
+// 合并时星标牌友两个方向都搬到保留的身份上（#108）：重复的只留一条，互相星标不会变成自己星标自己。
+func TestMergeUsersMovesFollows(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+			_, err := tx.ExecContext(ctx, q, args...)
+			return err
+		}); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	for i, id := range []string{"u-primary", "u-other", "u-x", "u-y"} {
+		exec(`INSERT INTO users (id, nickname, created_at) VALUES (?, ?, ?)`, id, id, 100+i)
+	}
+	for _, f := range [][2]string{
+		{"u-other", "u-x"},   // other 的星标 → 搬给 primary
+		{"u-x", "u-other"},   // 别人星标 other → 改成星标 primary
+		{"u-primary", "u-y"}, // 两边都星标了 y → 只留一条
+		{"u-other", "u-y"},
+		{"u-primary", "u-other"}, // 互相星标 → 合并后不能自己星标自己
+		{"u-other", "u-primary"},
+	} {
+		exec(`INSERT INTO follows (user_id, target_id, created_at) VALUES (?, ?, 1)`, f[0], f[1])
+	}
+	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		_, err := mergeUsers(ctx, tx, "u-other", "u-primary")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.Read().Query(`SELECT user_id || '>' || target_id FROM follows ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var s string
+		_ = rows.Scan(&s)
+		got = append(got, s)
+	}
+	want := []string{"u-primary>u-x", "u-primary>u-y", "u-x>u-primary"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("合并后的星标 %v，期望 %v", got, want)
+	}
+}

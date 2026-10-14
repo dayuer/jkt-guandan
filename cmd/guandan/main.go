@@ -28,6 +28,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/buildinfo"
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/config"
+	"github.com/dayuer/jkt-guandan/internal/friends"
 	"github.com/dayuer/jkt-guandan/internal/games"
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/internal/identity"
@@ -189,8 +190,9 @@ func run() error {
 			Identity: identitySvc,
 			Routes: appRoutes(appDeps{
 				identity: identitySvc, games: gamesSvc, notify: notifySvc, ws: wsHandler,
-				share: share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()},
-				agent: agent.Options{Model: agentModel(cfg), Clock: clk},
+				friends: friends.NewService(st, clk),
+				share:   share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()},
+				agent:   agent.Options{Model: agentModel(cfg), Clock: clk},
 			}),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -404,6 +406,7 @@ type appDeps struct {
 	identity *identity.Service
 	games    *games.Service
 	notify   *notify.Service
+	friends  *friends.Service
 	ws       http.Handler
 	share    share.Options
 	agent    agent.Options
@@ -419,6 +422,7 @@ func appRoutes(d appDeps) []route.Route {
 		[]route.Route{{Method: http.MethodGet, Pattern: "/ws", Access: route.Public, DeferIdentity: true, Handler: d.ws}},
 		share.Routes(d.share),
 		notify.Routes(d.notify),
+		friends.Routes(d.friends),
 		agent.Routes(d.agent),
 	)
 }
