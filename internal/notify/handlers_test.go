@@ -134,3 +134,79 @@ func TestPushEndpoints(t *testing.T) {
 		t.Fatalf("被封禁应 403，实际 %d", code)
 	}
 }
+
+// #48 复审第 1 条（auditor 的 PoC）：订阅过推送的设备被「退出」，应当 204，并且它的订阅跟着删掉。
+func TestSignOutDeviceWithSubscription(t *testing.T) {
+	f := newFixture(t)
+	if code, _ := f.do(http.MethodPost, "/api/me", map[string]string{"nickname": "老王"}); code != 200 {
+		t.Fatal(code)
+	}
+	if code, b := f.do(http.MethodPost, "/api/push/subscribe", subscription("https://fcm.googleapis.com/fcm/send/abc")); code/100 != 2 {
+		t.Fatalf("subscribe %d %v", code, b)
+	}
+	_, me := f.do(http.MethodGet, "/api/me", nil)
+	devs := me["devices"].([]any)
+	id := devs[0].(map[string]any)["id"].(string)
+	code, body := f.do(http.MethodDelete, "/api/me/devices/"+id, nil)
+	var subs int
+	_ = f.st.Read().QueryRow(`SELECT count(*) FROM push_subscriptions`).Scan(&subs)
+	if code != http.StatusNoContent || subs != 0 {
+		t.Fatalf("退出设备应 204 且订阅被删，实际 %d %v、剩 %d 条", code, body, subs)
+	}
+}
+
+// #48 复审第 1 条：设备确认切换到别的身份后，旧身份的提醒不再发到这台设备上。
+func TestSwitchedDeviceNoLongerReceivesOldIdentityPush(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// 这台浏览器原来是 Lily，开了推送。
+	if code, _ := f.do(http.MethodPost, "/api/me", map[string]string{"nickname": "Lily"}); code != 200 {
+		t.Fatal(code)
+	}
+	const ep = "https://fcm.googleapis.com/fcm/send/lily-phone"
+	if code, _ := f.do(http.MethodPost, "/api/push/subscribe", subscription(ep)); code != 204 {
+		t.Fatal(code)
+	}
+	var lily string
+	_ = f.st.Read().QueryRow(`SELECT id FROM users WHERE nickname = 'Lily'`).Scan(&lily)
+
+	// 另一个浏览器里的老王签发认领链接，这台浏览器确认切换成老王。
+	jar, _ := cookiejar.New(nil)
+	other := &fixture{t: t, srv: f.srv, st: f.st, clk: f.clk, client: &http.Client{Transport: f.srv.Client().Transport, Jar: jar}}
+	if code, _ := other.do(http.MethodPost, "/api/me", map[string]string{"nickname": "老王"}); code != 200 {
+		t.Fatal(code)
+	}
+	_, claim := other.do(http.MethodPost, "/api/claim", nil)
+	if code, body := f.do(http.MethodPost, "/api/claim/redeem", map[string]any{"token": claim["claim_token"], "confirm": true}); code != 200 {
+		t.Fatalf("确认切换：%d %v", code, body)
+	}
+
+	// 发给 Lily 的提醒：这台设备已经不是 Lily 了，不能再收到。
+	if err := f.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO games (id, short_code, host_id, starts_at, area, venue, kind, status, created_at)
+			VALUES ('g1', 'SEED01', ?, ?, 'SCBD', 'v', 'classic', 'open', 0)`, lily, f.clk.Now().Add(26*time.Hour).Unix()); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO outbox (game_id, user_id, kind, send_at, next_try, dedupe_key)
+			VALUES ('g1', ?, 'host_seat_taken', ?, ?, 'k1')`, lily, f.clk.Now().Unix(), f.clk.Now().Unix())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := notify.New(ctx, f.st, f.clk, "mailto:ops@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := &recordingSender{}
+	if _, err := notify.NewWorker(svc, sender, f.clk).RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.sent) != 0 {
+		t.Fatalf("旧身份的提醒发到了已经切换的设备上：%v", sender.sent)
+	}
+	var subs int
+	_ = f.st.Read().QueryRow(`SELECT count(*) FROM push_subscriptions WHERE endpoint = ?`, ep).Scan(&subs)
+	if subs != 0 {
+		t.Fatal("切换身份后，这台设备以旧身份开的订阅应被删掉")
+	}
+}

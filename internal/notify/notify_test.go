@@ -381,14 +381,73 @@ func TestPointlessRemindersAreDropped(t *testing.T) {
 		t.Fatalf("发出去的 %+v", f.calls)
 	}
 
-	// 已经过了开局时间：放弃。
+	// 开局前 1 小时的提醒过了开局时间就没意义了；补位成功之类的提醒在补人宽限期（#44）里照发，过了才放弃。
 	e.exec(`UPDATE games SET status = 'open', ended_at = NULL WHERE id = 'g1'`)
-	late := e.reminder("u1", "seat_left")
-	e.clk.Advance(3 * time.Hour)
-	e.exec(`UPDATE outbox SET next_try = ? WHERE id = ?`, e.clk.Now().Unix(), late)
+	e.clk.Advance(3 * time.Hour) // 开局后 1 小时
+	tooLate := e.reminder("u1", "t_minus_1h_late")
+	e.exec(`UPDATE outbox SET kind = 't_minus_1h' WHERE id = ?`, tooLate)
+	inGrace := e.reminder("u1", "promoted")
 	res, _ = w.RunOnce(ctx)
-	if res != (Result{Dropped: 1}) || e.scalar(`SELECT last_error FROM outbox WHERE id = ?`, late) != "已过开局时间" {
-		t.Fatalf("过了开局时间应放弃：%+v", res)
+	if res != (Result{Sent: 1, Dropped: 1}) {
+		t.Fatalf("开局后 1 小时：%+v", res)
+	}
+	if e.scalar(`SELECT last_error FROM outbox WHERE id = ?`, tooLate) != "已过开局时间" ||
+		e.scalar(`SELECT sent_at IS NOT NULL FROM outbox WHERE id = ?`, inGrace) != "1" {
+		t.Fatal("t_minus_1h 应放弃，promoted 应照发")
+	}
+	e.clk.Advance(2 * time.Hour) // 开局后 3 小时，过了补人宽限期
+	late := e.reminder("u1", "seat_left")
+	res, _ = w.RunOnce(ctx)
+	if res != (Result{Dropped: 1}) || e.scalar(`SELECT last_error FROM outbox WHERE id = ?`, late) != "已过补人时间" {
+		t.Fatalf("过了补人宽限期应放弃：%+v", res)
+	}
+}
+
+// 推送服务不该让我们跟着重定向走：endpoint 是按白名单校验过的，重定向会绕开它（SSRF）。
+func TestSenderDoesNotFollowRedirects(t *testing.T) {
+	e := newEnv(t)
+	var hitTarget atomic.Bool
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hitTarget.Store(true) }))
+	defer target.Close()
+	redirector := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/internal", http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	uaPriv, _ := ecdh.P256().GenerateKey(rand.Reader)
+	var s Subscription
+	s.Endpoint = redirector.URL + "/push"
+	s.Keys.P256dh = base64.RawURLEncoding.EncodeToString(uaPriv.PublicKey().Bytes())
+	s.Keys.Auth = auth16
+	sender := e.svc.NewSender()
+	tr := redirector.Client().Transport.(*http.Transport).Clone()
+	tr.TLSClientConfig.InsecureSkipVerify = true // 两个测试服务器各有自签证书
+	sender.Client.Transport = tr
+	status, err := sender.Send(context.Background(), s, []byte(`{}`), SendOptions{TTL: time.Minute})
+	if err != nil || status != http.StatusTemporaryRedirect {
+		t.Fatalf("应原样拿到 307，实际 %d %v", status, err)
+	}
+	if hitTarget.Load() {
+		t.Fatal("跟着重定向去了别的地址")
+	}
+}
+
+// 一直失败（但不回 404/410）的订阅累计 50 次后删掉；成功一次就清零。
+func TestFailingSubscriptionIsEventuallyRemoved(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	e.exec(`UPDATE games SET starts_at = ? WHERE id = 'g1'`, t0.Add(30*24*time.Hour).Unix())
+	_ = e.svc.Subscribe(ctx, "u2", "d2", sub(fcm))
+	_ = e.svc.Subscribe(ctx, "u2", "d2", sub(mozilla))
+	e.exec(`UPDATE push_subscriptions SET fail_count = ? WHERE endpoint = ?`, MaxSubscriptionFailures-1, fcm)
+	e.exec(`UPDATE push_subscriptions SET fail_count = 7 WHERE endpoint = ?`, mozilla)
+	e.reminder("u2", "full")
+	f := &fakeSender{status: map[string]int{fcm: 500}} // mozilla 成功
+	if _, err := NewWorker(e.svc, f, e.clk).RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.scalar(`SELECT group_concat(endpoint || ':' || fail_count) FROM push_subscriptions`); got != mozilla+":0" {
+		t.Fatalf("剩下的订阅：%s", got)
 	}
 }
 

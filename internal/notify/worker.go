@@ -11,18 +11,21 @@ import (
 	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
+	"github.com/dayuer/jkt-guandan/internal/games"
 	"github.com/dayuer/jkt-guandan/internal/store"
 )
 
 // 发送的各项参数（§5.3）。
 const (
-	Interval     = 15 * time.Second
-	BatchSize    = 100
-	Concurrency  = 8
-	MaxAttempts  = 8
-	maxStaleness = 24 * time.Hour // 该发的时间过去一天还没发出去的提醒，已经没有意义
-	minTTL       = time.Minute
-	maxTTL       = 24 * time.Hour
+	Interval    = 15 * time.Second
+	BatchSize   = 100
+	Concurrency = 8
+	MaxAttempts = 8
+	// MaxSubscriptionFailures：一个订阅累计失败这么多次（中间没有成功过）就删掉。
+	MaxSubscriptionFailures = 50
+	maxStaleness            = 24 * time.Hour // 该发的时间过去一天还没发出去的提醒，已经没有意义
+	minTTL                  = time.Minute
+	maxTTL                  = 24 * time.Hour
 )
 
 // backoff 是第 n 次失败后（n 从 1 开始）到下一次重试的间隔：30 秒、2 分、10 分、30 分，之后每小时。
@@ -166,7 +169,7 @@ func (w *Worker) RunOnce(ctx context.Context) (Result, error) {
 		lastErr                string
 	}
 	per := map[int64]*agg{}
-	var gone, failed []string
+	var gone, failed, succeeded []string
 	for _, a := range attempts {
 		g := per[a.reminder]
 		if g == nil {
@@ -176,6 +179,7 @@ func (w *Worker) RunOnce(ctx context.Context) (Result, error) {
 		switch {
 		case a.err == nil && a.status >= 200 && a.status < 300:
 			g.ok++
+			succeeded = append(succeeded, a.endpoint)
 		case a.err == nil && (a.status == 404 || a.status == 410):
 			g.gone++
 			gone = append(gone, a.endpoint)
@@ -249,6 +253,20 @@ func (w *Worker) RunOnce(ctx context.Context) (Result, error) {
 				return err
 			}
 		}
+		// 连续失败太多次的订阅（推送服务一直报错、但又不回 404/410）不再浪费请求；
+		// 订阅成功或重新订阅时 fail_count 归零。
+		if len(failed) > 0 {
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM push_subscriptions WHERE fail_count >= ?`, MaxSubscriptionFailures); err != nil {
+				return err
+			}
+		}
+		for _, ep := range succeeded {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE push_subscriptions SET fail_count = 0 WHERE endpoint = ? AND fail_count > 0`, ep); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -303,8 +321,12 @@ func pointless(d due, now time.Time) string {
 		return "牌局已结束"
 	case d.status == "cancelled" && d.kind != "cancelled":
 		return "牌局已取消"
-	case !now.Before(d.game.StartsAt):
+	case (d.kind == "t_minus_1h" || d.kind == "rescheduled") && !now.Before(d.game.StartsAt):
+		// 开局前 1 小时、改时间：开局之后就没有意义了。
 		return "已过开局时间"
+	case !now.Before(d.game.StartsAt.Add(games.JoinGrace)):
+		// 其他提醒（补位成功、有人报名……）在开局后的补人宽限期里仍然有意义（#44）。
+		return "已过补人时间"
 	case now.Sub(d.sendAt) > maxStaleness:
 		return "提醒已过期"
 	}

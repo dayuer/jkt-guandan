@@ -52,6 +52,10 @@ func (s *WebPushSender) Send(ctx context.Context, sub Subscription, payload []by
 func (s *Service) NewSender() *WebPushSender {
 	return &WebPushSender{
 		PublicKey: s.publicKey, PrivateKey: s.privateKey, Subject: s.subject,
-		Client: &http.Client{Timeout: 10 * time.Second},
+		Client: &http.Client{
+			Timeout: 10 * time.Second,
+			// 不跟随重定向：endpoint 已经按白名单校验过（SSRF），重定向会绕开它（#48 复审）。
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 }
