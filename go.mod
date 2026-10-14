@@ -4,6 +4,7 @@ go 1.27.2
 
 require (
 	filippo.io/age v1.3.2
+	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/coder/websocket v1.8.15
 	go.uber.org/goleak v1.3.0
 	golang.org/x/image v0.47.0
@@ -17,6 +18,7 @@ require (
 require (
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
