@@ -84,9 +84,9 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
   return (
     <>
       <div class="scrim" onClick={onClose} />
-      <div class="sheet share" role="dialog" aria-modal="true" data-testid="share-sheet">
+      {/* C1 没有标题：海报本身就说明了要干什么。读屏用 aria-label。 */}
+      <div class="sheet share" role="dialog" aria-modal="true" aria-label="分享这一局" data-testid="share-sheet">
         <div class="grab" />
-        <h3>发到群里</h3>
 
         <div class="poster-frame">
           {!posterFailed ? (
@@ -94,8 +94,8 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
               class="poster"
               src={poster}
               alt="牌局海报"
-              width={270}
-              height={360}
+              width={188}
+              height={250}
               onError={() => setPosterFailed(true)}
             />
           ) : (
@@ -110,26 +110,26 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
         <div class="outlets">
           <button class="outlet" disabled={posterFailed} onClick={savePoster}>
             <span class="ico" aria-hidden="true">
-              ⬇
+              <IconDownload />
             </span>
             保存海报
           </button>
           <button class="outlet" onClick={() => void copy()}>
             <span class="ico" aria-hidden="true">
-              ⧉
+              <IconCopy />
             </span>
             复制话术
           </button>
           <a class="outlet" href={whatsappURL(text)} target="_blank" rel="noopener noreferrer">
             <span class="ico wa" aria-hidden="true">
-              ✆
+              <IconWhatsApp />
             </span>
             WhatsApp
           </a>
           {canSystemShare() && (
             <button class="outlet" onClick={() => void shareToSystem()}>
               <span class="ico" aria-hidden="true">
-                ⇪
+                <IconMore />
               </span>
               更多
             </button>
@@ -138,12 +138,12 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
 
         <div class="script">
           <p>{text}</p>
-          <button class="btn soft small" onClick={() => void copy()}>
+          <button class="btn primary small" onClick={() => void copy()}>
             {copied ? "已复制 ✓" : "复制"}
           </button>
         </div>
 
-        <button class="textlink" onClick={onClose}>
+        <button class="btn soft cancel" onClick={onClose}>
           取消
         </button>
 
@@ -156,4 +156,46 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
 /** 微信内置浏览器：长按保存是唯一可靠的路子，a[download] 会被忽略。 */
 function isWeChat(): boolean {
   return typeof navigator !== "undefined" && /micromessenger/i.test(navigator.userAgent ?? "");
+}
+
+// ── C1 的出口图标：线条跟着 currentColor 走（米色圆底上是红色，WhatsApp 绿底上是白色）。──
+
+function IconDownload() {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 4v11M7 10.5l5 5 5-5M5 20h14" />
+    </svg>
+  );
+}
+
+function IconCopy() {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M15 5.5V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h.5" />
+    </svg>
+  );
+}
+
+function IconWhatsApp() {
+  return (
+    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
+      <path d="M4 20l1.2-4.1A8 8 0 1 1 8.3 19z" />
+      <path
+        d="M9 8.6c.2-.5.6-.5.9-.5h.4c.2 0 .4.1.5.4l.6 1.5c.1.2 0 .4-.1.6l-.5.6c.6 1.1 1.5 2 2.6 2.6l.6-.5c.2-.1.4-.2.6-.1l1.5.6c.3.1.4.3.4.5v.4c0 .3 0 .7-.5.9-.7.4-1.6.5-2.7 0a9 9 0 0 1-3.8-3.8c-.5-1.1-.4-2 0-2.7z"
+        fill="currentColor"
+        stroke="none"
+      />
+    </svg>
+  );
+}
+
+function IconMore() {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+      <circle cx="6" cy="12" r="1.8" />
+      <circle cx="12" cy="12" r="1.8" />
+      <circle cx="18" cy="12" r="1.8" />
+    </svg>
+  );
 }
