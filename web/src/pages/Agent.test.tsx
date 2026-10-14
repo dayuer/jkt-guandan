@@ -3,7 +3,8 @@ import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetAgentDisabled } from "../agent";
 import { draftEvent, jsonError, reply, sseResponse } from "../agentTestUtil";
-import { Agent, type FormPrefill } from "./Agent";
+import { App } from "../App";
+import { Agent, type FormPrefill, greeting, plainInvalid } from "./Agent";
 
 const DRAFT = { starts_at: 1791980000, area: "PIK", venue: "PIK Avenue", kind: "classic" };
 
@@ -164,5 +165,57 @@ describe("07 · 蛋蛋", () => {
     await flush();
     expect(signal?.aborted).toBe(true);
     expect(toast).not.toHaveBeenCalled();
+  });
+});
+
+describe("#69 复审的收尾", () => {
+  // 2026-10-14 00:00 UTC = 07:00 WIB
+  const at = (wibHour: number) => Math.floor(Date.UTC(2026, 9, 14, wibHour - 7 + 24, 0) / 1000);
+
+  it("问候按雅加达时间换：早上好 / 下午好 / 晚上好", () => {
+    expect(greeting(at(8))).toMatch(/^早上好。/);
+    expect(greeting(at(14))).toMatch(/^下午好。/);
+    expect(greeting(at(20))).toMatch(/^晚上好。/);
+    expect(greeting(at(2))).toMatch(/^晚上好。/);
+  });
+
+  it("开局失败的 invalid_input 去掉「输入不合法：」前缀", () => {
+    expect(plainInvalid("输入不合法：地点太长了")).toBe("地点太长了");
+    expect(plainInvalid("输入不合法: 地点太长了")).toBe("地点太长了");
+    expect(plainInvalid("输入不合法")).toBe("没开成，请再试一次");
+    expect(plainInvalid("地点太长了")).toBe("地点太长了");
+  });
+
+  it("从蛋蛋开局成功后进详情页用替换：返回不会回到用完的对话", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "/api/agent") return sseResponse([draftEvent({ draft: DRAFT, valid: true })]);
+        if (url === "/api/games" && init?.method === "POST") {
+          return new Response(JSON.stringify(GAME_DETAIL), { status: 201 });
+        }
+        if (url === "/api/me") {
+          return new Response(JSON.stringify({ user: { id: "u1", nickname: "老王" }, device_id: "d1", devices: [] }));
+        }
+        return jsonError(404, "not_found");
+      }),
+    );
+    window.history.pushState(null, "", "/agent");
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    act(() => render(<App />, container));
+    await vi.waitFor(() => expect(container.querySelector(".composer input")).toBeTruthy());
+
+    await say(container, "周四晚上 PIK 打一局");
+    button(container, "确认，发到群里").click();
+    await vi.waitFor(() => expect(container.textContent).toContain("局开好了"));
+
+    const depth = window.history.length;
+    button(container, "取消").click();
+    await flush();
+
+    expect(window.location.pathname).toBe("/g/AB12");
+    expect(window.history.length).toBe(depth);
+    act(() => render(null, container));
   });
 });

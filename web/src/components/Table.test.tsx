@@ -99,5 +99,11 @@ describe("GameTable", () => {
     expect(initial("😀🎉")).toBe("?");
     expect(initial("𠮷野")).toBe("𠮷");
     expect(initial("ßa")).toBe("ß");
+    // \p{Cf}：零宽空格、从左到右标记、英格兰旗里的 tag 字符，都不该成为首字（#66 复审）。
+    expect(initial("\u200B阿明")).toBe("阿");
+    expect(initial("\u200E阿明")).toBe("阿");
+    expect(initial("\u202ETom")).toBe("T");
+    expect(initial("🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}Tom")).toBe("T");
+    expect(initial("\u200B\u200C\uFEFF")).toBe("?");
   });
 });

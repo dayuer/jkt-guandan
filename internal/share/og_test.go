@@ -44,7 +44,7 @@ func setupPages(t *testing.T) (*httptest.Server, *store.Store, *clock.Fake) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	share.Register(mux, share.Options{
+	mount(mux, share.Options{
 		Games: games.NewService(st, clk, nil), PublicURL: "https://guandan.synon.ai", Clock: clk,
 		Dist: fstest.MapFS{"index.html": {Data: []byte(indexHTML)}},
 	})

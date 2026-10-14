@@ -107,3 +107,39 @@ jobs:
         if: always()
         run: docker rm -f guandan-ci 2>/dev/null || true
 
+
+  # 浏览器端到端冒烟（#72）：本地构建的二进制 + seed，无头 Chromium，375×667。
+  # 先不进分支保护，稳定一段时间后由 coord 加成必过。
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 构建二进制（含前端）
+        run: make build
+
+      - name: 安装 Chromium
+        run: cd web && npx playwright install --with-deps chromium
+
+      - name: 端到端冒烟
+        run: cd web && npm run e2e
+
+      - name: 失败时上传 trace
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-traces
+          path: web/test-results/
+          retention-days: 7

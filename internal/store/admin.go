@@ -16,7 +16,7 @@ const DeletedNickname = "已注销牌友"
 
 // Ban 封禁一个用户或设备（§13.6 guandan admin ban <user|device>）。
 // 先按用户 id 找，找不到再按设备 id 找，返回实际封禁的是 "user" 还是 "device"。
-// 拦截在 identity 包的 gate 里：每个身份路由解析出身份后调用 IsBanned，命中返回 403。
+// 拦截在 httpapi 唯一的身份中间件里（#41）：识别身份的路由解析出身份后调用 IsBanned，命中返回 403。
 func (s *Store) Ban(ctx context.Context, id string, now time.Time) (kind string, err error) {
 	err = s.Write(ctx, func(ctx context.Context, tx *Tx) error {
 		for _, k := range []string{"user", "device"} {
