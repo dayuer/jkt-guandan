@@ -28,6 +28,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/route"
 	"github.com/dayuer/jkt-guandan/internal/share"
 	"github.com/dayuer/jkt-guandan/internal/store"
+	"github.com/dayuer/jkt-guandan/internal/telemetry"
 )
 
 // 路由表和授权矩阵（#41、§10.4、§10.12）。用的是 cmd/guandan 真实组装出来的整张表：
@@ -81,7 +82,8 @@ func newApp(t *testing.T) *app {
 			}),
 			share: share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk,
 				Dist: fstest.MapFS{"index.html": {Data: []byte("<!doctype html><html><head><title>x</title></head><body></body></html>")}}},
-			agent: agent.Options{Clock: clk}, // 没有 key：agent_disabled，矩阵只看授权
+			agent:     agent.Options{Clock: clk}, // 没有 key：agent_disabled，矩阵只看授权
+			telemetry: telemetry.Options{Store: st, Clock: clk},
 		}),
 	}
 	// 必须 TLS：生产 cookie 带 __Host- 前缀和 Secure（见 identity 测试里的说明）。
@@ -126,6 +128,8 @@ func TestRouteTable(t *testing.T) {
 		{"PUT /api/follows/{user_id}", "user", "friends.(*handler).star"},
 		{"DELETE /api/follows/{user_id}", "user", "friends.(*handler).unstar"},
 		{"POST /api/agent", "public", "agent.(*handler).draft"},
+		{"POST /api/events", "public", "telemetry.(*handler).events"},
+		{"POST /api/client-errors", "public", "telemetry.(*handler).clientError"},
 		{" /", "anonymous", "httpapi.referrerPolicyForClaim.func1"},
 	}
 	var got []row
@@ -315,6 +319,10 @@ func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string, s
 		body = map[string]string{"endpoint": "https://fcm.googleapis.com/fcm/send/x"}
 	case "POST /api/agent":
 		body = map[string]string{"text": "周四晚上打一局"}
+	case "POST /api/events":
+		body = map[string]any{"env": "browser", "events": []map[string]any{{"name": "detail_view"}}}
+	case "POST /api/client-errors":
+		body = map[string]string{"env": "browser", "message": "boom"}
 	}
 	status, out, raw := a.doRaw(c, method, path, body, header)
 	var errCode string
