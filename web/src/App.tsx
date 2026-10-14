@@ -10,6 +10,7 @@ import { ComingSoon } from "./pages/ComingSoon";
 import { CreateGame } from "./pages/CreateGame";
 import { Detail } from "./pages/Detail";
 import { Devices } from "./pages/Devices";
+import { Friends } from "./pages/Friends";
 import { Home } from "./pages/Home";
 import { Me } from "./pages/Me";
 import { Privacy } from "./pages/Privacy";
@@ -263,7 +264,14 @@ export function App() {
       ) : route.name === "learn" ? (
         <ComingSoon title="学牌" note="掼蛋的规则、记牌和常见牌型，做成能翻的卡片。" />
       ) : route.name === "friends" ? (
-        <ComingSoon title="牌友" note="常一起打的人，约起来更快。" />
+        <Friends
+          toast={toast}
+          onGames={() => navigate("/")}
+          onNewGame={() => {
+            setPrefill(null);
+            navigate("/new");
+          }}
+        />
       ) : route.name === "privacy" ? (
         <Privacy
           hasIdentity={!!me}
