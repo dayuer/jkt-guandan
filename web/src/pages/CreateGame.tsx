@@ -91,7 +91,7 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated }: Pr
 
   return (
     <>
-      <div class="body">
+      <div class="body has-actionbar">
         <div class="nav">
           <button class="ico" onClick={onBack} aria-label="返回">
             ‹

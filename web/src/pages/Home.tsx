@@ -79,7 +79,7 @@ export function Home({ me, onOpen, onCreate, toast }: Props) {
 
   return (
     <>
-      <div class="body">
+      <div class="body has-bar">
         <div class="head">
           <h1>随时掼掼蛋</h1>
           <p class="sub">
@@ -121,9 +121,9 @@ export function Home({ me, onOpen, onCreate, toast }: Props) {
         </div>
 
         {error && <p class="error">{error}</p>}
-        {games === null && <p class="empty">正在找局…</p>}
+        {games === null && <p class="empty-state">正在找局…</p>}
         {games !== null && games.length === 0 && !error && (
-          <p class="empty">
+          <p class="empty-state">
             这几天还没有局。
             <br />
             <button class="link" style={{ marginTop: 12 }} onClick={onCreate}>

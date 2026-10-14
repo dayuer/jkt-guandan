@@ -67,10 +67,11 @@ button:disabled {
 #app {
   max-width: 480px;
   margin: 0 auto;
+  /* 100dvh 跟着地址栏、工具条的伸缩走；老浏览器不认识 dvh，前面那行是回退（#53）。 */
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .serif {
@@ -101,8 +102,22 @@ button:disabled {
 
 .body {
   flex: 1;
-  overflow-y: auto;
-  padding-bottom: var(--s4);
+  padding-bottom: calc(var(--s4) + env(safe-area-inset-bottom, 0px));
+}
+
+/* 页面底部有固定条（tab 栏 / 操作栏）时，滚动内容要留出同样的高度，
+   否则最后一张卡片会被压在底下（#53）。 */
+.body.has-bar,
+.body.has-actionbar {
+  padding-bottom: calc(var(--bar-height, 0px) + var(--s4) + env(safe-area-inset-bottom, 0px));
+}
+
+.body.has-bar {
+  --bar-height: 76px; /* .tabbar 的高度 */
+}
+
+.body.has-actionbar {
+  --bar-height: 90px; /* .actionbar：52 的按钮 + 上下内边距 */
 }
 
 .pad {
@@ -168,13 +183,20 @@ button:disabled {
 /* 底部操作栏 */
 /* 用 flex 而不是固定列数：访客只有一个按钮、局头有三个按钮，都不该出现空洞。 */
 .actionbar {
-  flex: none;
+  /* 和 .tabbar 一样固定在底部：不然内容短时它浮在屏幕中间，内容长时被滚走（#53）。 */
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: 480px;
+  margin: 0 auto;
   display: flex;
   flex-wrap: wrap;
   gap: var(--s3);
-  padding: 14px 18px 24px;
+  padding: 14px 18px calc(24px + env(safe-area-inset-bottom, 0px));
   background: var(--card);
   border-top: 1px solid var(--line);
+  z-index: 10;
 }
 
 .actionbar .btn {
@@ -309,126 +331,13 @@ button:disabled {
   box-shadow: 0 0 0 6px var(--gold-ring);
 }
 
-.disc/* ── 分享面板（原型 04 / C1）──────────────────────────────────── */
 
-.sheet.share {
-  text-align: center;
-}
-
-.poster-frame {
-  margin: var(--s4) auto 0;
-  width: 270px;
-}
-
-.poster {
-  display: block;
-  width: 270px;
-  height: 360px;
-  object-fit: cover;
-  border-radius: var(--r-lg);
-  border: 1px solid var(--line);
-  background: var(--red-tint);
-  box-shadow: var(--sh-card);
-}
-
-/* 海报没加载出来时的占位：位置和尺寸跟真图一样，面板不会跳。 */
-.poster.placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 20px;
-  text-align: center;
-  font-weight: 700;
-  color: var(--red);
-}
-
-.poster.placeholder small {
-  font-weight: 400;
-  color: var(--ink-3);
-  font-size: var(--fs-small);
-  line-height: 1.5;
-}
-
-.sheet .hint {
-  margin-top: 10px;
-  color: var(--ink-3);
-  font-size: var(--fs-small);
-}
-
-.outlets {
-  display: flex;
-  justify-content: center;
-  gap: 18px;
-  margin-top: var(--s4);
-}
-
-.outlet {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-small);
-  font-weight: 700;
-  color: var(--ink-2);
-  text-decoration: none;
-}
-
-.outlet:disabled {
-  opacity: 0.45;
-}
-
-.outlet .ico {
-  display: grid;
-  place-items: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background: var(--red-tint);
-  color: var(--red);
-  font-size: 20px;
-}
-
-/* WhatsApp 用它自己的绿，别用我们的红。 */
-.outlet .ico.wa {
-  background: #e6f4ea;
-  color: #128c7e;
-}
-
-/* 话术预览：左文右按钮，像设计稿里那样一眼能看出复制的是什么。 */
-.script {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: var(--s4);
-  padding: 12px 14px;
-  border-radius: var(--r-12);
-  background: var(--paper);
-  text-align: left;
-}
-
-.script p {
-  flex: 1;
-  color: var(--ink-2);
-  font-size: var(--fs-13);
-  line-height: 1.5;
-  word-break: break-all;
-}
-
-/* 面板里的小按钮：.btn 默认是整行宽的主按钮，这里要它按内容宽。 */
-.btn.small {
-  flex: none;
-  width: auto;
-  min-height: 0;
-  padding: 10px 16px;
-  font-size: var(--fs-13);
-  white-space: nowrap;
-}
-
-.empty {
+.disc.empty {
   background: transparent;
   border: 2.5px dashed var(--khaki);
+  /* 座位是 64×64 的圆。显式写 0：曾经因为有个同名的页面空状态带 padding，
+     空座位被撑成了 64×100 的椭圆（#55）。 */
+  padding: 0;
 }
 
 .disc .crown {
@@ -751,6 +660,128 @@ button:disabled {
   }
 }
 
+/* ── 分享面板（原型 04 / C1）──────────────────────────────────── */
+
+.sheet.share {
+  text-align: center;
+  /* 海报 360 高 + 出口 + 话术框，在小屏（375×667、甚至 375×560）上会超过一屏。
+     让面板自己滚，而不是把标题和「取消」切掉。 */
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+}
+
+.poster-frame {
+  margin: var(--s4) auto 0;
+  width: 270px;
+}
+
+.poster {
+  display: block;
+  width: 270px;
+  height: 360px;
+  object-fit: cover;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line);
+  background: var(--red-tint);
+  box-shadow: var(--sh-card);
+}
+
+/* 海报没加载出来时的占位：位置和尺寸跟真图一样，面板不会跳。 */
+.poster.placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--red);
+}
+
+.poster.placeholder small {
+  font-weight: 400;
+  color: var(--ink-3);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+}
+
+.sheet .hint {
+  margin-top: 10px;
+  color: var(--ink-3);
+  font-size: var(--fs-small);
+}
+
+.outlets {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  margin-top: var(--s4);
+}
+
+.outlet {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-small);
+  font-weight: 700;
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.outlet:disabled {
+  opacity: 0.45;
+}
+
+.outlet .ico {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--red-tint);
+  color: var(--red);
+  font-size: 20px;
+}
+
+/* WhatsApp 用它自己的绿，别用我们的红。 */
+/* WhatsApp 用它自己的品牌绿，图标反白——令牌里有 --whatsapp，别写死颜色。 */
+.outlet .ico.wa {
+  background: var(--whatsapp);
+  color: var(--white);
+}
+
+/* 话术预览：左文右按钮，像设计稿里那样一眼能看出复制的是什么。 */
+.script {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: var(--s4);
+  padding: 12px 14px;
+  border-radius: var(--r-12);
+  background: var(--paper);
+  text-align: left;
+}
+
+.script p {
+  flex: 1;
+  color: var(--ink-2);
+  font-size: var(--fs-13);
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+/* 面板里的小按钮：.btn 默认是整行宽的主按钮，这里要它按内容宽。 */
+.btn.small {
+  flex: none;
+  width: auto;
+  min-height: 0;
+  padding: 10px 16px;
+  font-size: var(--fs-13);
+  white-space: nowrap;
+}
+
 /* 表单 */
 .field {
   margin: 14px 18px 0;
@@ -815,7 +846,9 @@ button:disabled {
   font-size: var(--fs-13);
 }
 
-.empty {
+/* 页面级的空状态文字。刻意不叫 `.empty`：座位那边已经有一个 `.disc.empty`，
+   同名会让「页面的空状态」和「空座位」互相串样式（#55）。 */
+.empty-state {
   text-align: center;
   color: var(--ink-3);
   font-size: var(--fs-body);
@@ -825,7 +858,8 @@ button:disabled {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 96px;
+  /* 96 是给底部固定条留的位置，再加安全区（#53）。 */
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   background: var(--ink);
   color: var(--cream);
@@ -1047,13 +1081,25 @@ button:disabled {
 
 /* 底部 Tab：中间是「蛋」 */
 .tabbar {
-  flex: none;
+  /* 固定在视口底部，而不是跟在内容后面——内容少时停在屏幕中间、内容多时被滚走，
+     都是线上报过的问题（#53）。 */
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* 宽屏上应用容器是居中的（#app 的 max-width），导航条要和它一样宽、一样居中。 */
+  max-width: 480px;
+  margin: 0 auto;
   height: 76px;
+  padding-top: 8px;
+  /* iPhone 底部那条 home 指示器：不让按钮压在它上面。 */
+  padding-bottom: env(safe-area-inset-bottom, 0px);
   background: var(--white);
   border-top: 1px solid var(--line);
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  padding-top: 8px;
+  /* 高于页面内容（内容没有 z-index），低于遮罩 20 / 弹层 25 / toast 40。 */
+  z-index: 10;
 }
 
 .tab {

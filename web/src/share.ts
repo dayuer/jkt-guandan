@@ -42,21 +42,50 @@ export function shareText(
   now: number = Math.floor(Date.now() / 1000),
   overrideOrigin?: string,
 ): string {
+  return compose(detail, now, overrideOrigin, true);
+}
+
+/**
+ * 系统分享用的正文：**不带链接**。
+ *
+ * `navigator.share` 会把 `url` 和 `text` 一起交给目标 App，正文里再写一遍链接，
+ * 对方那边就会看到两遍（iOS 尤其明显）。链接交给 `url` 字段。
+ */
+export function systemShareText(
+  detail: GameDetail,
+  now: number = Math.floor(Date.now() / 1000),
+): string {
+  return compose(detail, now, undefined, false);
+}
+
+/** 话术的骨架：先写这一局是什么情况，再决定要不要缀上链接。 */
+function compose(detail: GameDetail, now: number, overrideOrigin: string | undefined, withLink: boolean): string {
   const { game } = detail;
   const when = `${dayShort(game.starts_at, now)} ${timeHM(game.starts_at)}`;
   const where = game.venue;
   const link = shareURL(game.short_code, overrideOrigin);
 
+  let base: string;
+  let linkSuffix: string;
   switch (game.status) {
     case "cancelled":
-      return `${when} ${where} 这一局取消了，下次再约 👉 ${link}`;
+      base = `${when} ${where} 这一局取消了，下次再约`;
+      linkSuffix = ` 👉 ${link}`;
+      break;
     case "done":
-      return `${when} ${where} 这一局打完了 👉 ${link}`;
+      base = `${when} ${where} 这一局打完了`;
+      linkSuffix = ` 👉 ${link}`;
+      break;
     case "full":
-      return `${when} ${where} 已经满了，想打可以排候补，点这里 👉 ${link}`;
+      base = `${when} ${where} 已经满了，想打可以排候补`;
+      linkSuffix = `，点这里 👉 ${link}`;
+      break;
     default:
-      return `${when} ${where} ${missingWords(detail.missing)}，来的点 👉 ${link}`;
+      base = `${when} ${where} ${missingWords(detail.missing)}`;
+      linkSuffix = `，来的点 👉 ${link}`;
+      break;
   }
+  return withLink ? base + linkSuffix : base;
 }
 
 function missingWords(missing: number): string {
