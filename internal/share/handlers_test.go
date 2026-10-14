@@ -32,7 +32,7 @@ func setup(t *testing.T) (*httptest.Server, *store.Store, *clock.Fake) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	share.Register(mux, games.NewService(st, clk, nil), "https://guandan.synon.ai", clk)
+	share.Register(mux, share.Options{Games: games.NewService(st, clk, nil), PublicURL: "https://guandan.synon.ai", Clock: clk})
 	client := httptest.NewServer(mux)
 	t.Cleanup(client.Close)
 	return client, st, clk

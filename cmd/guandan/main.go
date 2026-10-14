@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -34,6 +35,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/share"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
+	"github.com/dayuer/jkt-guandan/web"
 )
 
 // minFreeBytes 是启动时要求的数据目录剩余空间（§12.1 第 3 步）。
@@ -185,7 +187,7 @@ func run() error {
 				identity.Register(mux, identitySvc)
 				games.Register(mux, gamesSvc, identitySvc)
 				mux.Handle("GET /ws", wsHandler)
-				share.Register(mux, gamesSvc, cfg.PublicURL, clk)
+				share.Register(mux, share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()})
 				notify.Register(mux, notifySvc, identitySvc)
 			},
 		}),
@@ -363,6 +365,15 @@ type gamesPublisher struct{ hub *realtime.Hub }
 
 func (p gamesPublisher) Publish(ev games.Event) {
 	p.hub.Publish(realtime.Event{Topic: ev.Topic, Type: ev.Type, V: ev.V, Data: ev.Data})
+}
+
+// webDist 是内嵌的前端构建产物，/g/{code} 要往它的 index.html 里注入 OG 标签。
+func webDist() fs.FS {
+	dist, err := fs.Sub(web.Dist, "dist")
+	if err != nil {
+		panic(err)
+	}
+	return dist
 }
 
 // vapidSubject 是 VAPID 的联系方式（RFC 8292）：推送服务出问题时用它联系我们。
