@@ -352,3 +352,23 @@ export function pushSubscribe(subscription: unknown): Promise<void> {
 export function pushUnsubscribe(endpoint: string): Promise<void> {
   return request<void>("DELETE", "/api/push/subscribe", { body: { endpoint } });
 }
+
+// ── 认领（跳出微信、加到主屏幕时把身份带过去，§5.2） ─────────────────────────
+
+export interface ClaimTicket {
+  /** 放进 `?claim=` 的一次性令牌，10 分钟内有效。 */
+  claim_token: string;
+  /** 6 位认领码，同一网络里手动输入用（主屏幕打开时 cookie 不一定跟过来）。 */
+  code: string;
+  expires_at: number;
+}
+
+/** 签发认领令牌和认领码。需要已有身份；每个用户每小时最多 5 次。 */
+export function issueClaim(): Promise<ClaimTicket> {
+  return request<ClaimTicket>("POST", "/api/claim");
+}
+
+/** 凭 6 位认领码认回身份。只给还没有身份的设备用，所有失败都是 400 claim_invalid。 */
+export function redeemClaimCode(code: string): Promise<Identity> {
+  return request<Identity>("POST", "/api/claim/redeem", { body: { code } });
+}

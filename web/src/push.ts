@@ -20,15 +20,25 @@ export type PushSupport =
   | { kind: "ready" }
   /** iOS Safari 标签页：要先加到主屏幕。 */
   | { kind: "ios-needs-home" }
-  /** 微信 / WhatsApp 内置浏览器：得换浏览器打开。 */
-  | { kind: "in-app-browser"; app: "wechat" | "whatsapp" }
+  /** 微信、WhatsApp、Instagram、Facebook、LINE 的内置浏览器：得换浏览器打开。 */
+  | { kind: "in-app-browser"; app: InAppBrowser }
   /** 这台浏览器就是不支持（老安卓、鸿蒙自带浏览器、无痕模式……）。 */
   | { kind: "unsupported" };
 
-/** 是不是在应用内置浏览器里（微信、WhatsApp）。 */
-export function inAppBrowser(userAgent: string): "wechat" | "whatsapp" | "" {
+export type InAppBrowser = "wechat" | "whatsapp" | "instagram" | "facebook" | "line";
+
+/**
+ * 是不是在应用内置浏览器里。印尼除了微信、WhatsApp，Instagram、Facebook、LINE 也很常见，
+ * 它们的内置浏览器同样拿不到推送（#63 审计建议 3）。
+ */
+export function inAppBrowser(userAgent: string): InAppBrowser | "" {
   if (/micromessenger/i.test(userAgent)) return "wechat";
   if (/whatsapp/i.test(userAgent)) return "whatsapp";
+  // Instagram 的 UA 里也可能带 FBAN，所以先认它。
+  if (/instagram/i.test(userAgent)) return "instagram";
+  if (/FBAN|FBAV|FB_IAB/.test(userAgent)) return "facebook";
+  // LINE 写的是「 Line/13.x」，大小写敏感，免得误认 "Online/" 之类。
+  if (/\sLine\//.test(userAgent)) return "line";
   return "";
 }
 
