@@ -1688,6 +1688,31 @@ html.lock-overscroll body {
   margin-top: var(--s1);
 }
 
+/* G2 · 已绑定的 WhatsApp 号码（#116） */
+.wa-current {
+  text-align: center;
+  font-weight: 700;
+  font-size: var(--fs-h3);
+  color: var(--ink);
+  padding: var(--s2) 0;
+}
+
+/* 我的页每行右侧的状态小字：「去绑定」「+62 812****890」 */
+.list .li .val {
+  color: var(--ink-3);
+  font-size: var(--fs-13);
+  white-space: nowrap;
+}
+
+/* G3 · 复制登录链接下面的提醒（#116）：链接等于一次性登录凭证 */
+.claim-warn {
+  margin-top: calc(-1 * var(--s1));
+  text-align: center;
+  color: var(--red);
+  font-size: var(--fs-small);
+  font-weight: 700;
+}
+
 /* 头部下面已经留了 12px，列表标题少留一点，和固定之前的间距一样。 */
 .home-top + .listing {
   padding-top: 6px;

@@ -210,6 +210,8 @@ export interface MeResponse {
   /** 当前这台设备的 id（用来「退出当前设备」）。 */
   device_id: string;
   devices: Device[];
+  /** 绑定的 WhatsApp 号码（E.164，#116）。只返回给本人；没绑定时没有这个字段。 */
+  wa_phone?: string;
 }
 
 // ── 牌局 ────────────────────────────────────────────────────────────────────
@@ -368,6 +370,16 @@ export interface ClaimTicket {
 /** 签发认领令牌和认领码。需要已有身份；每个用户每小时最多 5 次。 */
 export function issueClaim(): Promise<ClaimTicket> {
   return request<ClaimTicket>("POST", "/api/claim");
+}
+
+/** 绑定 WhatsApp 号码（#116）。号码要先规范成 E.164，见 wa.ts。 */
+export function setWaPhone(phone: string): Promise<{ wa_phone: string }> {
+  return request<{ wa_phone: string }>("PUT", "/api/me/wa", { body: { phone } });
+}
+
+/** 解绑 WhatsApp。没绑定也算成功。 */
+export async function clearWaPhone(): Promise<void> {
+  await request<void>("DELETE", "/api/me/wa");
 }
 
 /** 凭 6 位认领码认回身份。只给还没有身份的设备用，所有失败都是 400 claim_invalid。 */
