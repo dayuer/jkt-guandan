@@ -14,7 +14,7 @@
  * 所以「事件来的时候」和「下次打开的时候」走的是同一条路。
  *
  * 快照就是「用户已经知道的状态」：提示被关掉之前不更新对应的字段，所以没关掉的横幅刷新后还在。
- * 只记我在里面的局，开局时间过了一天的自动清掉。不是凭证，存不下也只是少一次提示。
+ * 按身份分开存；只记我在里面的局，开局时间过了一天的自动清掉。不是凭证，存不下也只是少一次提示。
  */
 
 import type { GameDetail, GameSummary } from "./api";
@@ -47,7 +47,13 @@ export type Notice =
 
 export type NoticeKind = Notice["kind"];
 
-const KEY = "gd_game_seen";
+/**
+ * 快照按身份分开存（#127 复审）：同一台设备可能换身份（认领、「不是我」、切换成别人），
+ * B 不能拿 A 的快照来比——否则 A 排的候补会让 B 看到一个莫名其妙的「你补上了」。
+ */
+export function snapshotKey(meID: string): string {
+  return `gd_game_seen:${meID}`;
+}
 const KEEP_AFTER_START = 24 * 3600;
 
 export function fromDetail(d: GameDetail): GameView {
@@ -70,8 +76,9 @@ export function fromSummary(g: GameSummary): GameView {
 
 /** 和快照比，得出要给用户看的提示。没有快照（第一次看到这一局）就什么都不提示。 */
 export function noticesFor(v: GameView, meID: string | undefined, store: Pick<Storage, "getItem"> | null = safe()): Notice[] {
-  const prev = load(store)[v.code];
-  if (!prev || !meID) return [];
+  if (!meID) return [];
+  const prev = load(store, meID)[v.code];
+  if (!prev) return [];
   const out: Notice[] = [];
   const role = v.role ?? prev.role;
   const isHost = v.hostID === meID;
@@ -108,7 +115,7 @@ export function acknowledge(
   now: number = Math.floor(Date.now() / 1000),
 ): void {
   if (!meID || !store) return;
-  const all = load(store);
+  const all = load(store, meID);
   const prev = all[v.code];
   const role = v.role ?? prev?.role;
 
@@ -134,7 +141,7 @@ export function acknowledge(
     if (s.startsAt + KEEP_AFTER_START < now) delete all[code];
   }
   try {
-    store.setItem(KEY, JSON.stringify(all));
+    store.setItem(snapshotKey(meID), JSON.stringify(all));
   } catch {
     // 存不下就算了。
   }
@@ -147,9 +154,9 @@ export function observe(v: GameView, meID: string | undefined): Notice[] {
   return notices;
 }
 
-function load(store: Pick<Storage, "getItem"> | null): Record<string, Snapshot> {
+function load(store: Pick<Storage, "getItem"> | null, meID: string): Record<string, Snapshot> {
   try {
-    const raw = store?.getItem(KEY);
+    const raw = store?.getItem(snapshotKey(meID));
     const parsed = raw ? (JSON.parse(raw) as unknown) : {};
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, Snapshot>) : {};
   } catch {

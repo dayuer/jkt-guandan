@@ -5,7 +5,7 @@ import { installFakeSocket, lastSocket } from "./fakeSocket";
 import { Detail } from "./pages/Detail";
 import { Home } from "./pages/Home";
 import { timeHM } from "./format";
-import { acknowledge, fromDetail, fromSummary, noticesFor, observe } from "./status";
+import { acknowledge, fromDetail, fromSummary, noticesFor, observe, snapshotKey } from "./status";
 
 /** #114：改时间横幅（A3 / R1）、首页标签（W4）、候补转正（W3）、局头转交（K2）。 */
 
@@ -118,6 +118,19 @@ describe("快照比较", () => {
     expect(noticesFor(now, ME.id).map((n) => n.kind).sort()).toEqual(["host", "rescheduled"]);
   });
 
+  it("换了身份（认领 / 「不是我」）：A 的快照永远不会给 B 出提示", () => {
+    const B = "u9";
+    // A 在这一局里排候补、看过旧时间。
+    observe(fromDetail(detail({ role: "waitlist" })), ME.id);
+    // 设备换成 B 之后，B 坐着、时间也变了、B 还成了局头：对 B 来说这都是第一次看到。
+    const forB = { ...fromDetail(detail({ role: "seat", starts_at: T1 })), hostID: B };
+    expect(noticesFor(forB, B)).toEqual([]);
+    expect(observe(forB, B)).toEqual([]);
+    // A 的快照原样留着，B 有了自己的一份。
+    expect(noticesFor(fromDetail(detail({ role: "seat" })), ME.id).map((n) => n.kind)).toEqual(["promoted"]);
+    expect(localStorage.getItem(snapshotKey(B))).toContain("ABC123");
+  });
+
   it("不在局里（退出了）就删掉快照，之后不提示", () => {
     observe(fromDetail(detail()), ME.id);
     observe(fromDetail(detail({ role: "none" })), ME.id);
@@ -155,7 +168,7 @@ describe("快照比较", () => {
   it("开局一天之后的快照自动清掉", () => {
     observe(fromDetail(detail()), ME.id);
     acknowledge(fromDetail(detail({ starts_at: T0 + 1000 })), ME.id, undefined, localStorage, T0 + 3 * 86400);
-    expect(localStorage.getItem("gd_game_seen")).toBe("{}");
+    expect(localStorage.getItem(snapshotKey(ME.id))).toBe("{}");
   });
 });
 
@@ -200,7 +213,7 @@ describe("详情页", () => {
     button(c, "去不了了").click();
     await vi.waitFor(() => expect(calls).toContain("DELETE /api/games/ABC123/seat"));
     // 退出之后不在局里了，快照也跟着删掉（等它落定，免得写到下一个用例的存储里）。
-    await vi.waitFor(() => expect(localStorage.getItem("gd_game_seen")).toBe("{}"));
+    await vi.waitFor(() => expect(localStorage.getItem(snapshotKey(ME.id))).toBe("{}"));
   });
 
   it("K2：原局头退出、我成了局头 → 深色横幅「老王退出了，你现在是局头」", async () => {
