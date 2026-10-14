@@ -38,6 +38,9 @@ func TestCheckBlocksGamblingAndMoney(t *testing.T) {
 		{"alphabet 里没有 bet", "alphabet street", ""},
 		{"拉丁词不做子串匹配", "betsy's place", ""},
 		{"放哪儿", "taruh di mana?", ""},
+		// 口径：宁可漏拦不可误拦。这几个词都有人问过要不要加，裁定是不加。
+		{"红包", "打完了发个红包，图个乐", ""},
+		{"押金", "场地要押金，人均大概 200", ""},
 		{"空", "   ", ""},
 	}
 
