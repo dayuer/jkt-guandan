@@ -408,6 +408,15 @@ GET  /*                               内嵌的前端页面（单页应用，未
 - `PUT /api/follows/{user_id}` 星标、`DELETE /api/follows/{user_id}` 取消星标：都是幂等的，成功返回 `204`。只能对 `GET /api/friends` 里会出现的人做；不是牌友（没一起坐过、只在取消的局里同桌、自己、不存在、已注销、被封禁）一律 `404 not_friend`，接口不能用来探测用户 id。星标是单向的，对方看不到。
 - 合并身份（`guandan admin` 的 merge）时，星标两个方向都搬到保留的身份上；原来互相星标的不会变成自己星标自己。注销时删掉这个人的星标和别人对他的星标。
 
+**邀请牌友 `POST /api/games/{code}/invites`**（#115，08「邀请谁」，`route.User`）：
+- 请求：`{"user_ids":["01J…","01J…"]}`，去重后 1–20 个，否则 `400 invalid_input`。
+- 只有局头能调（否则 `403 not_host`），局要还开着（否则 `409 game_closed`）。
+- 只能邀请自己的牌友（和 `GET /api/friends` 同一套规则）。**只要有一个不是牌友，整次邀请就失败**：返回 `404 not_friend`，一个都不邀请，接口不能用来探测用户 id。
+- 已经在这一局里（座位或候补）、之前已经邀请过、被局头移出过这一局的人：跳过，不报错。
+- 一个人 24 小时内最多发出 50 条邀请，超出返回 `409 quota_exceeded`。
+- 成功：`200 {"invited":["01J…"],"skipped":["01J…"]}`。`invited` 是这次新邀请的人，每人收到一条 `invited` 推送（「有人邀请你打掼蛋」），同一个人对同一局只推一次。
+- 被邀请的人打开这一局（`GET /api/games/{code}`）时，`me` 里多一个 `invited_by: {"id","nickname"}`，前端显示「X 邀请了你」。只有被邀请的人自己看得到。
+
 **`GET /api/config`**：前端用的公开配置，不识别身份，`Cache-Control: public, max-age=300`。
 ```json
 {"group":{"wechat_id":"jktguandan","whatsapp_group_url":"https://chat.whatsapp.com/AbCdEf"}}

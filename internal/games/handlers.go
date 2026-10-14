@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dayuer/jkt-guandan/internal/friends"
 	"github.com/dayuer/jkt-guandan/internal/identity"
 	"github.com/dayuer/jkt-guandan/internal/moderate"
 	"github.com/dayuer/jkt-guandan/internal/route"
@@ -29,6 +30,7 @@ func Routes(svc *Service) []route.Route {
 		{Method: http.MethodDelete, Pattern: "/api/games/{code}/seat", Access: route.User, Handler: http.HandlerFunc(h.leave)},
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/cancel", Access: route.User, Handler: http.HandlerFunc(h.cancel)},
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/kick", Access: route.User, Handler: http.HandlerFunc(h.kick)},
+		{Method: http.MethodPost, Pattern: "/api/games/{code}/invites", Access: route.User, Handler: http.HandlerFunc(h.invite)},
 	}
 }
 
@@ -206,6 +208,34 @@ func (h *handler) kick(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toDetailJSON(detail))
 }
 
+// invite 局头邀请牌友（#115）。返回这次新邀请的人和跳过的人（已在局里、已邀请过、被移出过）。
+func (h *handler) invite(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		UserIDs []string `json:"user_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "需要 user_ids")
+		return
+	}
+	res, err := h.svc.Invite(r.Context(), r.PathValue("code"), userID, body.UserIDs)
+	if err != nil {
+		writeGameError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invited": nonNil(res.Invited), "skipped": nonNil(res.Skipped)})
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
 // ---------------------------------------------------------------------------
 // JSON 与错误
 // ---------------------------------------------------------------------------
@@ -239,9 +269,10 @@ type waitJSON struct {
 }
 
 type meJSON struct {
-	Role     string `json:"role"`
-	SeatNo   int    `json:"seat_no,omitempty"`
-	Position int    `json:"position,omitempty"`
+	Role      string       `json:"role"`
+	SeatNo    int          `json:"seat_no,omitempty"`
+	Position  int          `json:"position,omitempty"`
+	InvitedBy *userRefJSON `json:"invited_by,omitempty"` // #115：谁邀请了我，只有被邀请的人看得到
 }
 
 func toDetailJSON(d *Detail) map[string]any {
@@ -252,6 +283,10 @@ func toDetailJSON(d *Detail) map[string]any {
 			SeatNo: s.SeatNo,
 			User:   userRefJSON{ID: s.UserID, Nickname: s.Nickname},
 		})
+	}
+	me := meJSON{Role: d.Me, SeatNo: d.MySeatNo, Position: d.MyPosition}
+	if d.MyInviter != nil {
+		me.InvitedBy = &userRefJSON{ID: d.MyInviter.UserID, Nickname: d.MyInviter.Nickname}
 	}
 	waiting := make([]waitJSON, 0, len(d.Waitlist))
 	for _, w := range d.Waitlist {
@@ -271,7 +306,7 @@ func toDetailJSON(d *Detail) map[string]any {
 		"seats":    seats,
 		"waitlist": waiting,
 		"missing":  d.Missing,
-		"me":       meJSON{Role: d.Me, SeatNo: d.MySeatNo, Position: d.MyPosition},
+		"me":       me,
 	}
 }
 
@@ -320,6 +355,8 @@ func writeGameError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "not_host", "只有局头能做这件事")
 	case errors.Is(err, ErrStarted):
 		writeError(w, http.StatusConflict, "game_started", "这一局已经开始了")
+	case errors.Is(err, friends.ErrNotFriend):
+		writeError(w, http.StatusNotFound, "not_friend", "只能邀请一起打过局的牌友")
 	case errors.Is(err, ErrNotInGame):
 		writeError(w, http.StatusNotFound, "not_in_game", "这个人不在这一局里")
 	case errors.Is(err, ErrHostCantKickSelf):

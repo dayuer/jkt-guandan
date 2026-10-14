@@ -113,6 +113,7 @@ func TestRouteTable(t *testing.T) {
 		{"DELETE /api/games/{code}/seat", "user", "games.(*handler).leave"},
 		{"POST /api/games/{code}/cancel", "user", "games.(*handler).cancel"},
 		{"POST /api/games/{code}/kick", "user", "games.(*handler).kick"},
+		{"POST /api/games/{code}/invites", "user", "games.(*handler).invite"},
 		{"GET /ws", "public+deferidentity", "*realtime.handler"},
 		{"GET /g/{code}", "anonymous", "share.(*handler).ogPage"},
 		{"GET /g/{code}/og.png", "anonymous", "share.(*handler).ogImage"},
@@ -165,6 +166,7 @@ func handlerName(h http.Handler) string {
 func TestAuthorizationMatrix(t *testing.T) {
 	hostOnly := map[string]bool{
 		"PATCH /api/games/{code}": true, "POST /api/games/{code}/cancel": true, "POST /api/games/{code}/kick": true,
+		"POST /api/games/{code}/invites": true,
 	}
 	for _, rt := range httpapi.Table(newApp(t).options) {
 		for _, role := range []string{"guest", "device", "host", "banned"} {
@@ -309,6 +311,8 @@ func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string, s
 		body, header["If-Match"] = map[string]any{"venue": "Grand Indonesia"}, "1"
 	case "POST /api/games/{code}/kick":
 		body = map[string]string{"user_id": "someone"}
+	case "POST /api/games/{code}/invites":
+		body = map[string]any{"user_ids": []string{"someone"}}
 	case "POST /api/push/subscribe":
 		body = map[string]any{"endpoint": "https://fcm.googleapis.com/fcm/send/x", "keys": map[string]string{"p256dh": "x", "auth": "y"}}
 	case "DELETE /api/push/subscribe":
