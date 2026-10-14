@@ -81,7 +81,7 @@ func (s *Service) List(ctx context.Context, me string) ([]Friend, error) {
 // Star 把 target 加星标（幂等）。不是牌友返回 ErrNotFriend。
 func (s *Service) Star(ctx context.Context, me, target string) error {
 	return s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		if err := requireFriend(ctx, tx, me, target); err != nil {
+		if err := RequireFriend(ctx, tx, me, target); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx,
@@ -91,19 +91,18 @@ func (s *Service) Star(ctx context.Context, me, target string) error {
 	})
 }
 
-// Unstar 取消星标（幂等）。不是牌友返回 ErrNotFriend：和 Star 一样，不让接口用来探测用户 id。
+// Unstar 取消星标，幂等，不查是不是牌友：对方注销、被封禁之后，旧的星标也要能清掉（#108 复审）。
+// 不管目标存不存在都是同样的结果（删 0 行或 1 行），所以也探测不出用户 id。
 func (s *Service) Unstar(ctx context.Context, me, target string) error {
 	return s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		if err := requireFriend(ctx, tx, me, target); err != nil {
-			return err
-		}
 		_, err := tx.ExecContext(ctx, `DELETE FROM follows WHERE user_id = ? AND target_id = ?`, me, target)
 		return err
 	})
 }
 
-// requireFriend 判断 target 是不是 me 的牌友（和 List 同一套规则）。
-func requireFriend(ctx context.Context, tx *store.Tx, me, target string) error {
+// RequireFriend 判断 target 是不是 me 的牌友（和 List 同一套规则），不是返回 ErrNotFriend。
+// 在写事务里调用：games 的邀请（#115）也用它。
+func RequireFriend(ctx context.Context, tx *store.Tx, me, target string) error {
 	if target == "" || target == me {
 		return ErrNotFriend
 	}

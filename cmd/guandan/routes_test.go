@@ -28,6 +28,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/route"
 	"github.com/dayuer/jkt-guandan/internal/share"
 	"github.com/dayuer/jkt-guandan/internal/store"
+	"github.com/dayuer/jkt-guandan/internal/telemetry"
 )
 
 // 路由表和授权矩阵（#41、§10.4、§10.12）。用的是 cmd/guandan 真实组装出来的整张表：
@@ -81,7 +82,8 @@ func newApp(t *testing.T) *app {
 			}),
 			share: share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk,
 				Dist: fstest.MapFS{"index.html": {Data: []byte("<!doctype html><html><head><title>x</title></head><body></body></html>")}}},
-			agent: agent.Options{Clock: clk}, // 没有 key：agent_disabled，矩阵只看授权
+			agent:     agent.Options{Clock: clk}, // 没有 key：agent_disabled，矩阵只看授权
+			telemetry: telemetry.Options{Store: st, Clock: clk},
 		}),
 	}
 	// 必须 TLS：生产 cookie 带 __Host- 前缀和 Secure（见 identity 测试里的说明）。
@@ -103,6 +105,8 @@ func TestRouteTable(t *testing.T) {
 		{"GET /api/me", "user", "identity.(*handler).getMe"},
 		{"DELETE /api/me/devices/{id}", "user", "identity.(*handler).signOutDevice"},
 		{"DELETE /api/me", "user", "identity.(*handler).deleteMe"},
+		{"PUT /api/me/wa", "user", "identity.(*handler).putWA"},
+		{"DELETE /api/me/wa", "user", "identity.(*handler).deleteWA"},
 		{"POST /api/claim", "user", "identity.(*handler).issueClaim"},
 		{"POST /api/claim/redeem", "public", "identity.(*handler).redeemClaim"},
 		{"GET /api/games", "public", "games.(*handler).list"},
@@ -113,6 +117,7 @@ func TestRouteTable(t *testing.T) {
 		{"DELETE /api/games/{code}/seat", "user", "games.(*handler).leave"},
 		{"POST /api/games/{code}/cancel", "user", "games.(*handler).cancel"},
 		{"POST /api/games/{code}/kick", "user", "games.(*handler).kick"},
+		{"POST /api/games/{code}/invites", "user", "games.(*handler).invite"},
 		{"GET /ws", "public+deferidentity", "*realtime.handler"},
 		{"GET /g/{code}", "anonymous", "share.(*handler).ogPage"},
 		{"GET /g/{code}/og.png", "anonymous", "share.(*handler).ogImage"},
@@ -126,6 +131,8 @@ func TestRouteTable(t *testing.T) {
 		{"PUT /api/follows/{user_id}", "user", "friends.(*handler).star"},
 		{"DELETE /api/follows/{user_id}", "user", "friends.(*handler).unstar"},
 		{"POST /api/agent", "public", "agent.(*handler).draft"},
+		{"POST /api/events", "public", "telemetry.(*handler).events"},
+		{"POST /api/client-errors", "public", "telemetry.(*handler).clientError"},
 		{" /", "anonymous", "httpapi.referrerPolicyForClaim.func1"},
 	}
 	var got []row
@@ -165,6 +172,7 @@ func handlerName(h http.Handler) string {
 func TestAuthorizationMatrix(t *testing.T) {
 	hostOnly := map[string]bool{
 		"PATCH /api/games/{code}": true, "POST /api/games/{code}/cancel": true, "POST /api/games/{code}/kick": true,
+		"POST /api/games/{code}/invites": true,
 	}
 	for _, rt := range httpapi.Table(newApp(t).options) {
 		for _, role := range []string{"guest", "device", "host", "banned"} {
@@ -309,12 +317,18 @@ func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string, s
 		body, header["If-Match"] = map[string]any{"venue": "Grand Indonesia"}, "1"
 	case "POST /api/games/{code}/kick":
 		body = map[string]string{"user_id": "someone"}
+	case "POST /api/games/{code}/invites":
+		body = map[string]any{"user_ids": []string{"someone"}}
 	case "POST /api/push/subscribe":
 		body = map[string]any{"endpoint": "https://fcm.googleapis.com/fcm/send/x", "keys": map[string]string{"p256dh": "x", "auth": "y"}}
 	case "DELETE /api/push/subscribe":
 		body = map[string]string{"endpoint": "https://fcm.googleapis.com/fcm/send/x"}
 	case "POST /api/agent":
 		body = map[string]string{"text": "周四晚上打一局"}
+	case "POST /api/events":
+		body = map[string]any{"env": "browser", "events": []map[string]any{{"name": "detail_view"}}}
+	case "POST /api/client-errors":
+		body = map[string]string{"env": "browser", "message": "boom"}
 	}
 	status, out, raw := a.doRaw(c, method, path, body, header)
 	var errCode string
@@ -351,4 +365,36 @@ func TestRealtimeChecksOriginBeforeIdentity(t *testing.T) {
 	if status, body := get(routesTestOrigin); status != http.StatusForbidden || body != "forbidden" {
 		t.Fatalf("Origin 正确时才轮到封禁：%d %q", status, body)
 	}
+}
+
+// #123 复审：两个埋点接口走真实路由表要能用，不是 500。
+// （main 里漏填 telemetry.Options 时，Store 为空，两个接口会一直 500。）
+func TestTelemetryRoutesWorkThroughRealRouter(t *testing.T) {
+	a := newApp(t)
+	c := a.browser()
+	status, body, raw := a.doRaw(c, http.MethodPost, "/api/events", map[string]any{
+		"env": "wechat", "events": []map[string]any{{"name": "detail_view"}, {"name": "jumpout"}},
+	}, nil)
+	if status != http.StatusOK || body["accepted"] != 2.0 {
+		t.Fatalf("POST /api/events: %d %s", status, raw)
+	}
+	status, _, raw = a.doRaw(c, http.MethodPost, "/api/client-errors",
+		map[string]any{"env": "pwa", "message": "boom"}, nil)
+	if status != http.StatusNoContent {
+		t.Fatalf("POST /api/client-errors: %d %s", status, raw)
+	}
+	var n int
+	if err := a.st.Read().QueryRow(`SELECT count(*) FROM events WHERE name IN ('detail_view','jumpout','client_error')`).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("应存下 3 条，实际 %d, %v", n, err)
+	}
+}
+
+// appRoutes 里漏填 telemetry 要启动即失败，不是上线后 500。
+func TestAppRoutesRequiresTelemetryStore(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "telemetry") {
+			t.Fatalf("telemetry 没填 Store 应当因它而 panic，实际 %v", r)
+		}
+	}()
+	appRoutes(appDeps{})
 }

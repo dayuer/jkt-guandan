@@ -38,7 +38,7 @@ export function Me({ me, requireIdentity, toast, onDevices, onPrivacy }: Props) 
   }, [me?.id]);
 
   return (
-    <div class="body">
+    <div class="body has-bar">
       <div class="head">
         <h1>我的</h1>
       </div>

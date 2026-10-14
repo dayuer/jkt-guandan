@@ -43,6 +43,10 @@ const (
 	MaxConcurrentHolds = 5
 	// MaxGamesPerDay 是一个人每天能开的局数。
 	MaxGamesPerDay = 10
+	// MaxInvitesPerCall、MaxInvitesPerDay 限制局头邀请牌友（#115）：一次最多邀请几个人，
+	// 一个人 24 小时内最多发出多少条邀请（每条都会推送给对方，免得被用来骚扰）。
+	MaxInvitesPerCall = 20
+	MaxInvitesPerDay  = 50
 )
 
 // Jakarta 是算「今天」用的时区（§13.2：在服务端按 Asia/Jakarta 计算）。
@@ -70,6 +74,8 @@ type Game struct {
 	Status    string
 	Version   int64
 	CreatedAt time.Time
+	// RescheduledAt 是局头最近一次改时间或地点的时刻；零值表示没改过（#114）。
+	RescheduledAt time.Time
 }
 
 // Open 表示这局还能报名。
@@ -104,6 +110,8 @@ type Detail struct {
 	// MySeatNo / MyPosition 只在 Me 不是 none 时有意义。
 	MySeatNo   int
 	MyPosition int
+	// MyInviter 是邀请当前用户来这一局的人（#115）；没被邀请为 nil。只给被邀请的人自己看。
+	MyInviter *Seat
 }
 
 // Summary 是 02 屏列表里的条目。
@@ -115,6 +123,10 @@ type Summary struct {
 	HostName string
 	Seats    []Seat
 	Missing  int
+	// MyRole / WaitlistPos 是当前身份在这一局的位置：seated / waitlist / none（#114）。
+	// 空串表示没有按身份算过（首页事件是广播，不带这两项）。
+	MyRole      string
+	WaitlistPos int
 }
 
 // 业务错误。接口层把它们映射成 §6 的状态码。

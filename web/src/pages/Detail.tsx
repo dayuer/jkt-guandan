@@ -3,6 +3,9 @@ import {
   ApiError,
   cancelGame,
   getGame,
+  inviteError,
+  inviteFriends,
+  inviteSummary,
   joinGame,
   kickPlayer,
   leaveGame,
@@ -13,6 +16,7 @@ import {
   type UserRef,
 } from "../api";
 import { CalendarSheet } from "../components/CalendarSheet";
+import { FriendPicker } from "../components/FriendPicker";
 import { JoinedSheet } from "../components/JoinedSheet";
 import { PushGuide } from "../components/PushGuide";
 import { ShareSheet } from "../components/ShareSheet";
@@ -59,6 +63,9 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   // 编辑弹层里的就地错误（敏感词，§14）：弹层盖住了页面的错误行，得在弹层里面说。
   const [editError, setEditError] = useState<{ field: string; message: string } | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  /** 局头的「邀请牌友」（#115）。 */
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviting, setInviting] = useState(false);
   /** 这一局现在有几台设备在看（含自己，#46 / 原型 R1）。 */
   const [viewers, setViewers] = useState(0);
   // 连接断了（重连中或降级成轮询）就不再有 presence，人数会停在旧值：清零，胶囊跟着藏起来。
@@ -99,6 +106,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   // 不然会停在上一个局的分享面板上。
   useEffect(() => {
     setShareOpen(false);
+    setInviteOpen(false);
     setViewers(0);
   }, [code]);
 
@@ -270,6 +278,17 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       <div class="body has-actionbar">
         <Nav title="牌局详情" onBack={onBack} />
 
+        {/* 被局头邀请了、还没报名（#115）。报上名之后就不用再提醒了。 */}
+        {myRole.invited_by && myRole.role === "none" && !closed && (
+          <div class="strip invited" data-testid="invited-by">
+            <span class="dot on" />
+            <span class="tx">
+              {myRole.invited_by.nickname} 邀请了你
+              <small>{missing > 0 ? `还差 ${missing} 人，报个名占座吧` : "已经满了，可以排候补"}</small>
+            </span>
+          </div>
+        )}
+
         {myWait && !closed && (
           <div class="strip">
             <span class="dot" />
@@ -343,9 +362,40 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
           </button>
         )}
 
+        {isHost && !closed && (
+          <button class="btn ghost cal-entry" onClick={() => setInviteOpen(true)}>
+            ＋ 邀请牌友
+          </button>
+        )}
+
         <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
         {error && <p class="error">{error}</p>}
       </div>
+
+      {inviteOpen && (
+        <FriendPicker
+          busy={inviting}
+          inGame={
+            new Map([
+              ...seats.map((x) => [x.user.id, "已在座位上"] as const),
+              ...waitlist.map((w) => [w.user.id, `候补第 ${w.position} 位`] as const),
+            ])
+          }
+          confirmLabel={(n) => (n > 0 ? `邀请 ${n} 位` : "选几位牌友")}
+          onConfirm={async (picked) => {
+            setInviting(true);
+            try {
+              toast(inviteSummary(await inviteFriends(code, picked.map((f) => f.user.id))));
+              setInviteOpen(false);
+            } catch (err) {
+              toast(inviteError(err));
+            } finally {
+              setInviting(false);
+            }
+          }}
+          onClose={() => setInviteOpen(false)}
+        />
+      )}
 
       {editOpen && isHost && (
         <EditSheet

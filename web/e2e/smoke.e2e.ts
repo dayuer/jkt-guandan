@@ -107,6 +107,53 @@ test("首页：长列表滚动前后，Tab 栏都 fixed 贴在视口底", async 
   expect(lastBottom).toBeLessThanOrEqual(barTop);
 });
 
+for (const height of [667, 560]) {
+  test(`首页：顶部标题和筛选整块固定，375×${height} 滚到底也不动（#111）`, async ({ page }) => {
+    await page.setViewportSize({ width: 375, height });
+    await page.goto("/");
+    await expect.poll(() => page.locator(".gamecard").count()).toBeGreaterThanOrEqual(codes.length);
+
+    const top = page.getByTestId("home-top");
+    const box = () =>
+      top.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, position: getComputedStyle(el).position };
+      });
+    const before = await box();
+    expect(before.top).toBe(0);
+    expect(before.position).toBe("sticky");
+
+    // 头部背景必须是不透明的页面底色（--paper）：透明的话卡片滚过去会透出来，
+    // 而 elementFromPoint 仍然命中头部，下面那条拦不住（#118 复审）。
+    const bg = await top.evaluate((el) => {
+      const probe = document.createElement("div");
+      probe.style.backgroundColor = "var(--paper)";
+      document.body.appendChild(probe);
+      const paper = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return { header: getComputedStyle(el).backgroundColor, paper };
+    });
+    expect(bg.header).toBe(bg.paper);
+    // rgb(…) 是不透明；rgba(…, a<1) 或 transparent 都不行。
+    expect(bg.header).toMatch(/^rgb\(\d+, \d+, \d+\)$/);
+
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+
+    const after = await box();
+    expect(after.top).toBe(0);
+    expect(after.bottom).toBe(before.bottom);
+    // 筛选还在、能点；滚过去的卡片不透到头部上面来。
+    await expect(page.getByRole("tab", { name: "明天" })).toBeInViewport();
+    await expect(page.getByRole("tab", { name: "PIK" })).toBeInViewport();
+    const covered = await page.evaluate((y) => {
+      const el = document.elementFromPoint(187, y);
+      return !!el?.closest("[data-testid=home-top]");
+    }, after.bottom - 2);
+    expect(covered).toBe(true);
+  });
+}
+
 test("首页空状态没有虚线框（#56）", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("tab", { name: "BSD" }).click();
@@ -254,4 +301,98 @@ test("局头视角：toast 抬在操作栏上方，不盖住按钮", async ({ pa
   const toastBottom = await toast.evaluate((el) => el.getBoundingClientRect().bottom);
   const barTop = await bar.evaluate((el) => el.getBoundingClientRect().top);
   expect(toastBottom).toBeLessThanOrEqual(barTop);
+});
+
+// #107：/me 以前没有 Tab 栏也没有返回键——iOS 主屏幕（独立窗口、没有浏览器返回键）上
+// 点进「我的」就出不来了。Tab 栏现在由 App 层统一挂，tab 级页面都有。
+test("我的页有 Tab 栏，点「牌局」回到首页", async ({ page }) => {
+  await page.goto("/me");
+  const tabbar = page.locator(".tabbar");
+  await expect(tabbar).toBeVisible();
+  // 当前高亮的是「我的」。
+  await expect(tabbar.locator(".tab.on")).toHaveText(/我的/);
+
+  await tabbar.getByRole("button", { name: /牌局/ }).click();
+
+  await expect(page).toHaveURL(new RegExp(`${ORIGIN.replace("/", "\\/")}/?$`));
+  await expect(page.locator("h1")).toContainText("随时掼掼蛋");
+  await expect(page.locator(".tab.on")).toHaveText(/牌局/);
+});
+
+// 非 tab 页（详情页）不挂 Tab 栏——那里有自己的操作栏，两个底栏会打架。
+test("详情页不显示 Tab 栏", async ({ page }) => {
+  await page.goto(`/g/${codes[2]}`);
+  await expect(page.locator(".actionbar")).toBeVisible();
+  await expect(page.locator(".tabbar")).toHaveCount(0);
+});
+
+// #108：底部「牌友」能点到 F1。服务端的 /api/friends、/api/config 在 #109：
+// 服务端还没有这两个接口时（现在未知的 /api/* 会落到 SPA 兜底，返回 200 的 HTML），这里用固定数据顶上；
+// 接口上线之后自动走真接口（新身份没有牌友，看到的是空状态）。
+test("底部「牌友」能进 F1，标题对，约 TA 面板能打开", async ({ page }) => {
+  const fallback: Record<string, unknown> = {
+    "/api/friends": {
+      friends: [{ user: { id: "e2e-u1", nickname: "E2E 老王" }, together_count: 3, last_together_at: 1791986400, starred: true }],
+    },
+    "/api/config": { group: { wechat_id: "", whatsapp_group_url: "" } },
+  };
+  for (const path of Object.keys(fallback)) {
+    await page.route(`**${path}`, async (route) => {
+      const resp = await route.fetch();
+      const json = (resp.headers()["content-type"] ?? "").includes("application/json");
+      if (resp.status() === 404 || !json) return route.fulfill({ status: 200, json: fallback[path] });
+      return route.fulfill({ response: resp });
+    });
+  }
+
+  await signIn(page, "E2E 牌友");
+  await page.goto("/");
+  await page.locator(".tabbar .tab", { hasText: "牌友" }).click();
+  await expect(page).toHaveURL(/\/friends$/);
+  await expect(page).toHaveTitle("牌友 · 随时掼掼蛋");
+  await expect(page.locator(".tabbar .tab.on")).toContainText("牌友");
+
+  const bar = await barBox(page, ".tabbar");
+  expect(bar.position).toBe("fixed");
+  expect(bar.bottom).toBe(bar.viewport);
+
+  const friend = page.getByTestId("friend").first();
+  await expect(friend.or(page.getByTestId("friends-empty"))).toBeVisible();
+  if (await friend.isVisible()) {
+    await friend.getByRole("button", { name: "约 TA" }).click();
+    const sheet = page.getByTestId("invite-sheet");
+    await expect(sheet).toContainText("打一局");
+    const href = (await sheet.locator("a.option").getAttribute("href")) ?? "";
+    expect(new URL(href).origin).toBe("https://wa.me");
+    await sheet.getByRole("button", { name: "取消" }).click();
+    await expect(sheet).toHaveCount(0);
+  }
+});
+
+test("学牌：首页 Tab 能进学牌列表，规则速览能渲染、答题后进度 +1（#106）", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".tabbar button", { hasText: "学牌" }).click();
+  await expect(page).toHaveURL(/\/learn$/);
+  await expect(page).toHaveTitle("学牌 · 随时掼掼蛋");
+  await expect(page.locator(".tabbar .tab.on")).toContainText("学牌");
+  await expect(page.locator(".lesson")).toHaveCount(3);
+
+  await page.locator(".lesson", { hasText: "规则速览" }).click();
+  await expect(page).toHaveURL(/\/learn\/overview$/);
+  await expect(page.locator(".lesson-head h1")).toHaveText("规则速览");
+  await expect(page.locator(".rule")).not.toHaveCount(0);
+
+  // 正文没有被底部操作栏压住：最后一个练习选项可以滚到操作栏之上。
+  const lastOpt = page.locator(".quiz .opts button").last();
+  await lastOpt.scrollIntoViewIfNeeded();
+  const optBottom = await lastOpt.evaluate((el) => el.getBoundingClientRect().bottom);
+  const barTop = await page.locator(".actionbar").evaluate((el) => el.getBoundingClientRect().top);
+  expect(optBottom).toBeLessThanOrEqual(barTop);
+
+  await page.locator(".quiz .opts button", { hasText: "红桃 7" }).click();
+  await expect(page.locator(".actionbar .btn")).toContainText("下一课");
+
+  await page.locator(".nav .ico[aria-label=返回]").click();
+  await expect(page).toHaveURL(/\/learn$/);
+  await expect(page.locator("[data-testid=learn-progress]")).toContainText("已学 1 / 9 课");
 });

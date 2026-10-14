@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { ApiError, createGame, newIdempotencyKey, type UserRef } from "../api";
+import { ApiError, createGame, inviteError, inviteFriends, inviteSummary, newIdempotencyKey, type Friend, type UserRef } from "../api";
+import { FriendPicker } from "../components/FriendPicker";
 import { dayShort, slashDate, timeHM, weekday } from "../format";
 import type { FormPrefill } from "./Agent";
 import { useBarHeight } from "../useBarHeight";
@@ -67,6 +68,9 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated, pref
   const [error, setError] = useState("");
   // 命中敏感词时是哪个字段（§14）：提示要放在对应的输入框下面，而不是笼统地报一句错。
   const [badField, setBadField] = useState("");
+  // 「邀请谁」（#115）：开好局之后再发邀请，选人不影响开局本身。
+  const [invitees, setInvitees] = useState<Friend[]>([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const retrying = useRetrying();
   const actionBar = useBarHeight<HTMLDivElement>();
 
@@ -95,8 +99,18 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated, pref
         { starts_at: startsAt, area, venue: venue.trim(), kind, note: note.trim() || undefined },
         idemKey,
       );
-      toast("开好了，把链接发到群里吧");
-      onCreated(detail.game.short_code);
+      const code = detail.game.short_code;
+      if (invitees.length > 0) {
+        // 局已经开好了：邀请失败也不拦着进详情页，在那里还能再邀请。
+        try {
+          toast(`开好了，${inviteSummary(await inviteFriends(code, invitees.map((f) => f.user.id)))}`);
+        } catch (err) {
+          toast(`局开好了，但${inviteError(err)}；可以在详情页再邀请`);
+        }
+      } else {
+        toast("开好了，把链接发到群里吧");
+      }
+      onCreated(code);
     } catch (err) {
       if (err instanceof ApiError) {
         // 敏感词：就地提示在出问题的那个输入框下面，已经写好的内容一个字都不动（原型 X1）。
@@ -216,10 +230,37 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated, pref
             {badField === "note" && <p class="errmsg">⚠ {error}</p>}
           </div>
 
+          <div class="field">
+            <label>邀请谁（可不填）</label>
+            <div class="choices invitees">
+              {invitees.map((f) => (
+                <span class="chip" key={f.user.id}>
+                  {f.user.nickname}
+                </span>
+              ))}
+              <button type="button" class="add" onClick={() => setPickerOpen(true)}>
+                {invitees.length > 0 ? "改一下" : "＋ 从牌友里选"}
+              </button>
+            </div>
+          </div>
+
           <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
           {error && !badField && <p class="error">{error}</p>}
         </form>
       </div>
+
+      {pickerOpen && (
+        <FriendPicker
+          selected={invitees.map((f) => f.user.id)}
+          allowNone
+          confirmLabel={(n) => (n > 0 ? `就这 ${n} 位` : "不邀请了")}
+          onConfirm={(picked) => {
+            setInvitees(picked);
+            setPickerOpen(false);
+          }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
 
       <div class="actionbar single" ref={actionBar}>
         <button class="btn primary" disabled={busy || retrying || venue.trim() === ""} onClick={submit}>

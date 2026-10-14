@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { listGames, type GameSummary, type UserRef } from "../api";
 import { initial } from "../components/Table";
-import { useBarHeight } from "../useBarHeight";
 import { kindLabel, missingLabel, slashDate, timeHM } from "../format";
 import { OfflineDot, useRealtime } from "../useRealtime";
 
@@ -34,10 +33,6 @@ interface Props {
   me: UserRef | null;
   onOpen: (code: string) => void;
   onCreate: () => void;
-  /** 底部「约局」：打开 07 蛋蛋；蛋蛋没配时由 App 改成打开 08 表单。 */
-  onAgent?: () => void;
-  onMe: () => void;
-  toast: (text: string) => void;
 }
 
 /**
@@ -45,7 +40,7 @@ interface Props {
  *
  * 「今天 / 明天 / 周末」由服务端按 Asia/Jakarta 算（§13.2），前端只传筛选条件。
  */
-export function Home({ me, onOpen, onCreate, onAgent, onMe, toast }: Props) {
+export function Home({ me, onOpen, onCreate }: Props) {
   const [day, setDay] = useState<Day>("");
   const [area, setArea] = useState("");
   const [games, setGames] = useState<GameSummary[] | null>(null);
@@ -79,11 +74,26 @@ export function Home({ me, onOpen, onCreate, onAgent, onMe, toast }: Props) {
     refresh: () => void load(),
   });
 
+  // 滚动后给固定头部加一条分隔线；首页期间关掉下拉回弹，免得 iOS 把头部一起拽下来（#111）。
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 0);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    document.documentElement.classList.add("lock-overscroll");
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      document.documentElement.classList.remove("lock-overscroll");
+    };
+  }, []);
+
   const waiting = games?.reduce((n, g) => n + g.missing, 0) ?? 0;
 
   return (
     <>
       <div class="body has-bar">
+        {/* 标题、定位、日期和片区筛选是一整块，钉在顶部不跟着列表滚（#111）。 */}
+        <div class={`home-top${scrolled ? " scrolled" : ""}`} data-testid="home-top">
         <div class="head">
           <h1>随时掼掼蛋</h1>
           <p class="sub">
@@ -117,6 +127,7 @@ export function Home({ me, onOpen, onCreate, onAgent, onMe, toast }: Props) {
               {a || "全部"}
             </button>
           ))}
+        </div>
         </div>
 
         <div class="listing">
@@ -174,54 +185,6 @@ export function Home({ me, onOpen, onCreate, onAgent, onMe, toast }: Props) {
 
         <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
       </div>
-
-      <TabBar onCreate={onAgent ?? onCreate} onMe={onMe} onTodo={(name) => toast(`「${name}」还在做`)} />
     </>
-  );
-}
-
-/**
- * 底部 Tab（设计稿 A2）。中间那颗是「约局」，打开 07 蛋蛋（#11）；
- * 服务端没配蛋蛋时直接打开 D4 开局表单。
- * 「学牌」「牌友」「我的」分别在别的 issue 里，先提示一下。
- */
-function TabBar({
-  onCreate,
-  onMe,
-  onTodo,
-}: {
-  onCreate: () => void;
-  onMe: () => void;
-  onTodo: (name: string) => void;
-}) {
-  // 让 toast 知道底栏有多高（Tab 栏高度固定，但它也得报一次数）。
-  const bar = useBarHeight<HTMLElement>();
-  const tabs = [
-    { key: "games", label: "牌局", glyph: "♠", on: true },
-    { key: "learn", label: "学牌", glyph: "♣", on: false },
-    { key: "create", label: "约局", glyph: "蛋", on: false, egg: true },
-    { key: "friends", label: "牌友", glyph: "♦", on: false },
-    { key: "me", label: "我的", glyph: "♥", on: false },
-  ];
-  return (
-    <nav class="tabbar" ref={bar}>
-      {tabs.map((t) => (
-        <button
-          key={t.key}
-          class={`tab${t.on ? " on" : ""}${t.egg ? " egg" : ""}`}
-          aria-current={t.on ? "page" : undefined}
-          onClick={() => {
-            if (t.egg) onCreate();
-            else if (t.key === "me") onMe();
-            else if (!t.on) onTodo(t.label);
-          }}
-        >
-          <span class="g" aria-hidden="true">
-            {t.glyph}
-          </span>
-          {t.label}
-        </button>
-      ))}
-    </nav>
   );
 }

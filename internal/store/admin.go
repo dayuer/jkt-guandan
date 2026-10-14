@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -176,4 +177,54 @@ func banMergedRoot(ctx context.Context, tx *Tx, id string, now time.Time) error 
 		}
 	}
 	return nil
+}
+
+// FunnelEvents 是转化漏斗按顺序统计的埋点名（#117）。POST /api/events 的白名单也是这张表。
+var FunnelEvents = []string{
+	"detail_view", "join_click", "join_ok", "share_open", "share_channel",
+	"push_prompt", "push_ok", "jumpout",
+}
+
+// Funnel 是一个环境（wechat / whatsapp / browser / pwa / 其他）里各埋点的次数，下标和 FunnelEvents 对应。
+type Funnel struct {
+	Env    string
+	Counts []int64
+}
+
+// Funnels 按环境统计 FunnelEvents 里各埋点自 since 起的次数。没有环境的记成 other；按环境名排序。
+// 是事件次数，不是去重后的人数：埋点不记设备，同一个人看两次详情页算两次。
+func (s *Store) Funnels(ctx context.Context, since time.Time) ([]Funnel, error) {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(FunnelEvents)), ",")
+	args := []any{since.Unix()}
+	for _, n := range FunnelEvents {
+		args = append(args, n)
+	}
+	rows, err := s.read.QueryContext(ctx, `
+		SELECT COALESCE(env, 'other'), name, count(*)
+		  FROM events WHERE at >= ? AND name IN (`+placeholders+`)
+		 GROUP BY 1, 2 ORDER BY 1`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	index := make(map[string]int, len(FunnelEvents))
+	for i, n := range FunnelEvents {
+		index[n] = i
+	}
+	var out []Funnel
+	for rows.Next() {
+		var (
+			env, name string
+			n         int64
+		)
+		if err := rows.Scan(&env, &name, &n); err != nil {
+			return nil, err
+		}
+		if len(out) == 0 || out[len(out)-1].Env != env {
+			out = append(out, Funnel{Env: env, Counts: make([]int64, len(FunnelEvents))})
+		}
+		out[len(out)-1].Counts[index[name]] = n
+	}
+	return out, rows.Err()
 }
