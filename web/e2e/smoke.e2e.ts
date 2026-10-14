@@ -255,3 +255,26 @@ test("局头视角：toast 抬在操作栏上方，不盖住按钮", async ({ pa
   const barTop = await bar.evaluate((el) => el.getBoundingClientRect().top);
   expect(toastBottom).toBeLessThanOrEqual(barTop);
 });
+
+// #107：/me 以前没有 Tab 栏也没有返回键——iOS 主屏幕（独立窗口、没有浏览器返回键）上
+// 点进「我的」就出不来了。Tab 栏现在由 App 层统一挂，tab 级页面都有。
+test("我的页有 Tab 栏，点「牌局」回到首页", async ({ page }) => {
+  await page.goto("/me");
+  const tabbar = page.locator(".tabbar");
+  await expect(tabbar).toBeVisible();
+  // 当前高亮的是「我的」。
+  await expect(tabbar.locator(".tab.on")).toHaveText(/我的/);
+
+  await tabbar.getByRole("button", { name: /牌局/ }).click();
+
+  await expect(page).toHaveURL(new RegExp(`${ORIGIN.replace("/", "\\/")}/?$`));
+  await expect(page.locator("h1")).toContainText("随时掼掼蛋");
+  await expect(page.locator(".tab.on")).toHaveText(/牌局/);
+});
+
+// 非 tab 页（详情页）不挂 Tab 栏——那里有自己的操作栏，两个底栏会打架。
+test("详情页不显示 Tab 栏", async ({ page }) => {
+  await page.goto(`/g/${codes[2]}`);
+  await expect(page.locator(".actionbar")).toBeVisible();
+  await expect(page.locator(".tabbar")).toHaveCount(0);
+});

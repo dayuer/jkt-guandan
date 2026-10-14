@@ -121,6 +121,17 @@ func loadDetailFrom(ctx context.Context, q queryer, code, viewerID string) (*Det
 				d.MyPosition = entry.Position
 			}
 		}
+		var inviter Seat
+		err := q.QueryRowContext(ctx, `
+			SELECT i.invited_by, COALESCE(u.nickname, '')
+			  FROM invites i LEFT JOIN users u ON u.id = i.invited_by
+			 WHERE i.game_id = ? AND i.user_id = ?`, d.Game.ID, viewerID).Scan(&inviter.UserID, &inviter.Nickname)
+		switch {
+		case err == nil:
+			d.MyInviter = &inviter
+		case !errors.Is(err, sql.ErrNoRows):
+			return nil, fmt.Errorf("读邀请: %w", err)
+		}
 	}
 	return &d, nil
 }

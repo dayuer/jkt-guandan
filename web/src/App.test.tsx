@@ -223,4 +223,95 @@ afterEach(() => {
     // 文案要点明原身份的下场。
     expect(container.textContent).toContain("只能通过认领链接或认领码找回");
   });
+
+  // #107：/me 以前既没有 Tab 栏也没有返回键——iOS 主屏幕上打开（独立窗口、没有浏览器
+  // 返回键）点进「我的」就出不来了。Tab 栏现在由 App 统一挂，tab 级页面都有。
+  it("我的页也有 Tab 栏，点「牌局」能回首页", async () => {
+    visit("/me");
+    stubFetch(anonymous);
+
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.textContent).toContain("登录的设备"));
+
+    const tabbar = container.querySelector(".tabbar");
+    expect(tabbar).not.toBeNull();
+    // 当前 tab 高亮的是「我的」。
+    expect(tabbar!.querySelector(".tab.on")?.textContent).toContain("我的");
+
+    const games = [...tabbar!.querySelectorAll(".tab")].find((b) => b.textContent?.includes("牌局")) as HTMLButtonElement;
+    games.click();
+
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/"));
+    await vi.waitFor(() => expect(container.textContent).toContain("随时掼掼蛋"));
+  });
+
+  it("详情页、开局表单这类非 tab 页不挂 Tab 栏", async () => {
+    visit("/new");
+    stubFetch(anonymous);
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.textContent).toContain("开一局"));
+    expect(container.querySelector(".tabbar")).toBeNull();
+  });
+
+  // 每个 tab 级页面都要有底部 Tab（#107，P0：用户截图说「每个 tab 的底部导航都要有」）。
+  for (const [path, active] of [
+    ["/", "牌局"],
+    ["/learn", "学牌"],
+    ["/friends", "牌友"],
+    ["/agent", "约局"],
+    ["/me", "我的"],
+  ] as const) {
+    it(`${path} 有 Tab 栏，高亮的是「${active}」`, async () => {
+      visit(path);
+      stubFetch((url) => {
+        if (url.startsWith("/api/me")) return respond(401, { error: { code: "unauthorized", message: "" } });
+        if (url.startsWith("/api/games")) return respond(200, { games: [] });
+        if (url.startsWith("/api/agent")) return respond(200, { messages: [], said: "", problem: "", draft: null });
+        return respond(404, { error: { code: "not_found", message: "" } });
+      });
+
+      const container = renderApp();
+      await vi.waitFor(() => expect(container.querySelector(".tabbar")).not.toBeNull());
+      expect(container.querySelector(".tab.on")?.textContent).toContain(active);
+    });
+  }
+
+  // 二级页面（详情、隐私、设备）不挂 Tab 栏，但必须有返回键——iOS 主屏幕上没有浏览器
+  // 返回键，这两条少哪一条都会把人困住。
+  it("二级页面没有 Tab 栏，但有返回键", async () => {
+    visit("/privacy");
+    stubFetch(anonymous);
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.textContent).toContain("我们存了什么"));
+
+    expect(container.querySelector(".tabbar")).toBeNull();
+    expect(container.querySelector('button[aria-label="返回"]')).not.toBeNull();
+  });
+
+  // phase 1 的约局就是手填表单（用户的决定）：中间那颗「蛋」直接开 08 表单，
+  // 界面上不能再有去 07 蛋蛋页的入口（/agent 路由留着，phase 3 的 #11 会回来）。
+  it("点「约局」直接开 08 表单，不去蛋蛋页", async () => {
+    stubFetch(anonymous);
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.querySelector(".tabbar")).not.toBeNull());
+
+    [...container.querySelectorAll(".tab")].find((b) => b.textContent?.includes("约局"))!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/new"));
+    await vi.waitFor(() => expect(container.textContent).toContain("开一局"));
+    // 表单里没有「跟蛋蛋说」这类回到对话的入口。
+    expect(container.textContent).not.toContain("跟蛋蛋说");
+  });
+
+  it("界面上没有任何通往蛋蛋页的链接", async () => {
+    stubFetch(anonymous);
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.textContent).toContain("随时掼掼蛋"));
+
+    const html = container.innerHTML;
+    expect(html).not.toContain("/agent");
+    expect(container.textContent).not.toContain("蛋蛋");
+  });
 });
