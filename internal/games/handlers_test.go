@@ -473,6 +473,11 @@ func TestCreateRejectsSensitiveWords(t *testing.T) {
 		{"备注里说赌", "Pacific Place", "小赌怡情", "note"},
 		{"地点里带敏感词", "钱柜包厢", "", "venue"},
 		{"印尼语", "Pacific Place", "judi santai", "note"},
+		// #130：拉丁词紧贴着汉字也要拦住（生产环境走查时「测试judi」「带点taruhan」漏过去了）。
+		{"备注：汉字紧贴 judi", "Pacific Place", "测试judi", "note"},
+		{"备注：汉字紧贴 taruhan", "Pacific Place", "带点taruhan", "note"},
+		{"地点：汉字紧贴 judi", "judi馆二楼", "", "venue"},
+		{"地点：汉字夹 bet", "Kemang 来bet局", "", "venue"},
 	}
 
 	for _, tc := range cases {
@@ -520,6 +525,9 @@ func TestCreateAcceptsNormalContent(t *testing.T) {
 			"venue": "Bandar Djakarta 二楼", "kind": "classic"},
 		{"starts_at": f.clk.Now().Add(2 * time.Hour).Unix(), "area": "Kemang",
 			"venue": "Coffee Bean", "kind": "teaching", "note": "人均 200 左右，各付各的"},
+		// #130 之后汉字算词边界，但含敏感词子串的正常拉丁词紧贴汉字时仍然放行。
+		{"starts_at": f.clk.Now().Add(2 * time.Hour).Unix(), "area": "Kemang",
+			"venue": "Betawi菜馆", "kind": "classic", "note": "alphabet街口集合，带上chipset笔记本也行"},
 	} {
 		r := f.do(f.http, http.MethodPost, "/api/games", body, nil)
 		if r.status != http.StatusOK {
@@ -544,6 +552,15 @@ func TestPatchRejectsSensitiveWords(t *testing.T) {
 		map[string]string{"venue": "筹码酒吧"}, map[string]string{"If-Match": "1"})
 	if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" {
 		t.Fatalf("改地点应当 422 sensitive_word，实际 %d %s", r.status, r.raw)
+	}
+
+	// #130：改的时候拉丁词紧贴汉字也拦得住。
+	for field, text := range map[string]string{"note": "带点taruhan", "venue": "测试judi馆"} {
+		r = f.do(f.http, http.MethodPatch, "/api/games/"+code,
+			map[string]string{field: text}, map[string]string{"If-Match": "1"})
+		if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" {
+			t.Fatalf("改 %s 为 %q 应当 422 sensitive_word，实际 %d %s", field, text, r.status, r.raw)
+		}
 	}
 
 	// 被拒之后这一局没有被改动（版本号还是 1）。

@@ -170,7 +170,8 @@ func squeeze(s string) string {
 	}, s)
 }
 
-// hasWord 判断 sub 是否作为整词出现在 s 里（两边都不是字母或数字就算词边界）。
+// hasWord 判断 sub 是否作为整词出现在 s 里：两边紧挨着的字符不是「词里的字」就算词边界
+// （见 isWordRune：汉字、假名、谚文都算边界）。
 func hasWord(s, sub string) bool {
 	rs, rsub := []rune(s), []rune(sub)
 	if len(rsub) == 0 || len(rsub) > len(rs) {
@@ -191,4 +192,12 @@ func hasWord(s, sub string) bool {
 	return false
 }
 
-func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+// isWordRune 判断 r 会不会和旁边的拉丁字母连成一个词。汉字、日文假名、韩文谚文不会：
+// 中文里夹拉丁词不加空格（「测试judi」「带点taruhan」），把汉字当成词的一部分，整词匹配就永远
+// 匹配不上（#130）。拉丁字母和数字照旧算词的一部分，所以 bet 仍然不会命中 better、alphabet、Betawi。
+func isWordRune(r rune) bool {
+	if unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul) {
+		return false
+	}
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
+}
