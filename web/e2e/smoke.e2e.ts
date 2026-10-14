@@ -107,6 +107,39 @@ test("首页：长列表滚动前后，Tab 栏都 fixed 贴在视口底", async 
   expect(lastBottom).toBeLessThanOrEqual(barTop);
 });
 
+for (const height of [667, 560]) {
+  test(`首页：顶部标题和筛选整块固定，375×${height} 滚到底也不动（#111）`, async ({ page }) => {
+    await page.setViewportSize({ width: 375, height });
+    await page.goto("/");
+    await expect.poll(() => page.locator(".gamecard").count()).toBeGreaterThanOrEqual(codes.length);
+
+    const top = page.getByTestId("home-top");
+    const box = () =>
+      top.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, position: getComputedStyle(el).position };
+      });
+    const before = await box();
+    expect(before.top).toBe(0);
+    expect(before.position).toBe("sticky");
+
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+
+    const after = await box();
+    expect(after.top).toBe(0);
+    expect(after.bottom).toBe(before.bottom);
+    // 筛选还在、能点；滚过去的卡片不透到头部上面来。
+    await expect(page.getByRole("tab", { name: "明天" })).toBeInViewport();
+    await expect(page.getByRole("tab", { name: "PIK" })).toBeInViewport();
+    const covered = await page.evaluate((y) => {
+      const el = document.elementFromPoint(187, y);
+      return !!el?.closest("[data-testid=home-top]");
+    }, after.bottom - 2);
+    expect(covered).toBe(true);
+  });
+}
+
 test("首页空状态没有虚线框（#56）", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("tab", { name: "BSD" }).click();
