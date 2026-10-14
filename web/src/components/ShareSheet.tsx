@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { GameDetail } from "../api";
 import {
   canSystemShare,
@@ -7,6 +7,7 @@ import {
   shareText,
   shareURL,
   systemShare,
+  systemShareText,
   whatsappURL,
 } from "../share";
 
@@ -32,6 +33,18 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
   const link = shareURL(detail.game.short_code);
   const poster = posterURL(detail.game.short_code, detail.game.version);
   const inWeChat = isWeChat();
+
+  // 牌局变了（换了局，或者有人报名导致 version +1、海报 URL 跟着变）就把上一局的状态清掉：
+  // 不然「已复制 ✓」和「海报没加载出来」会挂到新的一张图上。
+  // 只在**海报真的换了**的时候清状态：effect 在挂载后是异步跑的，无条件清一次会把
+  // 用户在这之前刚点出来的「已复制 ✓」和海报加载结果一起抹掉。
+  const lastPoster = useRef(poster);
+  useEffect(() => {
+    if (lastPoster.current === poster) return;
+    lastPoster.current = poster;
+    setCopied(false);
+    setPosterFailed(false);
+  }, [poster]);
 
   const copy = async () => {
     if (await copyText(text)) {
@@ -60,7 +73,8 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
   const shareToSystem = async () => {
     const result = await systemShare({
       title: `随时掼掼蛋 · ${detail.game.venue}`,
-      text,
+      // 正文不带链接：链接单独走 url，不然目标 App 里会看到两遍。
+      text: systemShareText(detail),
       url: link,
     });
     if (result === "failed") toast("分享没成功，试试复制话术");

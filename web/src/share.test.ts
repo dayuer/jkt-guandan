@@ -7,6 +7,7 @@ import {
   shareText,
   shareURL,
   systemShare,
+  systemShareText,
   whatsappURL,
 } from "./share";
 
@@ -69,6 +70,22 @@ describe("话术（§5、设计稿 04）", () => {
     expect(shareText(detail({ status: "done" }, 4), NOW, ORIGIN)).toContain("打完了");
     // 这两种情况下不该出现「来的点」。
     expect(shareText(detail({ status: "done" }, 4), NOW, ORIGIN)).not.toContain("来的点");
+  });
+});
+
+describe("系统分享的正文", () => {
+  it("不带链接——链接走 url 字段，正文里再写一遍目标 App 会显示两次", () => {
+    const text = systemShareText(detail(), NOW);
+    expect(text).toBe("今天 19:30 Pacific Place · 鼎泰丰包间 差 2 人");
+    expect(text).not.toContain("http");
+    expect(text).not.toContain("👉");
+  });
+
+  it("各种状态下都不带链接，而且句子完整", () => {
+    expect(systemShareText(detail({ status: "full" }, 4), NOW)).toContain("已经满了");
+    expect(systemShareText(detail({ status: "full" }, 4), NOW)).not.toContain("点这里");
+    expect(systemShareText(detail({ status: "cancelled" }, 2), NOW)).toContain("取消了");
+    expect(systemShareText(detail({ status: "done" }, 4), NOW)).toContain("打完了");
   });
 });
 
