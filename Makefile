@@ -2,12 +2,13 @@
 GO ?= go
 NPM ?= npm
 
-.PHONY: help web-install web-build build vet go-test race-test vuln web-test test run seed docker deploy-test restore-drill clean
+.PHONY: help web-install web-build build vet go-test race-test vuln web-test test e2e run seed docker deploy-test restore-drill clean
 
 help:
 	@echo "make build    构建二进制（会先构建前端，再用 embed 打进去）"
 	@echo "make run      开发模式跑起来：GUANDAN_DEV=1，监听 :8080，数据写在 ./.data"
 	@echo "make test     go vet + 后端测试（-race）+ 前端测试"
+	@echo "make e2e      浏览器端到端冒烟（Playwright + 无头 Chromium，先构建二进制）"
 	@echo "make vuln     govulncheck"
 	@echo "make seed     往 ./.data 写入设计稿里的示例数据"
 	@echo "make docker   构建 Docker 镜像"
@@ -42,6 +43,10 @@ web-test: web-install
 
 # 先构建前端再跑后端测试，这样 httpapi 的用例能真正验证内嵌进去的页面。
 test: vet web-build race-test web-test
+
+# 浏览器端到端冒烟（#72）。第一次跑之前装一次浏览器：cd web && npx playwright install chromium
+e2e: build
+	cd web && $(NPM) run e2e
 
 run: build
 	GUANDAN_DEV=1 GUANDAN_DATA=./.data ./bin/guandan
