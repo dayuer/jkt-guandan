@@ -93,8 +93,9 @@ func OGFor(d *games.Detail, publicURL string, now time.Time) OGData {
 		Title:       title,
 		Description: desc,
 		URL:         base,
-		// 带上版本号：抓取器和聊天软件会缓存图片，局有变化时换一个地址。
-		Image: fmt.Sprintf("%s/og.png?v=%d-%d", base, g.Version, len(d.Seats)),
+		// 带上版本号和雅加达当天日期：抓取器和聊天软件会按地址缓存图片，局有变化、
+		// 或者跨过午夜（图上的「明天」该变成「今天」）时换一个地址。
+		Image: fmt.Sprintf("%s/og.png?v=%d-%d-%s", base, g.Version, len(d.Seats), jakartaDay(now)),
 	}
 }
 

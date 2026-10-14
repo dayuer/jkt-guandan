@@ -1,3 +1,7 @@
+Noto Sans SC Bold: Copyright © 2014-2021 Adobe (http://www.adobe.com/).
+Noto Serif SC Black: Copyright © 2017-2024 Adobe (http://www.adobe.com/).
+(Copyright notices as recorded in name ID 0 of the upstream fonts, notofonts/noto-cjk@f8d157532fbfaeda587e826d4cd5b21a49186f7c.)
+
 This Font Software is licensed under the SIL Open Font License,
 Version 1.1.
 

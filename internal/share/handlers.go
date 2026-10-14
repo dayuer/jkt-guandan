@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/games"
@@ -84,6 +85,11 @@ func (h *handler) event(w http.ResponseWriter, r *http.Request) (Event, bool) {
 // ogPage 返回注入了这一局 OG 标签的页面。牌局不存在（或读取出错）时返回普通的 index.html，
 // 由前端显示「这局不存在」：链接预览拿到的是站点默认的标题。
 func (h *handler) ogPage(w http.ResponseWriter, r *http.Request) {
+	// 跳出微信的链接是「牌局页 + ?claim=<token>」：不能让 token 经 Referer 头带给别处（§10.3，
+	// 和 httpapi 里静态资源的 referrerPolicyForClaim 一致）。
+	if r.URL.Query().Has("claim") {
+		w.Header().Set("Referrer-Policy", "no-referrer")
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	d, err := h.svc.Get(r.Context(), r.PathValue("code"), "")
@@ -102,20 +108,32 @@ func (h *handler) ogPage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-func (h *handler) ogImage(w http.ResponseWriter, r *http.Request) { h.image(w, r, "og", RenderOG) }
+func (h *handler) ogImage(w http.ResponseWriter, r *http.Request) {
+	h.image(w, r, "og", RenderOG, genericOG)
+}
 func (h *handler) posterImage(w http.ResponseWriter, r *http.Request) {
-	h.image(w, r, "poster", RenderPoster)
+	h.image(w, r, "poster", RenderPoster, genericPoster)
 }
 
-// image 返回渲染好的图：缓存键是「种类 + 短码 + 版本号 + 座位数」，同键合并、最多 2 个并发渲染。
-// 渲染失败时返回内置的通用 OG 图（§12.5），并记 error 日志。
-func (h *handler) image(w http.ResponseWriter, r *http.Request, kind string, render func(Card) (image.Image, error)) {
+// imageKey 是缓存键：「种类 + 短码 + 版本号 + 座位数 + 雅加达当天日期」。图上写着「今天」「明天」，
+// 跨过雅加达的午夜，即使局没变也要重新渲染（#54 复审）。
+func imageKey(kind string, d *games.Detail, now time.Time) string {
+	return fmt.Sprintf("%s|%s|%d|%d|%s", kind, d.Game.ShortCode, d.Game.Version, len(d.Seats), jakartaDay(now))
+}
+
+// jakartaDay 是雅加达时区的当天日期，例如 20261014。
+func jakartaDay(now time.Time) string { return now.In(Jakarta).Format("20060102") }
+
+// image 返回渲染好的图（缓存键见 imageKey），同键合并、最多 2 个并发渲染。
+// 渲染失败时返回同样尺寸的内置通用图（§12.5），并记 error 日志。
+func (h *handler) image(w http.ResponseWriter, r *http.Request, kind string, render func(Card) (image.Image, error), fallback func() []byte) {
 	d, ok := h.game(w, r)
 	if !ok {
 		return
 	}
-	key := fmt.Sprintf("%s|%s|%d|%d", kind, d.Game.ShortCode, d.Game.Version, len(d.Seats))
-	card := CardFor(d, h.publicURL, h.clk.Now())
+	now := h.clk.Now()
+	key := imageKey(kind, d, now)
+	card := CardFor(d, h.publicURL, now)
 	png, err := h.images.get(r.Context(), key, func() ([]byte, error) {
 		img, err := render(card)
 		if err != nil {
@@ -125,28 +143,27 @@ func (h *handler) image(w http.ResponseWriter, r *http.Request, kind string, ren
 	})
 	if err != nil {
 		slog.Error("渲染图片失败，返回通用图", "kind", kind, "code", d.Game.ShortCode, "err", err)
-		png = genericOG()
+		png = fallback()
 	}
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	_, _ = w.Write(png)
 }
 
+// genericOG、genericPoster 是兜底的通用图，进程里各只渲染一次。
 var (
-	genericOnce sync.Once
-	genericPNG  []byte
+	genericOG     = onceImage(RenderGenericOG)
+	genericPoster = onceImage(RenderGenericPoster)
 )
 
-// genericOG 是兜底的通用 OG 图，进程里只渲染一次。
-func genericOG() []byte {
-	genericOnce.Do(func() {
-		b, err := EncodePNG(RenderGenericOG())
+func onceImage(render func() image.Image) func() []byte {
+	return sync.OnceValue(func() []byte {
+		b, err := EncodePNG(render())
 		if err != nil {
 			panic(err) // 纯色加形状，编码不会失败
 		}
-		genericPNG = b
+		return b
 	})
-	return genericPNG
 }
 
 func (h *handler) ics(w http.ResponseWriter, r *http.Request) {

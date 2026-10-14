@@ -13,8 +13,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/text/encoding/traditionalchinese"
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/games"
@@ -94,8 +96,9 @@ func TestCacheRenderErrors(t *testing.T) {
 	}
 }
 
-// §12.5：渲染失败（出错或 panic）时，handler 返回内置的通用 OG 图，而不是 500。
-func TestImageFallsBackToGenericOG(t *testing.T) {
+// §12.5：渲染失败（出错或 panic）时，handler 返回同样尺寸的内置通用图，而不是 500。
+// 海报的兜底是竖版（前端按 3:4 占位），OG 的兜底是横版。
+func TestImageFallsBackToGenericImage(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -110,37 +113,163 @@ func TestImageFallsBackToGenericOG(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &handler{svc: games.NewService(st, clk, nil), publicURL: "https://x", clk: clk, images: newImageCache(4, 2)}
-	for _, render := range []func(Card) (image.Image, error){
-		func(Card) (image.Image, error) { return nil, errors.New("字体坏了") },
-		func(Card) (image.Image, error) { panic("渲染器炸了") },
-	} {
-		req := httptest.NewRequest(http.MethodGet, "/g/SEED01/poster.png", nil)
-		req.SetPathValue("code", "SEED01")
-		rec := httptest.NewRecorder()
-		h.image(rec, req, "poster", render)
-		if rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" {
-			t.Fatalf("%d %v", rec.Code, rec.Header())
-		}
-		img, err := png.Decode(bytes.NewReader(rec.Body.Bytes()))
-		if err != nil || img.Bounds().Dx() != OGWidth || img.Bounds().Dy() != OGHeight {
-			t.Fatalf("应返回通用 OG 图：%v", err)
+	for _, kind := range []struct {
+		name     string
+		fallback func() []byte
+		w, h     int
+	}{{"poster", genericPoster, PosterWidth, PosterHeight}, {"og", genericOG, OGWidth, OGHeight}} {
+		for _, render := range []func(Card) (image.Image, error){
+			func(Card) (image.Image, error) { return nil, errors.New("字体坏了") },
+			func(Card) (image.Image, error) { panic("渲染器炸了") },
+		} {
+			req := httptest.NewRequest(http.MethodGet, "/g/SEED01/"+kind.name+".png", nil)
+			req.SetPathValue("code", "SEED01")
+			rec := httptest.NewRecorder()
+			h.image(rec, req, kind.name, render, kind.fallback)
+			if rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" {
+				t.Fatalf("%d %v", rec.Code, rec.Header())
+			}
+			img, err := png.Decode(bytes.NewReader(rec.Body.Bytes()))
+			if err != nil || img.Bounds().Dx() != kind.w || img.Bounds().Dy() != kind.h {
+				t.Fatalf("%s 应返回 %d×%d 的通用图：%v %v", kind.name, kind.w, kind.h, err, img.Bounds())
+			}
 		}
 	}
 }
 
-// 称呼里的 emoji 没有字形：不画成方框，首字跳过 emoji。
+// singleflight 合并的请求里，第一个请求者断开了，其他请求照样拿到图（#54 复审）。
+func TestCacheFirstCallerCancelDoesNotFailOthers(t *testing.T) {
+	c := newImageCache(16, 1)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	render := func() ([]byte, error) {
+		close(started)
+		<-release
+		return []byte("png"), nil
+	}
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := c.get(firstCtx, "k", render)
+		firstErr <- err
+	}()
+	<-started
+	second := make(chan []byte, 1)
+	go func() {
+		b, _ := c.get(context.Background(), "k", func() ([]byte, error) { t.Error("同键不该再渲染"); return nil, nil })
+		second <- b
+	}()
+	time.Sleep(20 * time.Millisecond) // 让第二个请求进到 singleflight 里
+	cancelFirst()
+	if err := <-firstErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("断开的请求者应拿到 ctx 的错误：%v", err)
+	}
+	close(release)
+	if b := <-second; string(b) != "png" {
+		t.Fatalf("第二个请求应拿到图，实际 %q", b)
+	}
+	if b, err := c.get(context.Background(), "k", render); err != nil || string(b) != "png" {
+		t.Fatal("渲染结果应进缓存")
+	}
+}
+
+// 称呼里的 emoji 没有字形：不画成方框，首字跳过 emoji、标点和符号；一个能画的都没有就用占位。
 func TestRenderableSkipsEmoji(t *testing.T) {
 	if err := loadFonts(); err != nil {
 		t.Fatal(err)
 	}
 	fonts := []*opentype.Font{serifFont, sansFont}
-	if got := renderable("老王😀🀄️ok", fonts); got != "老王ok" {
+	var missed []rune
+	if got := renderable("老王😀🀄️ok", fonts, func(r rune) { missed = append(missed, r) }); got != "老王ok" {
 		t.Fatalf("renderable = %q", got)
 	}
-	for in, want := range map[string]string{"😀Lily": "L", "老王": "老", "  阿杰": "阿", "😀🎉": "牌", "掼蛋": "掼"} {
-		if got := initial(in, fonts); got != want {
+	if len(missed) != 2 || missed[0] != '😀' || missed[1] != '🀄' {
+		t.Fatalf("跳过的字应记下来：%q", missed)
+	}
+	for in, want := range map[string]string{
+		"😀Lily": "L", "老王": "老", "  阿杰": "阿", "😀🎉": "?", "掼蛋": "掼",
+		`"><b>x`: "B", "【阿杰】": "阿", "★小美": "小", "...": "?", "陳姐": "陳", "賴": "賴",
+	} {
+		if got := initial(in, fonts, nil); got != want {
 			t.Errorf("initial(%q) = %q，期望 %q", in, got, want)
 		}
+	}
+}
+
+// #54 复审：繁体的地点和称呼不能被悄悄丢字。字体子集里有 Big5 一级常用字，
+// 「鼎泰豐包間 · 陳姐的茶館」「陳」「賴」都画得出来，渲染时一个字都没有跳过。
+func TestTraditionalCharsAreNotSkipped(t *testing.T) {
+	card := Card{
+		Code: "TRAD01", StartsAt: time.Now().Add(time.Hour), Now: time.Now(),
+		Venue: "鼎泰豐包間 · 陳姐的茶館", Seats: []string{"陳", "Lily", "賴阿嬤"}, Missing: 1, Status: "open",
+		URL: "https://guandan.synon.ai/g/TRAD01",
+	}
+	for name, render := range map[string]func(Card) (image.Image, []rune, error){"poster": renderPoster, "og": renderOG} {
+		if _, missing, err := render(card); err != nil || len(missing) != 0 {
+			t.Errorf("%s：%v，跳过了 %q", name, err, missing)
+		}
+	}
+	// 繁体常用字表里的字全都要在两个字体里有字形。
+	if err := loadFonts(); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []*opentype.Font{sansFont, serifFont} {
+		var lost []rune
+		for _, r := range traditionalSample {
+			if pick(r, []*opentype.Font{f}) == nil {
+				lost = append(lost, r)
+			}
+		}
+		if len(lost) > 0 {
+			t.Errorf("字体缺繁体常用字：%q", lost)
+		}
+	}
+}
+
+// 子集里有 Big5 一级常用字（0xA440–0xC67E）的全部 5401 字，两个字体都要有（scripts/fonts/chars.py）。
+func TestFontsCoverBig5Level1(t *testing.T) {
+	if err := loadFonts(); err != nil {
+		t.Fatal(err)
+	}
+	dec := traditionalchinese.Big5.NewDecoder()
+	n := 0
+	for code := 0xa440; code <= 0xc67e; code++ {
+		b2 := code & 0xff
+		if !(0x40 <= b2 && b2 <= 0x7e || 0xa1 <= b2 && b2 <= 0xfe) {
+			continue
+		}
+		out, err := dec.Bytes([]byte{byte(code >> 8), byte(b2)})
+		if err != nil || len([]rune(string(out))) != 1 || []rune(string(out))[0] == utf8.RuneError {
+			continue
+		}
+		r := []rune(string(out))[0]
+		n++
+		for _, f := range []*opentype.Font{sansFont, serifFont} {
+			if pick(r, []*opentype.Font{f}) == nil {
+				t.Fatalf("字体缺 Big5 一级字 %q（U+%04X）", r, r)
+			}
+		}
+	}
+	if n != 5401 {
+		t.Fatalf("Big5 一级应有 5401 字，数到 %d", n)
+	}
+}
+
+// traditionalSample 是一些常见的繁体字（店名、姓氏、地名里常见）。
+const traditionalSample = "鼎泰豐包間陳館賴黃劉張趙錢孫吳鄭馮衛蔣沈韓楊朱秦許何呂施華謝鄒喬龍葉蕭蘇鍾譚廣東門開關樓灣號廳麵飯魚雞點茶餐愛國體學會"
+
+// 字体里没有的字要报出来，不能悄悄丢掉。
+func TestMissingGlyphsAreReported(t *testing.T) {
+	card := Card{
+		StartsAt: time.Now().Add(time.Hour), Now: time.Now(),
+		Venue: "老地方😀", Seats: []string{"🎉阿杰"}, Missing: 3, Status: "open", URL: "https://x/g/A",
+	}
+	_, missing, err := renderPoster(card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 1 || missing[0] != '😀' {
+		t.Fatalf("应报出缺的 😀（🎉 是符号，首字直接跳过），实际 %q", missing)
 	}
 }
 

@@ -8,7 +8,9 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"log/slog"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,8 +29,9 @@ import (
 // OG 图和海报的服务端渲染（§5.4），视觉按设计稿 C2（海报成品），颜色取自 design/guandan-h5/tokens.css。
 //
 // 字体是 Noto Sans SC Bold 和 Noto Serif SC Black 的子集（ASCII、Latin-1、标点、GB2312 汉字，
-// 见 scripts/fonts/subset.sh），嵌在二进制里，SIL OFL 1.1。每个字依次在衬线、无衬线里找字形，
-// 都没有（比如 emoji、生僻字）就跳过，不会画成方框。
+// 加上 Big5 一级常用字（繁体），见 scripts/fonts/subset.sh），嵌在二进制里，SIL OFL 1.1。
+// 每个字依次在衬线、无衬线里找字形，都没有（比如 emoji、生僻字）就跳过，不会画成方框；
+// 跳过的字记一条 warn 日志（带短码和码点），不悄悄丢字。
 
 const (
 	OGWidth      = 1200
@@ -81,6 +84,7 @@ func withAlpha(c color.RGBA, a float64) color.RGBA {
 
 // Card 是渲染需要的牌局信息。
 type Card struct {
+	Code     string // 短码，只用于日志
 	StartsAt time.Time
 	Now      time.Time // 用来判断「今天」「明天」
 	Venue    string
@@ -93,7 +97,7 @@ type Card struct {
 // CardFor 把牌局转成渲染用的信息。
 func CardFor(d *games.Detail, publicURL string, now time.Time) Card {
 	c := Card{
-		StartsAt: d.Game.StartsAt, Now: now, Venue: d.Game.Venue,
+		Code: d.Game.ShortCode, StartsAt: d.Game.StartsAt, Now: now, Venue: d.Game.Venue,
 		Missing: d.Missing, Status: d.Game.Status,
 		URL: strings.TrimSuffix(publicURL, "/") + "/g/" + d.Game.ShortCode,
 	}
@@ -106,8 +110,9 @@ func CardFor(d *games.Detail, publicURL string, now time.Time) Card {
 // ---- 画布 ----
 
 type canvas struct {
-	img   *image.RGBA
-	faces map[faceKey]font.Face
+	img     *image.RGBA
+	faces   map[faceKey]font.Face
+	missing map[rune]struct{} // 字体里没有、被跳过的字
 }
 
 type faceKey struct {
@@ -118,7 +123,31 @@ type faceKey struct {
 func newCanvas(w, h int, bg color.Color) *canvas {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	draw.Draw(img, img.Bounds(), image.NewUniform(bg), image.Point{}, draw.Src)
-	return &canvas{img: img, faces: map[faceKey]font.Face{}}
+	return &canvas{img: img, faces: map[faceKey]font.Face{}, missing: map[rune]struct{}{}}
+}
+
+func (c *canvas) miss(r rune) { c.missing[r] = struct{}{} }
+
+// missingRunes 按码点排好序返回跳过的字。
+func (c *canvas) missingRunes() []rune {
+	out := make([]rune, 0, len(c.missing))
+	for r := range c.missing {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// warnMissing 在有字被跳过时记 warn 日志：图上少了字，得让人知道（#54 复审）。
+func warnMissing(kind, code string, missing []rune) {
+	if len(missing) == 0 {
+		return
+	}
+	cps := make([]string, len(missing))
+	for i, r := range missing {
+		cps[i] = fmt.Sprintf("U+%04X", r)
+	}
+	slog.Warn("分享图里有字体缺的字，已跳过", "kind", kind, "code", code, "missing", strings.Join(cps, " "))
 }
 
 func (c *canvas) close() {
@@ -256,18 +285,25 @@ func pick(r rune, fonts []*opentype.Font) *opentype.Font {
 	return nil
 }
 
-// renderable 去掉没有字形的字（emoji 等）和控制字符。
-func renderable(s string, fonts []*opentype.Font) string {
+// renderable 去掉没有字形的字（emoji 等）和控制字符。没有字形的字交给 miss 记下（可以为 nil）。
+func renderable(s string, fonts []*opentype.Font, miss func(rune)) string {
 	var b strings.Builder
 	for _, r := range s {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || isVariationSelector(r) {
 			continue
 		}
 		if r == ' ' || pick(r, fonts) != nil {
 			b.WriteRune(r)
+		} else if miss != nil {
+			miss(r)
 		}
 	}
 	return b.String()
+}
+
+// isVariationSelector：emoji 后面常跟的 U+FE0F 之类不占位置，不算缺字。
+func isVariationSelector(r rune) bool {
+	return (r >= 0xfe00 && r <= 0xfe0f) || r == 0x200d
 }
 
 func (c *canvas) measure(s string, st textStyle) float64 {
@@ -298,6 +334,9 @@ func (c *canvas) text(s string, x, y, align float64, st textStyle) {
 		f := pick(r, st.fonts)
 		if f == nil {
 			if r != ' ' {
+				if !unicode.IsControl(r) && !isVariationSelector(r) {
+					c.miss(r)
+				}
 				continue
 			}
 			f = st.fonts[len(st.fonts)-1]
@@ -324,15 +363,25 @@ func (c *canvas) fit(s string, maxW float64, st textStyle) string {
 	return "…"
 }
 
-// initial 是座位圆点里显示的字：称呼里第一个能画出来的字，拉丁字母转大写。
-func initial(name string, fonts []*opentype.Font) string {
+// initialPlaceholder 是称呼里一个能画的字都没有时座位圆点里的占位，和前端 Table.tsx 的 initial() 一致。
+const initialPlaceholder = "?"
+
+// initial 是座位圆点里显示的字：称呼里第一个能画出来的字（跳过空白、标点、符号），拉丁字母转大写。
+// 一个都没有就用占位。排在它前面、字体里又没有的字交给 miss 记下（可以为 nil）。
+func initial(name string, fonts []*opentype.Font, miss func(rune)) string {
 	for _, r := range name {
-		if unicode.IsSpace(r) || unicode.IsControl(r) || pick(r, fonts) == nil {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) || isVariationSelector(r) {
+			continue
+		}
+		if pick(r, fonts) == nil {
+			if miss != nil {
+				miss(r)
+			}
 			continue
 		}
 		return string(unicode.ToUpper(r))
 	}
-	return "牌"
+	return initialPlaceholder
 }
 
 // ---- 二维码 ----
@@ -386,7 +435,7 @@ func (c *canvas) seatsRow(card Card, cx, cy, rad, gap float64) {
 		if i < len(card.Seats) {
 			c.fill(colCream, func(r *vector.Rasterizer) { circle(r, x, cy, rad) })
 			st := textStyle{serifThenSans, rad * 0.8, colRed}
-			c.text(initial(card.Seats[i], serifThenSans), x, cy+rad*0.28, 0.5, st)
+			c.text(initial(card.Seats[i], serifThenSans, c.miss), x, cy+rad*0.28, 0.5, st)
 		} else {
 			c.dashedCircle(x, cy, rad-2, 9, 7, 3.5, withAlpha(colCream, 0.75))
 		}
@@ -424,14 +473,20 @@ func (c *canvas) timeCard(card Card, x0, y0, x1, y1, scale float64) {
 	clock := card.StartsAt.In(Jakarta).Format("15:04")
 	c.text(clock, cx, y0+h*0.63, 0.5, textStyle{serif, 210 * scale, colCream})
 	vst := textStyle{sans, 44 * scale, colSand}
-	venue := c.fit(renderable(card.Venue, sans), (x1-x0)-2*d-40*scale, vst)
+	venue := c.fit(renderable(card.Venue, sans, c.miss), (x1-x0)-2*d-40*scale, vst)
 	c.text(venue, cx, y0+h*0.85, 0.5, vst)
 }
 
 // RenderPoster 渲染 1080×1440 的海报（设计稿 C2）。
 func RenderPoster(card Card) (image.Image, error) {
+	img, missing, err := renderPoster(card)
+	warnMissing("poster", card.Code, missing)
+	return img, err
+}
+
+func renderPoster(card Card) (image.Image, []rune, error) {
 	if err := loadFonts(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	c := newCanvas(PosterWidth, PosterHeight, colRed)
 	defer c.close()
@@ -455,15 +510,21 @@ func RenderPoster(card Card) (image.Image, error) {
 	// 二维码：奶油色圆角底，指向牌局页面。
 	c.fill(colCream, func(r *vector.Rasterizer) { roundRect(r, 783, 1218, 988, 1423, 22) })
 	if err := c.qr(card.URL, 797, 1232, 177, colInk); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return c.img, nil
+	return c.img, c.missingRunes(), nil
 }
 
 // RenderOG 渲染 1200×630 的链接预览图：左边牌桌卡片，右边座位、状态和品牌。
 func RenderOG(card Card) (image.Image, error) {
+	img, missing, err := renderOG(card)
+	warnMissing("og", card.Code, missing)
+	return img, err
+}
+
+func renderOG(card Card) (image.Image, []rune, error) {
 	if err := loadFonts(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	c := newCanvas(OGWidth, OGHeight, colRed)
 	defer c.close()
@@ -474,7 +535,7 @@ func RenderOG(card Card) (image.Image, error) {
 	serif := []*opentype.Font{serifFont, sansFont}
 	c.text("随时掼掼蛋 · 雅加达", 925, 500, 0.5, textStyle{serif, 44, colCream})
 	c.text("点开占座 · 纯娱乐，不设彩头", 925, 548, 0.5, textStyle{[]*opentype.Font{sansFont}, 24, withAlpha(colCream, 0.8)})
-	return c.img, nil
+	return c.img, c.missingRunes(), nil
 }
 
 // RenderGenericOG 是兜底的通用 OG 图（§12.5：渲染失败时返回它）。只用纯色和形状也能画出来，
@@ -482,7 +543,7 @@ func RenderOG(card Card) (image.Image, error) {
 func RenderGenericOG() image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, OGWidth, OGHeight))
 	draw.Draw(img, img.Bounds(), image.NewUniform(colRed), image.Point{}, draw.Src)
-	c := &canvas{img: img, faces: map[faceKey]font.Face{}}
+	c := &canvas{img: img, faces: map[faceKey]font.Face{}, missing: map[rune]struct{}{}}
 	defer c.close()
 	c.fill(colRedInk, func(r *vector.Rasterizer) { roundRect(r, 300, 115, 900, 515, 50) })
 	c.fill(colRedDeep, func(r *vector.Rasterizer) { roundRect(r, 312, 127, 888, 503, 40) })
@@ -490,6 +551,25 @@ func RenderGenericOG() image.Image {
 		serif := []*opentype.Font{serifFont, sansFont}
 		c.text("随时掼掼蛋", 600, 340, 0.5, textStyle{serif, 96, colCream})
 		c.text("雅加达 · 约掼蛋", 600, 420, 0.5, textStyle{[]*opentype.Font{sansFont}, 36, colSand})
+	}
+	return img
+}
+
+// RenderGenericPoster 是海报渲染失败时的兜底图：和海报一样是 1080×1440（前端按 3:4 占位，
+// 拿 1200×630 的通用图会被拉伸）。只用纯色和形状也能画出来，字体可用时再加上品牌字。
+func RenderGenericPoster() image.Image {
+	img := image.NewRGBA(image.Rect(0, 0, PosterWidth, PosterHeight))
+	draw.Draw(img, img.Bounds(), image.NewUniform(colRed), image.Point{}, draw.Src)
+	c := &canvas{img: img, faces: map[faceKey]font.Face{}, missing: map[rune]struct{}{}}
+	defer c.close()
+	c.fill(withAlpha(colCream, 0.06), func(r *vector.Rasterizer) { circle(r, 1060, 260, 230) })
+	c.fill(colRedInk, func(r *vector.Rasterizer) { roundRect(r, 92, 95, 988, 830, 60) })
+	c.fill(colRedDeep, func(r *vector.Rasterizer) { roundRect(r, 108, 111, 972, 814, 48) })
+	if loadFonts() == nil {
+		serif := []*opentype.Font{serifFont, sansFont}
+		c.text("随时掼掼蛋", PosterWidth/2, 500, 0.5, textStyle{serif, 120, colCream})
+		c.text("雅加达 · 约掼蛋", PosterWidth/2, 600, 0.5, textStyle{[]*opentype.Font{sansFont}, 44, colSand})
+		c.text("纯娱乐，不设彩头", PosterWidth/2, 1300, 0.5, textStyle{[]*opentype.Font{sansFont}, 32, withAlpha(colCream, 0.8)})
 	}
 	return img
 }

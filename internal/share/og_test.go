@@ -98,7 +98,7 @@ func TestOGPageContent(t *testing.T) {
 		`<meta property="og:title" content="掼蛋局 · 今天 10/13 周二 19:30 · Pacific Place · 鼎泰丰包间" />`,
 		`<meta property="og:description" content="还差 1 人，点开占座 · 局头 老王 · 打到 A 为止，新手友好。停车 P2。" />`,
 		`<meta property="og:url" content="https://guandan.synon.ai/g/SEED01" />`,
-		`<meta property="og:image" content="https://guandan.synon.ai/g/SEED01/og.png?v=1-3" />`,
+		`<meta property="og:image" content="https://guandan.synon.ai/g/SEED01/og.png?v=1-3-20261013" />`,
 		`<meta name="twitter:card" content="summary_large_image" />`,
 	} {
 		if !strings.Contains(body, want) {
@@ -203,5 +203,49 @@ func TestPosterVersionQueryOnlyBustsCaches(t *testing.T) {
 	_, afterCancel := get(t, srv, "/g/SEED01/poster.png?v=1") // 旧的 v
 	if afterCancel == fresh {
 		t.Fatal("牌局变了，即使带着旧的 v 也应拿到新图")
+	}
+}
+
+// #54 复审：图上写着「今天」「明天」。跨过雅加达的午夜，局没变也要换图，og:image 的地址也要变。
+func TestImagesChangeAcrossJakartaMidnight(t *testing.T) {
+	srv, _, clk := setupPages(t) // 10/13 15:00 WIB；SEED03 是明天 14:00
+	_, before := get(t, srv, "/g/SEED03/poster.png")
+	_, ogBefore := get(t, srv, "/g/SEED03/og.png")
+	_, pageBefore := get(t, srv, "/g/SEED03")
+
+	clk.Advance(8*time.Hour + 30*time.Minute) // 23:30 WIB：还是同一天，用缓存
+	if _, again := get(t, srv, "/g/SEED03/poster.png"); again != before {
+		t.Fatal("同一天里局没变，应该是同一张图")
+	}
+
+	clk.Advance(time.Hour) // 00:30 WIB，第二天：「明天」变成「今天」
+	if _, after := get(t, srv, "/g/SEED03/poster.png"); after == before {
+		t.Fatal("跨过雅加达午夜后海报没有重新渲染")
+	}
+	if _, after := get(t, srv, "/g/SEED03/og.png"); after == ogBefore {
+		t.Fatal("跨过雅加达午夜后 OG 图没有重新渲染")
+	}
+	_, pageAfter := get(t, srv, "/g/SEED03")
+	if !strings.Contains(pageBefore, "og.png?v=1-") || !strings.Contains(pageAfter, "-20261014\"") || pageAfter == pageBefore {
+		t.Fatalf("og:image 的地址应带上雅加达日期：\n%s", pageAfter)
+	}
+	if !strings.Contains(pageAfter, "今天") {
+		t.Fatalf("第二天的标题应是「今天」：\n%s", pageAfter)
+	}
+}
+
+// §10.3：跳出微信的链接是「牌局页 + ?claim=」，页面必须带 Referrer-Policy: no-referrer，
+// 不让 claim token 经 Referer 头泄露；不带 claim 的页面不加。
+func TestOGPageClaimHasNoReferrer(t *testing.T) {
+	srv, _, _ := setupPages(t)
+	for path, want := range map[string]string{
+		"/g/SEED01?claim=tok123": "no-referrer",
+		"/g/NOPE99?claim=tok123": "no-referrer", // 牌局不存在、返回原样 index.html 时也要带
+		"/g/SEED01":              "",
+	} {
+		resp, _ := get(t, srv, path)
+		if got := resp.Header.Get("Referrer-Policy"); got != want {
+			t.Errorf("%s：Referrer-Policy = %q，期望 %q", path, got, want)
+		}
 	}
 }

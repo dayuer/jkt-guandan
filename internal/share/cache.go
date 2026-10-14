@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/singleflight"
 )
@@ -38,11 +39,16 @@ func (c *imageCache) get(ctx context.Context, key string, render func() ([]byte,
 	}
 	c.mu.Unlock()
 
-	v, err, _ := c.group.Do(key, func() (any, error) {
+	// 同一个键的请求合并成一次渲染，渲染用的 ctx 不能跟着第一个请求者走：它断开了，
+	// 合并进来的其他请求不该一起失败。所以渲染用 WithoutCancel 加固定超时，
+	// 每个请求者只在自己的 ctx 结束时提前返回。
+	ch := c.group.DoChan(key, func() (any, error) {
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), renderTimeout)
+		defer cancel()
 		select {
 		case c.slots <- struct{}{}:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		case <-wctx.Done():
+			return nil, wctx.Err()
 		}
 		defer func() { <-c.slots }()
 		b, err := safeRender(render)
@@ -62,11 +68,19 @@ func (c *imageCache) get(ctx context.Context, key string, render func() ([]byte,
 		c.mu.Unlock()
 		return b, nil
 	})
-	if err != nil {
-		return nil, err
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.([]byte), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	return v.([]byte), nil
 }
+
+// renderTimeout 是一次渲染（含排队等名额）最多花的时间。
+const renderTimeout = 10 * time.Second
 
 // safeRender 把渲染里的 panic 变成错误：一张图出问题不能带走请求（§12.2）。
 func safeRender(render func() ([]byte, error)) (b []byte, err error) {

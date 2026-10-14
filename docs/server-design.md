@@ -271,7 +271,7 @@ CREATE INDEX events_name_at ON events(name, at);
 ### 5.4 分享
 
 - `GET /g/{code}`：读出 `index.html` 模板，把这一局的 `og:title`、`og:description`、`og:image` 写进去再返回。微信和 WhatsApp 的链接抓取器不执行 JS，只有这样才能拿到每局各自的预览卡片。
-- `GET /g/{code}/og.png`（1200×630）和 `GET /g/{code}/poster.png`（1080×1440）：服务端渲染。结果先缓存在内存里，键是 `code + version + 座位数`，同时设 `Cache-Control: public, max-age=60`。
+- `GET /g/{code}/og.png`（1200×630）和 `GET /g/{code}/poster.png`（1080×1440）：服务端渲染。结果先缓存在内存里，键是 `code + version + 座位数 + 雅加达当天日期`（图上写着「今天」「明天」，跨过午夜要换图），同时设 `Cache-Control: public, max-age=60`。OG 标签里的图片地址是 `og.png?v={version}-{座位数}-{YYYYMMDD}`，让聊天软件按地址缓存的旧图也跟着换；服务端不读 `v`。字体子集含 GB2312 和 Big5 一级常用字，字体里没有的字跳过并记 warn 日志（带短码和码点）。渲染失败时返回同样尺寸的通用图。
 - `GET /g/{code}/game.ics`：日历文件。时区写 `Asia/Jakarta`，`UID` 用牌局 id，`SEQUENCE` 用版本号，这样改时间后重新导入，日历里会更新原有事件而不是新增一条。
 
 ### 5.5 实时：WebSocket
