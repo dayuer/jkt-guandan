@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/dayuer/jkt-guandan/app/h5"
 	"github.com/dayuer/jkt-guandan/server/internal/clientip"
 	"github.com/dayuer/jkt-guandan/server/internal/clock"
 	"github.com/dayuer/jkt-guandan/server/internal/config"
@@ -23,7 +24,6 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/route"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 	"github.com/dayuer/jkt-guandan/server/internal/supervise"
-	"github.com/dayuer/jkt-guandan/app/h5"
 )
 
 type fixture struct {

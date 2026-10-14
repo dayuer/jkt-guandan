@@ -23,6 +23,7 @@ import (
 	// 把时区数据编进二进制，不依赖镜像里有没有 tzdata（§13.2）。
 	_ "time/tzdata"
 
+	"github.com/dayuer/jkt-guandan/app/h5"
 	"github.com/dayuer/jkt-guandan/server/internal/agent"
 	"github.com/dayuer/jkt-guandan/server/internal/backup"
 	"github.com/dayuer/jkt-guandan/server/internal/buildinfo"
@@ -40,7 +41,6 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 	"github.com/dayuer/jkt-guandan/server/internal/supervise"
 	"github.com/dayuer/jkt-guandan/server/internal/telemetry"
-	"github.com/dayuer/jkt-guandan/app/h5"
 )
 
 // minFreeBytes 是启动时要求的数据目录剩余空间（§12.1 第 3 步）。
