@@ -165,7 +165,7 @@ export async function registerServiceWorker(): Promise<void> {
  * VAPID 公钥是 base64url，`applicationServerKey` 要 Uint8Array。
  * 少一个 `=` 都要自己补回来，浏览器不会帮你。
  */
-export function urlBase64ToUint8Array(base64: string): Uint8Array {
+export function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
   const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
   const normalised = padded.replace(/-/g, "+").replace(/_/g, "/");
   const raw = atob(normalised);
