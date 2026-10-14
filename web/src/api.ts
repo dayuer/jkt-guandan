@@ -312,6 +312,7 @@ export async function signOutCurrentDevice(): Promise<void> {
   await signOutDevice(me.device_id);
 }
 
+
 /**
  * 注销：删掉称呼、WhatsApp、设备和推送订阅；已经结束的局里座位显示成「已注销牌友」
  * （§14）。注销之后这台设备就没有身份了，服务端会把 cookie 清掉。
@@ -331,4 +332,23 @@ export async function signOutOtherDevices(): Promise<number> {
     await signOutDevice(device.id);
   }
   return others.length;
+}
+
+/** VAPID 公钥（base64url）。服务端返回的是 `{"key": "..."}`（#48）。 */
+export async function pushKey(): Promise<string> {
+  const body = await request<{ key: string }>("GET", "/api/push/key");
+  return body.key;
+}
+
+/**
+ * 把浏览器给的订阅交给服务端（§5.3）。服务端会把它挂到当前身份上，
+ * 并记一条「提醒开启率」的埋点。
+ */
+export function pushSubscribe(subscription: unknown): Promise<void> {
+  return request<void>("POST", "/api/push/subscribe", { body: subscription });
+}
+
+/** 退订：服务端按 endpoint 删，只能删自己的。 */
+export function pushUnsubscribe(endpoint: string): Promise<void> {
+  return request<void>("DELETE", "/api/push/subscribe", { body: { endpoint } });
 }

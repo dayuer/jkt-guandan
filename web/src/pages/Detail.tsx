@@ -12,6 +12,7 @@ import {
   type Seat,
   type UserRef,
 } from "../api";
+import { CalendarSheet } from "../components/CalendarSheet";
 import { ShareSheet } from "../components/ShareSheet";
 import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
@@ -54,6 +55,8 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   // 编辑弹层里的就地错误（敏感词，§14）：弹层盖住了页面的错误行，得在弹层里面说。
   const [editError, setEditError] = useState<{ field: string; message: string } | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  /** 「加入日历」弹层：手动点开的，或刚报上名时自动弹的（#6）。 */
+  const [calendar, setCalendar] = useState<"manual" | "joined" | null>(null);
   const retrying = useRetrying();
 
   const load = useCallback(async () => {
@@ -98,16 +101,19 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
     return "操作没成功，请再试一次";
   };
 
-  const run = async (fn: () => Promise<GameDetail | void>) => {
-    if (busy) return;
+  /** 返回操作是否成功。 */
+  const run = async (fn: () => Promise<GameDetail | void>): Promise<boolean> => {
+    if (busy) return false;
     setBusy(true);
     try {
       const next = await fn();
       if (next) setDetail(next);
       else await load();
       setError("");
+      return true;
     } catch (err) {
       setError(explain(err));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -119,7 +125,14 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       if (!identity) return;
       // 拿到身份后接着报名：cookie 已经在浏览器里了。
     }
-    await run(() => joinGame(code));
+    // 报上名之后顺手问一句要不要加日历（#6）。候补没有确定的座位，不问。
+    let seated = false;
+    const ok = await run(async () => {
+      const next = await joinGame(code);
+      seated = next.me.role === "seat";
+      return next;
+    });
+    if (ok && seated) setCalendar("joined");
   };
 
   // ── 局头改牌局（K4 / K5 / K6）────────────────────────────────────────────
@@ -290,6 +303,12 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
           )}
         </div>
 
+        {myRole.role === "seat" && !closed && (
+          <button class="btn ghost cal-entry" onClick={() => setCalendar("manual")}>
+            📅 加入日历
+          </button>
+        )}
+
         <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
         {error && <p class="error">{error}</p>}
       </div>
@@ -336,6 +355,8 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
           }}
         />
       )}
+
+      {calendar && <CalendarSheet code={code} justJoined={calendar === "joined"} onClose={() => setCalendar(null)} />}
 
       {shareOpen && <ShareSheet detail={detail} toast={toast} onClose={() => setShareOpen(false)} />}
 

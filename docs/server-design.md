@@ -284,7 +284,7 @@ CREATE INDEX events_name_at ON events(name, at);
 |---|---|---|
 | 03 牌局详情：别人报名或退出时，座位圆点实时「落座」或「离座」，「差 N 人」随之变化 | `game:{code}` | `seat.taken` · `seat.left` · `game.full` |
 | 03 牌局详情：局头改时间或地点时，顶部出现横幅「局头改到 20:00 了」 | `game:{code}` | `game.updated` |
-| 03 牌局详情：「3 人正在看这局」 | `game:{code}` | `presence`（人数在服务端合并，每 5 秒最多推一次） |
+| 03 牌局详情：「3 人正在看这局」 | `game:{code}` | `presence`（人数在服务端合并，同一局每 2 秒最多推一次，#46） |
 | 02 首页：列表里每局的「差 N 人」实时变化，有新开的局时出现「有 1 个新局」提示条 | `feed:{area}` | `feed.game_changed` · `feed.game_added` |
 | 12 跳出引导：在 Safari 或 Chrome 里认领成功后，微信里那一页自动变成「✓ 已在浏览器中打开」 | `user:{id}` | `claim.redeemed` |
 | 10 我的：在另一台设备上开启了提醒或认领了身份，这里的状态同步更新 | `user:{id}` | `me.updated` |
@@ -303,6 +303,23 @@ CREATE INDEX events_name_at ON events(name, at);
   {"type":"hello","server_time":1760367600}
   ```
 - `v` 是牌局的版本号，加上座位变化计数。客户端收到 `v` 不大于本地已有版本的消息时直接丢弃，所以消息乱序或重复都不会出错。
+- **首页事件**（`feed:{area}`，#46）：`data` 就是 `GET /api/games` 列表里的一项，外加 `version`，客户端按 `short_code` 直接插入或替换那张卡片，不用再拉 REST：
+  ```json
+  {"topic":"feed:SCBD","type":"feed.game_changed","v":9,
+   "data":{"short_code":"8K2","starts_at":"…","area":"SCBD","venue":"…","kind":"…","status":"open",
+           "seat_list":[...],"seats":3,"missing":1,"host":{"id":"…","nickname":"…"},"version":9}}
+  ```
+  - `feed.game_added`：新开的局（`v` 为 1）；`feed.game_changed`：报名、退出、局头改信息、取消等任何变化之后的最新状态。
+  - 去重按 `short_code` 分别比 `v`：同一局 `v` 不大于本地已有的就丢弃（首页一个主题里有很多局，不能像 `game:*` 那样整个主题共用一个版本号）。
+  - 局头把局改到别的片区时，原片区和新片区各收到一条 `feed.game_changed`；原片区收到的条目里 `area` 已经是新片区，客户端看到 `area` 不是本片区（或者 `status` 不再是列表里要显示的状态），就把这张卡片移除。
+- **在看人数**（`presence`，#46）：只在 `game:*` 主题上有，没有 `v`：
+  ```json
+  {"topic":"game:8K2","type":"presence","data":{"viewers":3}}
+  ```
+  - `viewers` 是此刻订阅了这局的**设备数**，包含自己：同一设备开多个标签页算一个；没有身份的连接认不出设备，每条算一个。
+  - 订阅一局后，这条连接会收到一条当前人数（和 `subscribed` 回执的先后不固定）；之后人数变了才广播，同一局两次广播至少隔 2 秒，中间的变化合并成一次。客户端直接用最新收到的一条覆盖。
+  - presence 可以丢：连接的发送队列快满时服务端直接丢掉这条，不会因为它断开连接；下一次人数变化会纠正。
+  - 人数只在进程内存里，不落库；服务重启后随重连重新算出来。
 - 订阅权限：`game:*` 和 `feed:*` 是公开的（和公开的 REST 接口能看到的数据一致）；`user:{id}` 只能订阅自己的。每个连接最多订阅 20 个主题。
 
 **服务端实现（`internal/realtime`）**
@@ -311,6 +328,7 @@ CREATE INDEX events_name_at ON events(name, at);
 - **只在事务提交后发布**：`games` 和 `identity` 包在写事务提交**之后**才调用 `Publish`。事务回滚就不发，客户端不会看到「幽灵座位」。实现方式是在 `store` 层登记一个提交后回调。
 - **每个连接两个 goroutine**：一个读（处理 `sub`/`unsub`），一个写（从发送队列取消息写出，再加心跳）。发送队列容量 32，**写满就直接断开这个连接**；慢客户端重连后会重新拉 REST，不会拖慢别人。
 - **心跳**：服务端每 25 秒发一次 ping，10 秒内没收到 pong 就断开。移动网络和微信内置浏览器常在空闲 60 秒左右掐断连接，25 秒的间隔比它短。
+- **在看人数**：Hub 在 `game:*` 主题的订阅者变化（订阅、退订、断开）时排一次广播：离上次广播不到 2 秒就用定时器等到满 2 秒再发，发之前重新数一遍，人数没变就不发。计数状态只在内存里，没人看了就删掉；关闭时停掉所有定时器。
 - **限制**：同一 IP 最多 20 个连接；每个连接每秒最多 10 条客户端消息。
 - **优雅关闭**：收到 SIGTERM 后，向所有连接发送关闭码 `1012`（服务重启），客户端随后重连。
 
@@ -356,6 +374,29 @@ GET  /g/{code} · /g/{code}/og.png · /g/{code}/poster.png · /g/{code}/game.ics
 GET  /*                               内嵌的前端页面（单页应用，未知路径回落到 index.html）
 ```
 
+**蛋蛋 `POST /api/agent`**（#11，§10.10）：只出草稿，不写库。
+
+- 请求：`{"text":"周四晚上 PIK 打一局"}`，1–300 个字。没有身份也能用。
+- 不能用时直接返回 JSON 错误，前端退回 08 表单：
+  - 没配 `ANTHROPIC_API_KEY`：`503 agent_disabled`；
+  - 模型还没吐出第一个字就出错或超时：`503 agent_unavailable`；
+  - 同时在调模型的请求超过 4 个：`503 agent_busy`；
+  - 超出额度：`429 rate_limited`；
+  - 输入不合法：`400 invalid_input`。
+- 能用时返回 `text/event-stream`，按顺序推送：
+  ```
+  event: reply
+  data: {"text":"好嘞，周四 19:30 在 PIK"}          ← 蛋蛋的回复，分几片推，前端拼起来显示（最多 200 字）
+
+  event: draft
+  data: {"draft":{"starts_at":1791980000,"area":"PIK","venue":"PIK Avenue","kind":"classic","note":""},
+         "valid":true}
+  ```
+  - 最后一条是 `draft` 或 `error`。`error` 的 `data` 是 `{"code":"agent_unavailable","message":"蛋蛋走神了，直接填表吧"}`，表示推到一半时模型出错、超时或者输出不合格，前端同样退回 08 表单。
+  - `draft` 的字段和 `POST /api/games` 的请求体一致，认不出来的字段不出现。草稿按开局接口的同一套规则校验：`valid` 为假时，`problem` 说明原因（比如缺地点、时间太近），前端把草稿填进 08 表单让用户补；`valid` 为真时，用户确认后前端照常调用 `POST /api/games`。
+- 一次请求总共最多 20 秒（比 `WriteTimeout` 短），超时就按上面的规则退回表单。
+- 模型的输出格式是「一句回复 + `===` + 草稿 JSON」，服务端逐字段校验：片区、玩法不在列表里的丢掉，过长的截断。模型拿不到任何工具（§10.10）。
+
 中间件：
 - 身份：从 `__Host-gd_dev` cookie 解析出用户；
 - CSRF：会改数据的请求，必须带 `Content-Type: application/json`，并且 `Origin` 等于本站；
@@ -381,7 +422,8 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `GUANDAN_DEV` | 空 | 设为 `1` 时进入开发模式：不启用 TLS，cookie 不加 `Secure`，日志用文本格式（§13.5） |
 | `GUANDAN_BACKUP_URL` | 空 | 异地备份目标，S3 兼容地址（§13.3） |
 | `GUANDAN_BACKUP_KEY` | 空 | 备份加密用的 age 公钥；设置了备份地址时必须提供 |
-| `ANTHROPIC_API_KEY` | 空 | 为空时蛋蛋不可用，前端退回到表单（phase:3） |
+| `ANTHROPIC_API_KEY` | 空 | 为空时蛋蛋不可用（`POST /api/agent` 返回 `503 agent_disabled`），前端退回到表单（phase:3） |
+| `GUANDAN_AGENT_MODEL` | `claude-sonnet-5-5` | 蛋蛋用的 Claude 模型 |
 
 ## 8. 打包与部署
 
@@ -676,7 +718,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 | 报名、退出 | 每个用户每分钟 30 次 |
 | 认领码兑换 | 每个 IP 每分钟 10 次，每个码最多 5 次 |
 | WebSocket | 每个 IP 最多 20 条连接，新连接每秒最多 5 条（防止部署后所有客户端同时重连） |
-| 蛋蛋 | 每个用户每天 30 次 |
+| 蛋蛋 | 每台设备每天 30 次，每个 IP 每天 60 次（没有身份时只按 IP 算）；同时最多 4 个请求在调模型 |
 
 ### 12.4 优雅关闭
 

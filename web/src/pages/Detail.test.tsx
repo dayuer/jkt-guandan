@@ -185,3 +185,65 @@ describe("分享入口", () => {
     expect(share).toBeUndefined();
   });
 });
+
+// 加入日历（#6）：座位上的人能在详情页加日历；刚报上名时自动问一句。
+describe("加入日历", () => {
+  const SAFARI = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Version/17.0 Mobile/15E148 Safari/604.1";
+  const WECHAT = "Mozilla/5.0 (iPhone) Mobile/15E148 MicroMessenger/8.0.47 NetType/WIFI";
+
+  const calButton = (c: HTMLElement) =>
+    [...c.querySelectorAll("button")].find((b) => b.textContent?.includes("加入日历")) as HTMLButtonElement | undefined;
+
+  it("浏览器里：已报名的人点开后有 .ics 和 Google Calendar 两个出口", async () => {
+    vi.stubGlobal("navigator", { userAgent: SAFARI });
+    const { container } = setup(detail(1), []);
+    await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+
+    calButton(container)!.click();
+    await vi.waitFor(() => expect(container.querySelector("[data-testid=calendar-sheet]")).not.toBeNull());
+    expect(container.querySelector("[data-testid=calendar-ics]")?.getAttribute("href")).toBe("/g/ABC123/game.ics");
+    expect(container.querySelector("[data-testid=calendar-google]")?.getAttribute("href")).toBe("/g/ABC123/google");
+    expect(container.querySelector("[data-testid=calendar-wechat-hint]")).toBeNull();
+  });
+
+  it("微信里：不给下载，提示跳到浏览器", async () => {
+    vi.stubGlobal("navigator", { userAgent: WECHAT });
+    const { container } = setup(detail(1), []);
+    await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+
+    calButton(container)!.click();
+    await vi.waitFor(() => expect(container.querySelector("[data-testid=calendar-wechat-hint]")).not.toBeNull());
+    expect(container.querySelector("[data-testid=calendar-ics]")).toBeNull();
+    expect(container.querySelector("[data-testid=calendar-google]")).toBeNull();
+    expect(container.textContent).toContain("在浏览器打开");
+  });
+
+  it("没报名、候补和已结束的局都不显示", async () => {
+    vi.stubGlobal("navigator", { userAgent: SAFARI });
+    for (const d of [
+      { ...detail(1), me: { role: "none" as const } },
+      { ...detail(1), me: { role: "waitlist" as const } },
+      detail(1, { status: "done" }),
+    ]) {
+      const { container } = setup(d, []);
+      await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+      expect(calButton(container)).toBeUndefined();
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("报名成功后自动弹出「占上了！加到日历里？」", async () => {
+    vi.stubGlobal("navigator", { userAgent: SAFARI });
+    const before = { ...detail(1), me: { role: "none" as const } };
+    const after = { ...detail(2), me: { role: "seat" as const, seat_no: 2 } };
+    const { container } = setup(before, [respond(200, after)]);
+    await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+
+    const join = [...container.querySelectorAll(".actionbar button")].find((b) =>
+      b.textContent?.includes("报名占座"),
+    ) as HTMLButtonElement;
+    join.click();
+    await vi.waitFor(() => expect(container.querySelector("[data-testid=calendar-sheet]")).not.toBeNull());
+    expect(container.textContent).toContain("占上了");
+  });
+});

@@ -166,6 +166,18 @@ button:disabled {
   background: var(--card);
 }
 
+/* 链接做成的按钮（「加入日历」里的 .ics / Google 出口）。 */
+a.btn {
+  text-decoration: none;
+}
+
+/* 详情页「📅 加入日历」：放在信息卡下面，只对座位上的人显示（#6）。 */
+.btn.cal-entry {
+  margin-top: var(--s3);
+  height: 44px;
+  font-size: var(--fs-body);
+}
+
 .btn.disabled {
   background: var(--khaki);
   color: var(--white);
