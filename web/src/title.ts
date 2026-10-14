@@ -1,4 +1,5 @@
 import type { GameDetail } from "./api";
+import { lessonById } from "./learn";
 
 /**
  * 页面标题（#60）。
@@ -26,9 +27,17 @@ export function pageTitle(route: string): string {
       return `隐私与数据 · ${APP_NAME}`;
     case "new":
       return `开一局 · ${APP_NAME}`;
+    case "learn":
+      return `学牌 · ${APP_NAME}`;
     default:
       return APP_NAME;
   }
+}
+
+/** 06 规则速览的标题：「规则速览 · 学牌 · 随时掼掼蛋」（#106）。 */
+export function lessonTitle(id: string): string {
+  const lesson = lessonById(id);
+  return lesson ? `${lesson.title} · 学牌 · ${APP_NAME}` : pageTitle("learn");
 }
 
 const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];

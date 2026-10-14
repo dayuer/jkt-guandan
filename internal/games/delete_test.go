@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/dayuer/jkt-guandan/internal/identity"
+	"github.com/dayuer/jkt-guandan/internal/store"
 )
 
 // 注销（§14）：`DELETE /api/me` 在牌局侧的行为——还没结束的局按正常退出走，
@@ -260,5 +261,36 @@ func TestDeleteMeNotifiesOtherSeats(t *testing.T) {
 	after := f.count(`SELECT count(*) FROM outbox WHERE user_id = ?`, hostID)
 	if after <= before {
 		t.Fatalf("局头应当收到「有人退出了」的提醒：之前 %d 条，之后 %d 条", before, after)
+	}
+}
+
+// §14 / UU PDP：自助注销（DELETE /api/me）也要把埋点上的 user_id 置空，和 admin 命令一致。
+// 埋点本身留着做汇总，别人的不动。
+func TestDeleteMeNullsEventUserID(t *testing.T) {
+	f := newFixture(t)
+	leavingID, leavingToken := f.newUserWithToken("要走的人")
+	otherID := f.newUser("别人")
+	f.ident.SetGameCleaner(f.games)
+
+	err := f.st.Write(context.Background(), func(ctx context.Context, tx *store.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO events (at, user_id, name, env) VALUES
+			(1, ?1, 'detail_view', 'wechat'), (2, ?1, 'join_ok', 'wechat'), (3, ?2, 'detail_view', 'pwa')`,
+			leavingID, otherID)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.deleteUser(leavingID, leavingToken)
+
+	if n := f.count(`SELECT count(*) FROM events WHERE user_id = ?`, leavingID); n != 0 {
+		t.Fatalf("注销后埋点上不该再有这个人的 user_id，还有 %d 条", n)
+	}
+	if n := f.count(`SELECT count(*) FROM events WHERE name IN ('detail_view', 'join_ok')`); n != 3 {
+		t.Fatalf("埋点本身要留着，应有 3 条，实际 %d", n)
+	}
+	if n := f.count(`SELECT count(*) FROM events WHERE user_id = ?`, otherID); n != 1 {
+		t.Fatalf("别人的埋点不该动，实际 %d 条", n)
 	}
 }

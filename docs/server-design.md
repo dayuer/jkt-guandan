@@ -174,8 +174,8 @@ CREATE TABLE events (
   id      INTEGER PRIMARY KEY,
   at      INTEGER NOT NULL,
   user_id TEXT,
-  name    TEXT NOT NULL,                   -- 如 seat_taken / push_enabled / claim_redeemed
-  env     TEXT,                            -- wechat / whatsapp / safari / chrome / pwa / other
+  name    TEXT NOT NULL,                   -- 如 seat_taken / push_enabled / claim_redeemed，以及 POST /api/events 的白名单事件和 client_error
+  env     TEXT,                            -- POST /api/events、/api/client-errors 写入的是 wechat / whatsapp / browser / pwa
   props   TEXT                             -- JSON
 );
 CREATE INDEX events_name_at ON events(name, at);
@@ -382,15 +382,15 @@ POST /api/games/{code}/kick           局头移出 {user_id}
 POST /api/games/{code}/invites        邀请 {user_ids}
 PUT/DELETE /api/follows/{user_id}     星标牌友
 GET  /api/friends                     牌友列表（含一起打过几局）
-POST /api/events                      埋点批量上报（phase:2）
-POST /api/client-errors               前端错误上报
+POST /api/events                      埋点批量上报（#117，见下面「埋点」）
+POST /api/client-errors               前端错误上报（#117）
 DELETE /api/me                        注销并删除个人数据（§14）
 POST /api/push/subscribe              保存推送订阅（phase:2）
 DELETE /api/push/subscribe            取消订阅
 POST /api/agent                       蛋蛋（phase:3）：只返回草稿，不写库
 GET  /ws                              WebSocket（见 §5.5）
 GET  /g/{code} · /g/{code}/og.png · /g/{code}/poster.png · /g/{code}/game.ics
-GET  /*                               内嵌的前端页面（单页应用，未知路径回落到 index.html）
+GET  /*                               内嵌的前端页面（单页应用，未知路径回落到 index.html）；/api 下没有匹配的路径返回 404 {"error":{"code":"not_found"}}，路径存在但方法不对返回 405 method_not_allowed 并带 Allow（#119）
 ```
 
 **列表条目 `GET /api/games`**（#114）：每一项除了 `short_code`、`starts_at`、`area`、`venue`、`kind`、`status`、`seat_list`、`seats`、`missing`、`host`，还有按当前身份算的：
@@ -426,7 +426,8 @@ GET  /*                               内嵌的前端页面（单页应用，未
   - 排序：星标的在前，然后按 `together_count` 从多到少、`last_together_at`（最近一起的那一局的开局时间）从新到旧。最多 200 人。
   - 不出现：自己、已注销、被封禁、被合并掉的身份。只有这一个列表，不提供按称呼搜索用户的接口（§10.9）。
   - 没有牌友时是 `{"friends":[]}`。
-- `PUT /api/follows/{user_id}` 星标、`DELETE /api/follows/{user_id}` 取消星标：都是幂等的，成功返回 `204`。只能对 `GET /api/friends` 里会出现的人做；不是牌友（没一起坐过、只在取消的局里同桌、自己、不存在、已注销、被封禁）一律 `404 not_friend`，接口不能用来探测用户 id。星标是单向的，对方看不到。
+- `PUT /api/follows/{user_id}` 星标：幂等，成功返回 `204`。只能对 `GET /api/friends` 里会出现的人做；不是牌友（没一起坐过、只在取消的局里同桌、自己、不存在、已注销、被封禁）一律 `404 not_friend`，接口不能用来探测用户 id。星标是单向的，对方看不到。
+- `DELETE /api/follows/{user_id}` 取消星标：幂等，**一律 `204`，不查是不是牌友**。对方注销或被封禁之后，旧的星标也要能清掉；结果对任何 id 都一样，也就探测不出什么。
 - 合并身份（`guandan admin` 的 merge）时，星标两个方向都搬到保留的身份上；原来互相星标的不会变成自己星标自己。注销时删掉这个人的星标和别人对他的星标。
 
 **邀请牌友 `POST /api/games/{code}/invites`**（#115，08「邀请谁」，`route.User`）：
@@ -443,6 +444,19 @@ GET  /*                               内嵌的前端页面（单页应用，未
 {"group":{"wechat_id":"jktguandan","whatsapp_group_url":"https://chat.whatsapp.com/AbCdEf"}}
 ```
 `group` 是 09 牌友顶部「雅加达掼蛋群」横幅用的，来自 `GUANDAN_GROUP_WECHAT_ID`、`GUANDAN_GROUP_WHATSAPP_URL`；没配置的那一项是空串，两项都空时前端不显示横幅。
+
+**埋点 `POST /api/events` 与前端错误 `POST /api/client-errors`**（#117）：都是 `public`，没有身份也能用（落地页、详情页在报名前就要埋点）；被封禁的身份 403。
+
+- `POST /api/events`：`{"env":"wechat","events":[{"name":"detail_view","props":{"game":"8K2QXM"}}, …]}`，一批 1–20 条，请求体最大 8 KB（超过 413）。
+  - `env` 只能是 `wechat` / `whatsapp` / `browser` / `pwa`，整批共用一个，不对返回 400。
+  - 事件名白名单：`detail_view`、`join_click`、`join_ok`、`share_open`、`share_channel`、`push_prompt`、`push_ok`、`jumpout`。不在白名单里的单条丢掉，不拖垮整批；响应 `{"accepted":N,"dropped":M}`。
+  - `props` 只认两个键：`game`（6 位牌局短码，形状固定）、`channel`（只给 `share_channel`，取值 `whatsapp` / `wechat` / `copy` / `system` / `poster`）。别的键或形状不对，这一条丢掉。不收自由文本，不采集个人信息；有身份时记 `user_id`（注销时置空，§14），没有就为空。
+  - 限流：主要按设备，每台设备每分钟 30 批；每个 IP 每分钟 120 批（办公室、运营商出口 NAT 后面一个 IP 有很多人，IP 这一道放宽，只防单个来源刷爆）。先 IP 后设备，IP 被拦时不扣设备的；超出 `429 rate_limited`。
+  - 时间用服务器的，不收客户端时间。
+- `POST /api/client-errors`：`{"env":"…","message":"…","stack":"…","url":"…"}`，成功 204。
+  - `message` 截成 300 字、`stack` 截成 2000 字；`url` 只留路径（查询串里可能有认领 token）。存进 `events`（`name='client_error'`），同时记一条 warn 日志。
+  - 限流：每台设备每分钟 6 条，每个 IP 每分钟 60 条，全站每小时 5000 条（防止有人换设备把磁盘灌满）。
+- `guandan admin stats` 在原有输出后面按环境打印转化漏斗：上面白名单里各事件的**次数**（不是去重人数，埋点不记设备），加上 view→click、click→ok、prompt→ok 三个转化率。
 
 **蛋蛋 `POST /api/agent`**（#11，§10.10）：只出草稿，不写库。
 

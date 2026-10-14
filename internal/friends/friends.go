@@ -91,12 +91,10 @@ func (s *Service) Star(ctx context.Context, me, target string) error {
 	})
 }
 
-// Unstar 取消星标（幂等）。不是牌友返回 ErrNotFriend：和 Star 一样，不让接口用来探测用户 id。
+// Unstar 取消星标，幂等，不查是不是牌友：对方注销、被封禁之后，旧的星标也要能清掉（#108 复审）。
+// 不管目标存不存在都是同样的结果（删 0 行或 1 行），所以也探测不出用户 id。
 func (s *Service) Unstar(ctx context.Context, me, target string) error {
 	return s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		if err := RequireFriend(ctx, tx, me, target); err != nil {
-			return err
-		}
 		_, err := tx.ExecContext(ctx, `DELETE FROM follows WHERE user_id = ? AND target_id = ?`, me, target)
 		return err
 	})

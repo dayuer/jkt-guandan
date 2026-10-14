@@ -1045,6 +1045,32 @@ a.btn {
 
 /* ── 首页（设计稿 A2）────────────────────────────────────────── */
 
+/* 首页顶部整块固定（#111）：只有下面的牌局列表滚动。背景用页面底色，卡片滚过去时不透出来；
+   刘海屏的主屏幕 PWA 下让出安全区。片区那一行自己仍可横向滑动。 */
+.home-top {
+  position: sticky;
+  top: 0;
+  z-index: 5; /* 高于卡片，低于 tab 栏 10 / 遮罩 20 / 弹层 25 */
+  background: var(--paper);
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: var(--s3);
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+
+.home-top.scrolled {
+  border-bottom-color: var(--line);
+}
+
+/* 首页期间关掉整页的下拉回弹：不然 iOS 橡皮筋会把固定头部一起拽下来（#111）。
+   用 none 而不是 contain：根滚动容器上 contain 只禁止「滚动链」，回弹效果照样有，
+   iOS 上头部还是会被拽下来；而安卓 Chrome 的下拉刷新两者都会关掉（规范如此）。
+   所以 contain 换不回下拉刷新，只是治不了 iOS。只在首页生效，离开首页就恢复。 */
+html.lock-overscroll,
+html.lock-overscroll body {
+  overscroll-behavior-y: none;
+}
+
 .head {
   padding: 8px 18px 0;
 }
@@ -1662,6 +1688,11 @@ a.btn {
   margin-top: var(--s1);
 }
 
+/* 头部下面已经留了 12px，列表标题少留一点，和固定之前的间距一样。 */
+.home-top + .listing {
+  padding-top: 6px;
+}
+
 /* ── 09 牌友（设计稿 F1 / F2，#108）──────────────────────────── */
 
 /* 顶部「雅加达掼蛋群」横幅：图标 + 两行字 + 右边两个小按钮。 */
@@ -1868,4 +1899,92 @@ a.btn {
 
 .sheet.invite .cancel {
   margin-top: var(--s4);
+}
+
+/* ── 邀请谁（#115）──────────────────────────────────────────── */
+
+/* 08 表单里已选的牌友：胶囊 + 一个虚线的「从牌友里选」。 */
+.choices.invitees .chip {
+  padding: 9px 14px;
+}
+
+.choices.invitees button.add {
+  border-style: dashed;
+  color: var(--red);
+}
+
+/* 多选面板：列表太长时面板自己滚，「邀请」按钮不被切掉。 */
+.sheet.picker {
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+}
+
+.pick-list {
+  display: grid;
+  gap: var(--s2);
+  margin-top: var(--s4);
+}
+
+.pick {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1.5px solid var(--line);
+  background: var(--card);
+  text-align: left;
+  color: var(--ink);
+}
+
+.pick.on {
+  border-color: var(--red);
+  background: var(--red-tint);
+}
+
+.pick .avatar {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  font-size: var(--fs-15);
+  background: var(--beige);
+  color: var(--ink);
+}
+
+.pick .tx {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-15);
+  font-weight: 700;
+}
+
+.pick .tx small {
+  display: block;
+  font-size: var(--fs-small);
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.pick .check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-2);
+  color: var(--cream);
+  font-size: var(--fs-13);
+  font-weight: 900;
+}
+
+/* 已经在局里的牌友：灰掉，不能选。 */
+.pick.in {
+  opacity: 0.5;
+}
+
+.pick.on .check {
+  background: var(--red);
+  border-color: var(--red);
 }

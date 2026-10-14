@@ -97,11 +97,26 @@ export function Home({ me, onOpen, onCreate, toast }: Props) {
   const promotedGame = promoted && games?.find((g) => g.short_code === promoted.code);
   const banners = notices.filter((n): n is Exclude<Notice, { kind: "promoted" }> => n.kind !== "promoted");
 
+  // 滚动后给固定头部加一条分隔线；首页期间关掉下拉回弹，免得 iOS 把头部一起拽下来（#111）。
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 0);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    document.documentElement.classList.add("lock-overscroll");
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      document.documentElement.classList.remove("lock-overscroll");
+    };
+  }, []);
+
   const waiting = games?.reduce((n, g) => n + g.missing, 0) ?? 0;
 
   return (
     <>
       <div class="body has-bar">
+        {/* 标题、定位、日期和片区筛选是一整块，钉在顶部不跟着列表滚（#111）。 */}
+        <div class={`home-top${scrolled ? " scrolled" : ""}`} data-testid="home-top">
         <div class="head">
           <h1>随时掼掼蛋</h1>
           <p class="sub">
@@ -135,6 +150,7 @@ export function Home({ me, onOpen, onCreate, toast }: Props) {
               {a || "全部"}
             </button>
           ))}
+        </div>
         </div>
 
         {banners.map((n) => (

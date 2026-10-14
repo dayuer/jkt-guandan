@@ -161,11 +161,13 @@ func TestFriendsListAndStars(t *testing.T) {
 
 	// 没一起坐过局（含只在取消的局里同桌）、自己、不存在的 id：一律 404，不能拿来探测用户。
 	for _, target := range []string{jie.id, zhao.id, wang.id, "01NOTAUSER"} {
-		for _, method := range []string{http.MethodPut, http.MethodDelete} {
-			status, body := f.do(wang.c, method, "/api/follows/"+target, nil)
-			if status != http.StatusNotFound || body["error"].(map[string]any)["code"] != "not_friend" {
-				t.Errorf("%s %s：%d %v，期望 404 not_friend", method, target, status, body)
-			}
+		status, body := f.do(wang.c, http.MethodPut, "/api/follows/"+target, nil)
+		if status != http.StatusNotFound || body["error"].(map[string]any)["code"] != "not_friend" {
+			t.Errorf("PUT %s：%d %v，期望 404 not_friend", target, status, body)
+		}
+		// 取消星标不查是不是牌友，一律 204：结果都一样，也就探测不出什么。
+		if status, _ := f.do(wang.c, http.MethodDelete, "/api/follows/"+target, nil); status != http.StatusNoContent {
+			t.Errorf("DELETE %s：%d，期望 204", target, status)
 		}
 	}
 
@@ -189,6 +191,10 @@ func TestFriendsExcludeDeletedAndBanned(t *testing.T) {
 	if status, _ := f.do(lily.c, http.MethodDelete, "/api/me", nil); status != http.StatusNoContent && status != http.StatusOK {
 		t.Fatalf("注销: %d", status)
 	}
+	// 先星标阿明，封禁之后他不再是「牌友」，但旧星标要能取消（#108 复审）。
+	if status, _ := f.do(wang.c, http.MethodPut, "/api/follows/"+ming.id, nil); status != http.StatusNoContent {
+		t.Fatalf("星标: %d", status)
+	}
 	if _, err := f.st.Ban(context.Background(), ming.id, f.clk.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +205,13 @@ func TestFriendsExcludeDeletedAndBanned(t *testing.T) {
 		if status, _ := f.do(wang.c, http.MethodPut, "/api/follows/"+target, nil); status != http.StatusNotFound {
 			t.Errorf("星标已注销或被封禁的人应 404，实际 %d", status)
 		}
+	}
+	if status, _ := f.do(wang.c, http.MethodDelete, "/api/follows/"+ming.id, nil); status != http.StatusNoContent {
+		t.Fatalf("取消对被封禁的人的旧星标应 204，实际 %d", status)
+	}
+	var n int
+	if err := f.st.Read().QueryRow(`SELECT COUNT(*) FROM follows WHERE target_id = ?`, ming.id).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("旧星标应被清掉，还剩 %d %v", n, err)
 	}
 }
 

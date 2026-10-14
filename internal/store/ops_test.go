@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -437,5 +438,34 @@ func TestBanFollowsMergedInto(t *testing.T) {
 	}
 	if banned, _ := st.IsBanned(context.Background(), host, ""); !banned {
 		t.Fatal("合并后的最终身份也应被封禁")
+	}
+}
+
+// #117：漏斗按环境分组；只数 FunnelEvents 里的埋点，窗口外的不算；没有环境的记成 other。
+func TestFunnels(t *testing.T) {
+	st := openTest(t)
+	at := opsNow.Unix()
+	mustExec(t, st, `INSERT INTO events (at, name, env) VALUES
+		(?, 'detail_view', 'wechat'), (?, 'detail_view', 'wechat'), (?, 'join_click', 'wechat'), (?, 'join_ok', 'wechat'),
+		(?, 'detail_view', 'pwa'), (?, 'push_ok', 'pwa'),
+		(?, 'detail_view', NULL),
+		(?, 'client_error', 'wechat'), (?, 'seat_taken', 'wechat'),
+		(0, 'detail_view', 'wechat')`,
+		at, at, at, at, at, at, at, at, at)
+
+	got, err := st.Funnels(context.Background(), opsNow.Add(-7*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := func(name string) int { return slices.Index(store.FunnelEvents, name) }
+	if len(got) != 3 || got[0].Env != "other" || got[1].Env != "pwa" || got[2].Env != "wechat" {
+		t.Fatalf("环境分组不对：%+v", got)
+	}
+	w := got[2].Counts
+	if w[idx("detail_view")] != 2 || w[idx("join_click")] != 1 || w[idx("join_ok")] != 1 {
+		t.Fatalf("wechat = %v（窗口外的、不在漏斗里的埋点不该算）", w)
+	}
+	if got[1].Counts[idx("push_ok")] != 1 || got[0].Counts[idx("detail_view")] != 1 {
+		t.Fatalf("pwa=%v other=%v", got[1].Counts, got[0].Counts)
 	}
 }

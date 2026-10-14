@@ -168,6 +168,8 @@ export interface Me {
   role: "seat" | "waitlist" | "none";
   seat_no?: number;
   position?: number;
+  /** 局头邀请过我（#115）。只有被邀请的人自己看得到。 */
+  invited_by?: UserRef;
 }
 
 export interface GameDetail {
@@ -410,4 +412,39 @@ export interface GroupInfo {
 export async function getGroupInfo(): Promise<GroupInfo> {
   const body = await request<{ group?: Partial<GroupInfo> }>("GET", "/api/config");
   return { wechat_id: body?.group?.wechat_id ?? "", whatsapp_group_url: body?.group?.whatsapp_group_url ?? "" };
+}
+
+// ── 邀请牌友（#115，08「邀请谁」）────────────────────────────────────────────
+
+export interface InviteResult {
+  /** 这次新邀请的人（每人收到一条 invited 推送）。 */
+  invited: string[];
+  /** 已经在局里、邀请过、被移出过的人：跳过，不算错。 */
+  skipped: string[];
+}
+
+/** 只有局头能调；去重后 1–20 个。有一个不是牌友整次失败（404 not_friend）。 */
+export async function inviteFriends(code: string, userIDs: string[]): Promise<InviteResult> {
+  const body = await request<Partial<InviteResult>>("POST", `/api/games/${encodeURIComponent(code)}/invites`, {
+    body: { user_ids: userIDs },
+  });
+  return { invited: body?.invited ?? [], skipped: body?.skipped ?? [] };
+}
+
+/** 邀请结果翻成一句提示。 */
+export function inviteSummary(r: InviteResult): string {
+  if (r.invited.length === 0) return "他们都已经在局里或邀请过了";
+  const base = `已邀请 ${r.invited.length} 位牌友，他们会收到通知`;
+  return r.skipped.length > 0 ? `${base}（${r.skipped.length} 位已在局里或邀请过）` : base;
+}
+
+/** 邀请失败的原因。 */
+export function inviteError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === "quota_exceeded") return "今天邀请太多了，明天再试";
+    if (err.code === "not_friend") return "有人不在你的牌友里了，刷新一下再选";
+    if (err.code === "game_closed") return "这一局已经结束或取消了";
+    if (err.code === "not_host") return "只有局头能邀请";
+  }
+  return "邀请没发出去，稍后再试";
 }
