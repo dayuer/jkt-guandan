@@ -62,12 +62,12 @@ CREATE TABLE devices (
 );
 CREATE TABLE claim_tokens (
   token_hash BLOB PRIMARY KEY,             -- sha256(claim_token)
-  code       TEXT NOT NULL,                -- 6 位认领码（#31）
+  code       TEXT NOT NULL,                -- 6 位认领码（#31；0001_init.sql 的注释仍写 4 位，以代码 ClaimCodeDigits = 6 为准）
   user_id    TEXT NOT NULL REFERENCES users(id),
   expires_at INTEGER NOT NULL,             -- 签发后 10 分钟
   used_at    INTEGER,
-  attempts   INTEGER NOT NULL DEFAULT 0,
-  issued_net TEXT                          -- 签发时的客户端网络（IPv4 /24、IPv6 /64），兑换认领码时必须一致（0002_claim_net.sql）
+  attempts   INTEGER NOT NULL DEFAULT 0,   -- 见 §5.2：目前实际上不会超过 1，不构成防撞库的限制
+  issued_net TEXT                          -- 签发时的客户端网络，形如 203.0.113.0/24、2001:db8::/64；兑换认领码时必须一致（0002_claim_net.sql）。为空（0002 之前签发、或 IP 解析不出）时不做网络检查
 );
 -- 有效码唯一（0002_claim_net.sql 改为 UNIQUE；作废旧码时写 used_at 把号码让出来）
 CREATE UNIQUE INDEX claim_code_live ON claim_tokens(code) WHERE used_at IS NULL;
@@ -217,27 +217,41 @@ CREATE INDEX events_name_at ON events(name, at);
 
 ### 5.2 身份
 
-> 2026-10-14 按 #31（实现）、#32（认领码撞库）和 coord 在 PR #31 里的裁定修订。
+> 2026-10-14 按 #31（实现）、#32（认领码撞库）和 coord 在 PR #31 里的裁定修订；同日按 #86 逐条对照 `internal/identity` 的代码校正。
 
 - **首次填称呼**（`POST /api/me`）：创建 user 和 device，生成 32 字节随机的 `device_token`，**只通过 HttpOnly cookie 下发**，任何响应体里都不出现它；前端只在 localStorage 里存一个非敏感标记 `gd_has_identity=1`。数据库只存 token 的 sha256。cookie 的名字和属性只在一个地方决定（§10.3）：
   - 生产环境：`__Host-gd_dev`，`HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=400 天`；
   - 开发模式（`GUANDAN_DEV=1`）：`gd_dev`，不带 Secure。真机通过局域网 IP 调试时，浏览器不把这类地址当作安全上下文，带 Secure 的 cookie 会被丢掉。
 - **跳出微信前**（`POST /api/claim`）：生成 16 字节随机的 `claim_token`，以及一个 **6 位**认领码（`crypto/rand` + `rand.Int`，没有取模偏差）。两者都是 10 分钟内有效，并记下签发时的客户端网络 `issued_net`（IPv4 取 /24，IPv6 取 /64）。约束：
   - **每个用户同时只有一个有效码**，签发新码时，旧码写上 `used_at` 作废；
-  - 签发**每个用户每小时最多 5 次**；
+  - 签发**每个用户每小时最多 5 次**（令牌桶：容量 5，每 12 分钟补 1 个；超出返回 `429 rate_limited`）；
+  - 必须已有身份，没有身份返回 401；
+  - 响应体里有 `claim_token`、`code`、`expires_at`（Unix 秒）。这是全站唯一一个在响应体里返回凭证的接口：它本来就要交给前端去拼跳出链接、显示认领码；
   - 有效码之间不重复：签发时在写事务里查重；数据库上还有一个 UNIQUE 部分索引 `claim_code_live(code) WHERE used_at IS NULL` 兜底，作废旧码和签发查重用的判断条件与这个索引一致。
 - **凭 token 兑换**（`POST /api/claim/redeem {token, confirm?}`）：
-  - 当前设备**没有身份**：直接兑换，设备成为 token 的主人。一次性和过期检查由一条 `UPDATE … RETURNING` 完成。前端用 `replaceState` 去掉 URL 里的参数，并在「✓ 已认回身份：X」旁边放一个「不是我」，点了就退出（#36）。
-  - 当前设备**已有另一个身份**：**不合并，也不自动切换**。服务端返回 `409 claim_conflict`，附上 token 主人的称呼，**此时 token 不会被消耗**，这个请求是只读的。前端显示确认屏，默认选项是「保持当前身份」。用户确认后，前端带上 `confirm:true` 再提交一次，这时才消耗 token，并只把**这台设备**的 `user_id` 换过去。原来那个身份的数据不迁移、不删除。
+  - 当前设备**没有身份**：直接兑换，给这台设备新挂一条 device 记录，并通过 Set-Cookie 下发新的 device_token。一次性和过期检查由一条 `UPDATE … RETURNING` 完成。前端用 `replaceState` 去掉 URL 里的参数，并在「✓ 已认回身份：X」旁边放一个「不是我」，点了就退出（#36）。
+  - 当前设备**已经是 token 的主人**（同一个人在自己的设备上兑换自己的 token）：照样**消耗** token，但沿用原来的 device 记录，不换 cookie，也不新挂设备（#36）。所以签发 token 的那个页面如果自己把它兑换了，token 就用掉了——前端在应用内置浏览器里不自动兑换，正是为了避开这一点（#70）。
+  - 当前设备**已有另一个身份**：**不合并，也不自动切换**。服务端返回 `409 claim_conflict`，附上 token 主人的称呼，**此时 token 不会被消耗**，这个请求是只读的。前端显示确认屏，默认选项是「保持当前身份」。用户确认后，前端带上 `confirm:true` 再提交一次，这时才消耗 token，并只把**这台设备**的 `user_id` 换过去：
+    - 原来那个身份的数据不迁移、不删除，它的其他设备照常可用；
+    - 这台设备上以旧身份开的推送订阅会被删掉，由前端以新身份重新订阅，否则旧身份的提醒会继续发到这台设备（#48 复审）；
+    - 这台设备已有的 WebSocket 连接在提交后被断开，让它以新身份重连（#43）；
+    - cookie 不换，原来那个 device_token 继续有效。
+  - 兑换成功（新挂设备或切换设备）后，向 `user:{token 主人}` 发一条 `claim.redeemed` 事件。
   - 只有 POST 会消耗 token，GET 打开带 `?claim=` 的页面不会。所以微信、WhatsApp 的链接预览抓取器拿到这个链接，也用不掉它。
-- **凭认领码兑换**（`POST /api/claim/redeem {code}`）：只允许还没有身份的设备使用。兑换时只查有效记录（`used_at IS NULL AND expires_at > now`），并且有以下几层防护：
-  1. **只能在签发时的同一个网络兑换**：兑换请求的客户端 IP（§10.13）必须和 `issued_net` 在同一个 /24 或 /64 网段内；
-  2. 同一个 IP 每分钟最多 10 次；每个码最多试 5 次；
-  3. **全站失败预算**：全站加起来每分钟失败超过 20 次，就暂停凭码兑换 5 分钟，同时记 warn 日志。凭 token 兑换不受这个限制。
+- **凭认领码兑换**（`POST /api/claim/redeem {code}`）：只允许还没有身份的设备使用；已有身份时同样返回 `400 claim_invalid`，不透露这个码是否存在。兑换时只查有效记录（`used_at IS NULL AND expires_at > now`），成功后给这台设备新挂一条 device 记录并下发 cookie。防护有以下几层：
+  1. **只能在签发时的同一个网络兑换**：兑换请求的客户端 IP（§10.13）归一成 /24 或 /64 之后，必须和 `issued_net` 完全相同。`issued_net` 为空的旧记录不做这项检查。这一条只用来挡远程撞库，不是安全边界：印尼大量使用运营商级 NAT，同一个出口后面有很多互不相干的人；
+  2. 同一个 IP 每分钟最多 10 次（令牌桶，容量 10，超出返回 `429 rate_limited`，不计入下面的失败预算）；
+  3. **全站失败预算**：从窗口开始算起 1 分钟内全站失败超过 20 次，就暂停凭码兑换 5 分钟，同时记 warn 日志。格式不对的码、暂停期间的请求都算失败，所以持续撞库会让暂停一直延续下去。预算只在进程内存里，重启后清零。凭 token 兑换不受这个限制；
   4. 所有失败都返回同一个 `400 claim_invalid`。
 
+  **关于「每个码最多试 5 次」**：`claim_tokens.attempts` 和 `ClaimCodeMaxAttempts = 5` 在代码里存在，但实际上不起作用。猜错的码查不到记录，计不上数；网络不对等失败会让整个写事务回滚，计数也跟着回滚；查到并通过检查的那一次直接成功、码被用掉。所以真正限制撞库的是第 1–3 条，不是这一条（#95）。
+
   按这些限制估算：6 位码共 10⁶ 种，全站每 10 分钟最多大约 200 次失败尝试，而且攻击者必须和受害者在同一个网段，远程撞库几乎不可能成功。
-- **不提供面向用户的身份合并。** `mergeUsers` 只留给以后的 `guandan admin` 子命令使用，任何用户能触发的路径都调不到它。
+- **不提供面向用户的身份合并。** 代码里有 `mergeUsers`（`internal/identity/merge.go`），但目前只有测试调用它，`guandan admin` 也还没有合并子命令（§13.6）；任何用户能触发的路径都调不到它。将来做成 admin 命令时，语义以代码为准：
+  - 以**先注册**的身份为主（`created_at` 更早；相同时取 id 更小的）；
+  - 牌局的局头、座位、候补、禁止名单、邀请、幂等键、星标（两个方向）都迁到主身份上。两边在同一局都有座位时，保留更早坐下的那个；其余主键冲突的记录直接丢弃；
+  - 设备、推送订阅、outbox 整体改挂到主身份；
+  - 旧身份只写 `merged_into`，不删除。之后带着旧身份的请求，按 `merged_into` 链（最多走 8 步）解析成最终的主身份处理（§10.4）。
 
 ### 5.3 提醒（outbox 模式）
 
@@ -551,11 +565,12 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 - **claim token 会出现在 URL 里**，URL 可能经过 Referer、日志、聊天记录泄露，所以：
   - **只能由前端用 POST 兑换**，打开带 token 的页面（GET）不消耗它。微信或 WhatsApp 的链接预览抓取器只会 GET 这个 URL，不执行 JS，因此不会把一次性 token 用掉；
   - 带 claim 参数的页面返回 `Referrer-Policy: no-referrer`，前端兑换成功后立即用 `replaceState` 去掉参数；
-  - 访问日志里，查询参数一律脱敏，不记录 `claim=`；
-  - 有效期 10 分钟，只能用一次（§5.2）。
-- **认领码**：6 位数字，必须在签发时的同一网络兑换，并且有全站失败预算，详见 §5.2。所有失败一律返回同一个错误。
-- **claim 不合并身份**：设备已有别的身份时，必须用户确认后才切换，见 §5.2。这样，「把自己的 claim 链接发到群里，接管点开链接的人的身份」这条攻击路径就不存在了（#31 审计 P0）。
-- **token 不出现在前端可读的地方**：只放在 HttpOnly cookie 里，不写 localStorage，任何响应体里也不出现。
+  - 访问日志只记路径（`r.URL.Path`），不记查询参数，所以 `claim=` 不会进日志；
+  - 前端在应用内置浏览器里不自动兑换 URL 上的 token（那是为「跳出去」签发的），引导屏关闭时也会把它从地址栏去掉（#70）；
+  - token 是 16 字节随机数，数据库只存 sha256；有效期 10 分钟，只能用一次，同一个人在自己设备上兑换也算用掉（§5.2）。
+- **认领码**：6 位数字（`crypto/rand` 均匀取值），只给没有身份的设备用，必须在签发时的同一网络（/24、/64）兑换，有每 IP 限流和全站失败预算，详见 §5.2。所有失败一律返回同一个 `400 claim_invalid`，不区分「没有这个码」「过期」「网络不对」。注意每个码的尝试次数上限目前并不生效（§5.2）。
+- **claim 不合并身份**：设备已有别的身份时，必须用户确认后才切换，见 §5.2。切换只改这台设备的 `user_id`，不碰两个身份的任何数据。这样，「把自己的 claim 链接发到群里，接管点开链接的人的身份」这条攻击路径就不存在了（#31 审计 P0）。
+- **device_token 不出现在前端可读的地方**：只放在 HttpOnly cookie 里，不写 localStorage，任何响应体里也不出现。claim token 和认领码是例外，它们由 `POST /api/claim` 在响应体里返回给本人，因为本来就要显示或拼进链接；它们短期有效、一次性，换到的也只是一个新的 device_token。
 
 ### 10.4 授权
 
