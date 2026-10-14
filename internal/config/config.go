@@ -50,6 +50,8 @@ type Config struct {
 	TrustedProxies clientip.Resolver
 	// AnthropicKey 为空时蛋蛋不可用（phase:3）。
 	AnthropicKey string
+	// AgentModel 是蛋蛋用的 Claude 模型，读 GUANDAN_AGENT_MODEL；为空用 agent.DefaultModel。
+	AgentModel string
 }
 
 // Domains 把逗号分隔的域名拆开，去掉空项。
@@ -121,6 +123,7 @@ func Load() (Config, error) {
 		BackupURL:    strings.TrimSpace(os.Getenv("GUANDAN_BACKUP_URL")),
 		BackupKey:    strings.TrimSpace(os.Getenv("GUANDAN_BACKUP_KEY")),
 		AnthropicKey: strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
+		AgentModel:   strings.TrimSpace(os.Getenv("GUANDAN_AGENT_MODEL")),
 
 		BackupRegion:    env("AWS_REGION", "us-east-1"),
 		BackupAccessKey: strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")),

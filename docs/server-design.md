@@ -356,6 +356,29 @@ GET  /g/{code} · /g/{code}/og.png · /g/{code}/poster.png · /g/{code}/game.ics
 GET  /*                               内嵌的前端页面（单页应用，未知路径回落到 index.html）
 ```
 
+**蛋蛋 `POST /api/agent`**（#11，§10.10）：只出草稿，不写库。
+
+- 请求：`{"text":"周四晚上 PIK 打一局"}`，1–300 个字。没有身份也能用。
+- 不能用时直接返回 JSON 错误，前端退回 08 表单：
+  - 没配 `ANTHROPIC_API_KEY`：`503 agent_disabled`；
+  - 模型还没吐出第一个字就出错或超时：`503 agent_unavailable`；
+  - 同时在调模型的请求超过 4 个：`503 agent_busy`；
+  - 超出额度：`429 rate_limited`；
+  - 输入不合法：`400 invalid_input`。
+- 能用时返回 `text/event-stream`，按顺序推送：
+  ```
+  event: reply
+  data: {"text":"好嘞，周四 19:30 在 PIK"}          ← 蛋蛋的回复，分几片推，前端拼起来显示（最多 200 字）
+
+  event: draft
+  data: {"draft":{"starts_at":1791980000,"area":"PIK","venue":"PIK Avenue","kind":"classic","note":""},
+         "valid":true}
+  ```
+  - 最后一条是 `draft` 或 `error`。`error` 的 `data` 是 `{"code":"agent_unavailable","message":"蛋蛋走神了，直接填表吧"}`，表示推到一半时模型出错、超时或者输出不合格，前端同样退回 08 表单。
+  - `draft` 的字段和 `POST /api/games` 的请求体一致，认不出来的字段不出现。草稿按开局接口的同一套规则校验：`valid` 为假时，`problem` 说明原因（比如缺地点、时间太近），前端把草稿填进 08 表单让用户补；`valid` 为真时，用户确认后前端照常调用 `POST /api/games`。
+- 一次请求总共最多 20 秒（比 `WriteTimeout` 短），超时就按上面的规则退回表单。
+- 模型的输出格式是「一句回复 + `===` + 草稿 JSON」，服务端逐字段校验：片区、玩法不在列表里的丢掉，过长的截断。模型拿不到任何工具（§10.10）。
+
 中间件：
 - 身份：从 `__Host-gd_dev` cookie 解析出用户；
 - CSRF：会改数据的请求，必须带 `Content-Type: application/json`，并且 `Origin` 等于本站；
@@ -381,7 +404,8 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `GUANDAN_DEV` | 空 | 设为 `1` 时进入开发模式：不启用 TLS，cookie 不加 `Secure`，日志用文本格式（§13.5） |
 | `GUANDAN_BACKUP_URL` | 空 | 异地备份目标，S3 兼容地址（§13.3） |
 | `GUANDAN_BACKUP_KEY` | 空 | 备份加密用的 age 公钥；设置了备份地址时必须提供 |
-| `ANTHROPIC_API_KEY` | 空 | 为空时蛋蛋不可用，前端退回到表单（phase:3） |
+| `ANTHROPIC_API_KEY` | 空 | 为空时蛋蛋不可用（`POST /api/agent` 返回 `503 agent_disabled`），前端退回到表单（phase:3） |
+| `GUANDAN_AGENT_MODEL` | `claude-sonnet-5-5` | 蛋蛋用的 Claude 模型 |
 
 ## 8. 打包与部署
 
@@ -676,7 +700,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 | 报名、退出 | 每个用户每分钟 30 次 |
 | 认领码兑换 | 每个 IP 每分钟 10 次，每个码最多 5 次 |
 | WebSocket | 每个 IP 最多 20 条连接，新连接每秒最多 5 条（防止部署后所有客户端同时重连） |
-| 蛋蛋 | 每个用户每天 30 次 |
+| 蛋蛋 | 每台设备每天 30 次，每个 IP 每天 60 次（没有身份时只按 IP 算）；同时最多 4 个请求在调模型 |
 
 ### 12.4 优雅关闭
 
