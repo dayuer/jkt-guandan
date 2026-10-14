@@ -39,6 +39,16 @@ func TestCheckBlocksGamblingAndMoney(t *testing.T) {
 		{"中间加连字符", "赌-博不好", "赌"},
 		{"零宽字符", "赌\u200b博不好", "赌"},
 
+		// #130：拉丁词紧贴着汉字（中文里夹外文不加空格），汉字算词边界。
+		{"汉字在前", "测试judi", "judi"},
+		{"汉字在后", "judi一下", "judi"},
+		{"两边都是汉字", "带点taruhan好玩", "taruhan"},
+		{"汉字夹英语", "今晚bet一把", "bet"},
+		{"繁体紧贴", "帶點taruhan", "taruhan"},
+		{"汉字和全角拉丁紧贴", "来点ｂｅｔ", "bet"},
+		{"有空格的照旧", "main judi", "judi"},
+		{"日文假名紧贴", "これはjudiです", "judi"},
+
 		// 正常内容不该命中——误伤的代价比漏掉高。
 		{"正常地点", "Pacific Place · 鼎泰丰包间", ""},
 		{"正常备注", "新手局，随便打打，教规则", ""},
@@ -46,6 +56,16 @@ func TestCheckBlocksGamblingAndMoney(t *testing.T) {
 		{"better 里没有 bet", "better safe than sorry", ""},
 		{"alphabet 里没有 bet", "alphabet street", ""},
 		{"拉丁词不做子串匹配", "betsy's place", ""},
+		// #130 之后拉丁字母、数字仍然算词的一部分：英语、印尼语里含敏感词子串的正常词不误伤，
+		// 紧贴着汉字时也一样。
+		{"Betawi 菜", "Betawi菜 不错", ""},
+		{"Tibet", "Tibet 餐厅", ""},
+		{"judicial", "judicial review 之后再约", ""},
+		{"chipset", "聊chipset的局", ""},
+		{"gambles 之外的 gambit", "开局gambit教学", ""},
+		{"wagering 之外的 swagger", "swagger 风格", ""},
+		{"数字紧贴", "bet365", ""},
+		{"alphabet 紧贴汉字", "alphabet街二楼", ""},
 		{"放哪儿", "taruh di mana?", ""},
 		// 口径：宁可漏拦不可误拦。这几个词都有人问过要不要加，裁定是不加。
 		{"红包", "打完了发个红包，图个乐", ""},
