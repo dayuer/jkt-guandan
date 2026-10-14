@@ -136,15 +136,67 @@ describe("元素挂得晚也要量到", () => {
   });
 });
 
+describe("toast 的抬升（#94 follow-up）", () => {
+  it("量到底栏高度时，顺手把「高度 + 间隙」写到 --toast-lift 上", async () => {
+    const rect = () => ({ height: 155, width: 375, top: 0, left: 0, right: 375, bottom: 155, x: 0, y: 0, toJSON: () => ({}) });
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(rect as unknown as () => DOMRect);
+
+    renderBar();
+
+    // 155 的底栏（局头两行操作栏）→ toast 抬 175，正好在它上面。
+    await vi.waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--toast-lift")).toBe("175px"),
+    );
+  });
+
+  it("底栏卸载后把抬升还给兜底值，别让下一个页面顶着一个旧高度", async () => {
+    const rect = () => ({ height: 91, width: 375, top: 0, left: 0, right: 375, bottom: 91, x: 0, y: 0, toJSON: () => ({}) });
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(rect as unknown as () => DOMRect);
+
+    const container = renderBar();
+    await vi.waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--toast-lift")).toBe("111px"),
+    );
+
+    render(null, container);
+
+    await vi.waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--toast-lift")).toBe(""),
+    );
+  });
+});
+
 describe("样式里的兜底值", () => {
   it(".body.has-actionbar 的留白读的是 --bar-height，不是写死的高度", async () => {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     const css = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+    const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const rules: { selector: string; body: string }[] = [];
+    let i = 0;
+    while (i < stripped.length) {
+      const open = stripped.indexOf("{", i);
+      if (open < 0) break;
+      const selector = stripped.slice(i, open).trim();
+      let depth = 1;
+      let j = open + 1;
+      while (j < stripped.length && depth > 0) {
+        if (stripped[j] === "{") depth++;
+        else if (stripped[j] === "}") depth--;
+        j++;
+      }
+      rules.push({ selector, body: stripped.slice(open + 1, j - 1) });
+      i = j;
+    }
 
     // 操作栏那种会换行的条：留白必须走变量，量出来的值才能生效。
     expect(css).toMatch(/\.body\.has-bar,\s*\.body\.has-actionbar\s*\{[^}]*var\(--bar-height/);
     // 而 90px 只是 :root 上的兜底（首屏、JS 还没跑到时用）。
     expect(css).toMatch(/:root\s*\{[^}]*--bar-height:\s*90px/);
+    // toast 也必须读变量：写死 96px 在局头两行操作栏（155px）下会盖住上面一行。
+    const toast = rules.find((r) => r.selector === ".toast");
+    expect(toast).toBeDefined();
+    expect(toast!.body).toMatch(/bottom:\s*calc\(var\(--toast-lift/);
+    expect(toast!.body).not.toMatch(/bottom:\s*calc\(96px/);
   });
 });

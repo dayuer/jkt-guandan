@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef } from "preact/hooks";
 
+/** toast 和底栏之间留的空隙。 */
+export const TOAST_GAP = 20;
+
 /**
  * 量出底部固定条的真实高度，写到 `<html>` 的 `--bar-height` 上（#75）。
  *
@@ -10,6 +13,10 @@ import { useCallback, useEffect, useRef } from "preact/hooks";
  *
  * 所以：CSS 里那 90px 只是**首屏兜底**，挂上以后由这里量出来的真实高度接管。
  * 用 ResizeObserver 而不是只量一次：换行与否取决于宽度、字号和系统字体大小。
+ *
+ * 顺手把「底栏高度 + 20px」写到 `--toast-lift` 上：toast 是 position: fixed 的，
+ * 它不在 .body 的子树里，读不到页面局部的 --bar-height，只能从 <html> 上读。
+ * 写死一个值的话，局头那种两行操作栏下面 toast 会盖住上面一行（#94 follow-up）。
  *
  * 返回的是**回调 ref**，不是 `useRef` 的对象 ref。原因是详情页第一次渲染时还在
  * 「正在打开…」那一支，操作栏根本不在树上（对象 ref 的 `current` 会是 null，
@@ -29,21 +36,32 @@ export function useBarHeight<T extends HTMLElement = HTMLElement>() {
       // 还没排版（0）时不动它，免得把 CSS 里的兜底值冲掉。
       if (height > 0) {
         document.documentElement.style.setProperty("--bar-height", `${height}px`);
+        document.documentElement.style.setProperty("--toast-lift", `${height + TOAST_GAP}px`);
       }
     };
 
     apply();
 
+    // 卸载时把 toast 的抬升还给兜底值：这个页面已经没有底栏了（新页面的底栏
+    // 紧接着会自己写一次，所以不会互相打架）。
+    const release = () => document.documentElement.style.removeProperty("--toast-lift");
+
     if (typeof ResizeObserver === "undefined") {
       // 老浏览器：没有 observer，至少跟着窗口变化重量一次。
       window.addEventListener("resize", apply);
-      stop.current = () => window.removeEventListener("resize", apply);
+      stop.current = () => {
+        window.removeEventListener("resize", apply);
+        release();
+      };
       return;
     }
 
     const observer = new ResizeObserver(apply);
     observer.observe(el);
-    stop.current = () => observer.disconnect();
+    stop.current = () => {
+      observer.disconnect();
+      release();
+    };
   }, []);
 
   useEffect(() => () => stop.current(), []);

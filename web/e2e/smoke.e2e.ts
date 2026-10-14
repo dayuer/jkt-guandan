@@ -209,3 +209,38 @@ test("访客视角：滚到底内容不被操作栏压住", async ({ page }) => 
   const barTop = await page.locator(".actionbar").evaluate((el) => el.getBoundingClientRect().top);
   expect(last).toBeLessThanOrEqual(barTop);
 });
+
+// #94 follow-up：toast 不再按屏幕底部写死 96px，而是按**实际底栏高度**抬起来。
+// 局头那条操作栏折成两行（155px）时，写死的 96px 会让 toast 盖住上面那一行。
+test("局头视角：toast 抬在操作栏上方，不盖住按钮", async ({ page }) => {
+  await signIn(page, "E2E 局头戊");
+  const startsAt = Math.floor(Date.now() / 1000) + 3 * 24 * 3600;
+  const res = await page.request.post("/api/games", {
+    data: { starts_at: startsAt, area: "Kuningan", venue: "E2E toast 视角", kind: "classic" },
+    headers: { Origin: ORIGIN, "Idempotency-Key": `e2e-toast-${Date.now()}` },
+  });
+  expect(res.ok()).toBeTruthy();
+  const code = (await res.json()).game.short_code as string;
+
+  await page.goto(`/g/${code}`);
+  const bar = page.locator(".actionbar");
+  await expect(bar).toBeVisible();
+  // 局头这条栏确实是两行——不然这条断言没有意义。
+  const rows = await bar.evaluate(
+    (el) => new Set([...el.querySelectorAll(".btn")].map((b) => Math.round(b.getBoundingClientRect().top))).size,
+  );
+  expect(rows).toBeGreaterThan(1);
+
+  // 分享面板里的「复制」会弹 toast（微信外是 a[download] 那条路，这里走复制）。
+  await page.getByRole("button", { name: "⇪ 分享" }).click();
+  await page.locator(".script button").click();
+
+  const toast = page.locator(".toast");
+  await expect(toast).toBeVisible();
+  // 等它滑上来（sheetUp 动画 220ms）再量：动画中间它从下面 100% 的位置往上走，
+  // 那时候量到的位置没有意义——用户看到的是停下来之后的位置。
+  await toast.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
+  const toastBottom = await toast.evaluate((el) => el.getBoundingClientRect().bottom);
+  const barTop = await bar.evaluate((el) => el.getBoundingClientRect().top);
+  expect(toastBottom).toBeLessThanOrEqual(barTop);
+});
