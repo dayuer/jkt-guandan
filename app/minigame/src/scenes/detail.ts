@@ -3,7 +3,7 @@
 
 import type { App, Scene, Sheet } from "../core/app";
 import { C, Ctx, Scroller, circle, ease, fillRR, font, initial, measure, strokeRR, text, wrap } from "../core/ui";
-import { PAD, banner, button, chipsWrap, disclaimer, errorLine, field, nav, sheetButtons, sheetHeader, simpleSheet, type BtnStyle } from "../core/widgets";
+import { PAD, banner, button, chipsWrap, disclaimer, errorLine, field, icon, nav, sheetButtons, sheetHeader, simpleSheet, type BtnStyle } from "../core/widgets";
 import {
   ApiError, cancelGame, getGame, inviteError, inviteFriends, inviteSummary, joinGame, kickPlayer, leaveGame, subscribeRetry, updateGame,
   type GameDetail, type GamePatch, type Seat,
@@ -542,14 +542,14 @@ export class Detail implements Scene {
       let x = PAD;
       actions.forEach((b, i) => {
         const w = i === 0 && actions.length === 2 ? narrow : W - PAD - x;
-        button(a, ctx, "bar:" + b.id, x, y + 12, w, h, b.label, b.style, b.onTap, { disabled: b.disabled });
+        button(a, ctx, "bar:" + b.id, x, y + 12, w, h, b.label, b.style, b.onTap, { disabled: b.disabled, icon: b.id === "share" ? icon.share : undefined });
         x += w + gap;
       });
     } else {
       const w = (W - PAD * 2 - gap) / 2;
       actions.forEach((b, i) => {
         const bx = PAD + (i % 2) * (w + gap), by = y + 12 + Math.floor(i / 2) * (h + 8);
-        button(a, ctx, "bar:" + b.id, bx, by, w, h, b.label, b.style, b.onTap, { disabled: b.disabled, size: 15 });
+        button(a, ctx, "bar:" + b.id, bx, by, w, h, b.label, b.style, b.onTap, { disabled: b.disabled, size: 15, icon: b.id === "share" ? icon.share : undefined });
       });
     }
   }

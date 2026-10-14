@@ -3,6 +3,7 @@ import "./shim";
 import { installSelftest, runSelftest } from "./selftest";
 import { App, type Scene } from "./core/app";
 import { C, Ctx, circle, font, text } from "./core/ui";
+import { icon, type Suit } from "./core/widgets";
 import { API_BASE } from "./lib/api";
 import { flush as flushTelemetry } from "./lib/telemetry";
 import { realtime, reconnectRealtime } from "./lib/realtime";
@@ -45,8 +46,9 @@ function tabScene(name: TabName): Scene {
 }
 
 // ── 底部 Tab（#107）：牌局、学牌、约局（蛋）、牌友、我的 ──
-const TABS: [TabName | "create", string, string][] = [
-  ["games", "♠", "牌局"], ["learn", "♣", "学牌"], ["create", "", "约局"], ["friends", "♦", "牌友"], ["me", "♥", "我的"],
+// 花色画路径：iOS 可能把 ♠ ♥ 显示成彩色 emoji，选中变红就失效了（适配稿 4.2）
+const TABS: [TabName | "create", Suit | null, string][] = [
+  ["games", "spade", "牌局"], ["learn", "club", "学牌"], ["create", null, "约局"], ["friends", "diamond", "牌友"], ["me", "heart", "我的"],
 ];
 app.drawTabs = (ctx: Ctx, active: string) => {
   const W = app.W, y = app.H - TAB_H - app.safeBottom, tw = W / 5;
@@ -56,7 +58,7 @@ app.drawTabs = (ctx: Ctx, active: string) => {
   ctx.fillRect(0, y, W, 1);
   TABS.forEach(([key, ic, label], i) => {
     const cx = tw * i + tw / 2;
-    if (key === "create") {
+    if (!ic) {
       const cy = y + 6, pressed = app.isPressed("tab:create");
       circle(ctx, cx, cy, 31, C.card);
       circle(ctx, cx, cy, pressed ? 25 : 27, pressed ? C.redDeep : C.red);
@@ -67,7 +69,7 @@ app.drawTabs = (ctx: Ctx, active: string) => {
       return;
     }
     const on = active === key;
-    text(ctx, ic, cx, y + 20, font(22), on ? C.red : C.ink3, "center");
+    icon[ic](ctx, cx, y + 20, 22, on ? C.red : C.ink3);
     text(ctx, label, cx, y + 42, font(11, on ? "700" : "normal"), on ? C.red : C.ink3, "center");
     app.hit("tab:" + key, tw * i, y, tw, TAB_H, () => { if (!on) nav.tab(key as TabName); });
   });

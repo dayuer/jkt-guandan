@@ -6,22 +6,79 @@ import { C, Ctx, card, circle, ellipsize, fillRR, font, measure, paragraph, stro
 
 export const PAD = 16;
 
+// ── 路径图标（适配稿 4.2）：颜色要随状态变的、或不是每台机器字体里都有的符号，一律画路径。
+// iOS 可能把 ♠ ♥ 画成彩色 emoji，fillStyle 就不起作用了。形状照搬 design/guandan-minigame/prototype.html。
+function strokeIcon(ctx: Ctx, c: string, lw: number) {
+  ctx.strokeStyle = c;
+  ctx.lineWidth = lw;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.stroke();
+}
+export type Suit = "spade" | "heart" | "club" | "diamond";
+export const icon = {
+  back(ctx: Ctx, x: number, cy: number, c: string) {
+    ctx.beginPath(); ctx.moveTo(x + 9, cy - 9); ctx.lineTo(x, cy); ctx.lineTo(x + 9, cy + 9); strokeIcon(ctx, c, 2.4);
+  },
+  check(ctx: Ctx, cx: number, cy: number, c: string) {
+    ctx.beginPath(); ctx.moveTo(cx - 5, cy); ctx.lineTo(cx - 1.5, cy + 4); ctx.lineTo(cx + 6, cy - 5); strokeIcon(ctx, c, 2.2);
+  },
+  /** 实心圆感叹号，直径 14 */
+  alert(ctx: Ctx, cx: number, cy: number, c: string) {
+    circle(ctx, cx, cy, 7, c);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(cx - 1, cy - 4.2, 2, 5);
+    ctx.fillRect(cx - 1, cy + 2.2, 2, 2);
+  },
+  /** 方框 + 向上箭头，替代「⇪」 */
+  share(ctx: Ctx, cx: number, cy: number, c: string) {
+    ctx.beginPath();
+    ctx.moveTo(cx - 6, cy - 1); ctx.lineTo(cx - 6, cy + 7); ctx.lineTo(cx + 6, cy + 7); ctx.lineTo(cx + 6, cy - 1);
+    ctx.moveTo(cx, cy + 2); ctx.lineTo(cx, cy - 8);
+    ctx.moveTo(cx - 4, cy - 4.5); ctx.lineTo(cx, cy - 8.5); ctx.lineTo(cx + 4, cy - 4.5);
+    strokeIcon(ctx, c, 1.8);
+  },
+  heart(ctx: Ctx, cx: number, cy: number, s: number, c: string) {
+    ctx.beginPath(); ctx.moveTo(cx, cy + s * 0.42);
+    ctx.bezierCurveTo(cx - s * 0.95, cy - s * 0.12, cx - s * 0.5, cy - s * 0.78, cx, cy - s * 0.28);
+    ctx.bezierCurveTo(cx + s * 0.5, cy - s * 0.78, cx + s * 0.95, cy - s * 0.12, cx, cy + s * 0.42);
+    ctx.fillStyle = c; ctx.fill();
+  },
+  spade(ctx: Ctx, cx: number, cy: number, s: number, c: string) {
+    ctx.beginPath(); ctx.moveTo(cx, cy - s * 0.5);
+    ctx.bezierCurveTo(cx - s * 0.95, cy + s * 0.05, cx - s * 0.5, cy + s * 0.62, cx, cy + s * 0.18);
+    ctx.bezierCurveTo(cx + s * 0.5, cy + s * 0.62, cx + s * 0.95, cy + s * 0.05, cx, cy - s * 0.5);
+    ctx.fillStyle = c; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx, cy + s * 0.12); ctx.lineTo(cx - s * 0.2, cy + s * 0.5); ctx.lineTo(cx + s * 0.2, cy + s * 0.5); ctx.closePath(); ctx.fill();
+  },
+  diamond(ctx: Ctx, cx: number, cy: number, s: number, c: string) {
+    ctx.beginPath(); ctx.moveTo(cx, cy - s * 0.5);
+    ctx.quadraticCurveTo(cx + s * 0.12, cy - s * 0.12, cx + s * 0.38, cy); ctx.quadraticCurveTo(cx + s * 0.12, cy + s * 0.12, cx, cy + s * 0.5);
+    ctx.quadraticCurveTo(cx - s * 0.12, cy + s * 0.12, cx - s * 0.38, cy); ctx.quadraticCurveTo(cx - s * 0.12, cy - s * 0.12, cx, cy - s * 0.5);
+    ctx.fillStyle = c; ctx.fill();
+  },
+  club(ctx: Ctx, cx: number, cy: number, s: number, c: string) {
+    const r = s * 0.2;
+    circle(ctx, cx, cy - s * 0.24, r, c); circle(ctx, cx - s * 0.22, cy + s * 0.06, r, c); circle(ctx, cx + s * 0.22, cy + s * 0.06, r, c);
+    ctx.beginPath(); ctx.moveTo(cx, cy - s * 0.05); ctx.lineTo(cx - s * 0.18, cy + s * 0.5); ctx.lineTo(cx + s * 0.18, cy + s * 0.5); ctx.closePath();
+    ctx.fillStyle = c; ctx.fill();
+  },
+};
+const SUITS: Record<string, Suit> = { "♠": "spade", "♥": "heart", "♣": "club", "♦": "diamond" };
+/** 花色字符（课程数据里写的是字符）换成路径。 */
+export function suit(ctx: Ctx, ch: string, cx: number, cy: number, s: number, c: string) {
+  const k = SUITS[ch];
+  if (k) icon[k](ctx, cx, cy, s, c);
+  else text(ctx, ch, cx, cy, font(s), c, "center");
+}
+
 // ── 导航栏：和右上角胶囊同一行，右边留给胶囊 ──
 export function nav(app: App, ctx: Ctx, title: string, onBack?: () => void, left?: { label: string; onTap: () => void }) {
   ctx.fillStyle = C.paper;
   ctx.fillRect(0, 0, app.W, app.contentTop);
   if (onBack) {
     if (app.isPressed("nav-back")) circle(ctx, 26, app.navY, 18, C.beige);
-    // 用路径画箭头，不依赖字体里有没有「‹」
-    ctx.beginPath();
-    ctx.moveTo(30, app.navY - 9);
-    ctx.lineTo(21, app.navY);
-    ctx.lineTo(30, app.navY + 9);
-    ctx.strokeStyle = C.ink;
-    ctx.lineWidth = 2.4;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.stroke();
+    icon.back(ctx, 21, app.navY, C.ink);
     app.hit("nav-back", 0, app.navY - 22, 60, 44, onBack);
   } else if (left) {
     text(ctx, left.label, PAD + 2, app.navY, font(15, "600"), app.isPressed("nav-left") ? C.ink : C.ink3);
@@ -37,7 +94,8 @@ export type BtnStyle = "primary" | "ghost" | "soft" | "danger" | "dark" | "green
 
 export function button(
   app: App, ctx: Ctx, id: string, x: number, y: number, w: number, h: number,
-  label: string, style: BtnStyle, onTap: (() => void) | null, opts: { disabled?: boolean; size?: number; radius?: number } = {},
+  label: string, style: BtnStyle, onTap: (() => void) | null,
+  opts: { disabled?: boolean; size?: number; radius?: number; icon?: (ctx: Ctx, cx: number, cy: number, c: string) => void } = {},
 ) {
   const pressed = app.isPressed(id) && !opts.disabled;
   const r = opts.radius ?? Math.min(16, h / 2);
@@ -54,7 +112,13 @@ export function button(
   fillRR(ctx, x, y, w, h, r, bg);
   if (border) strokeRR(ctx, x + 0.75, y + 0.75, w - 1.5, h - 1.5, r, border, style === "dark" ? 1.5 : 1);
   const f = font(opts.size ?? 16, "700");
-  text(ctx, ellipsize(ctx, label, w - 20, f), x + w / 2, y + h / 2 + 0.5, f, fg, "center");
+  if (opts.icon) {
+    // 图标 14 宽 + 间距 8，和文字一起居中
+    const s = ellipsize(ctx, label, w - 42, f);
+    const left = x + w / 2 - (measure(ctx, s, f) + 22) / 2;
+    opts.icon(ctx, left + 7, y + h / 2, fg);
+    text(ctx, s, left + 22, y + h / 2 + 0.5, f, fg);
+  } else text(ctx, ellipsize(ctx, label, w - 20, f), x + w / 2, y + h / 2 + 0.5, f, fg, "center");
   app.hit(id, x, y, w, h, opts.disabled ? null : onTap);
 }
 
@@ -121,13 +185,20 @@ export function field(app: App, ctx: Ctx, x: number, y: number, w: number, o: Fi
   const f = font(fs);
   const lh = fs + 8;
   const focused = app.isEditing(o.key);
-  const lines = o.value ? wrap(ctx, o.value, w - 32, f) : [o.placeholder];
+  // 激活且到上限的 80% 起，右侧显示字数，文字区让出 44（适配稿 2.1）
+  const max = o.maxLength ?? 40;
+  const count = Array.from(o.value).length;
+  const showCount = focused && count >= max * 0.8;
+  const tw = w - 32 - (showCount ? 44 : 0);
+  const lines = o.value ? wrap(ctx, o.value, tw, f) : [o.placeholder];
   const h = o.multiple ? Math.max(84, 28 + lines.length * lh) : 52;
+  if (focused) fillRR(ctx, x - 4, y - 4, w + 8, h + 8, 16, C.redRing); // 4px 焦点环（--sh-focus）
   fillRR(ctx, x, y, w, h, 12, o.error ? C.errTint : C.card);
   strokeRR(ctx, x + 0.5, y + 0.5, w - 1, h - 1, 12, o.error || focused ? C.red : C.line, focused ? 1.5 : 1);
   const ty = o.multiple ? y + 14 + lh / 2 : y + h / 2;
-  const shown = o.multiple ? lines : [ellipsizeStart(ctx, lines.join(""), w - 34, f)];
+  const shown = o.multiple ? lines : [ellipsizeStart(ctx, lines.join(""), tw - 2, f)];
   shown.forEach((ln, i) => text(ctx, ln, x + 16, ty + i * lh, f, o.value ? C.ink : C.ink4));
+  if (showCount) text(ctx, `${count}/${max}`, x + w - 14, o.multiple ? y + h - 14 : y + h / 2, font(11), C.ink4, "right");
   if (focused && Date.now() % 1000 < 550) {
     const last = o.value ? shown[shown.length - 1] : "";
     const cx = x + 16 + measure(ctx, last, f) + 1;
@@ -141,7 +212,11 @@ export function field(app: App, ctx: Ctx, x: number, y: number, w: number, o: Fi
     }),
   );
   let used = h;
-  if (o.error) used += 6 + paragraph(ctx, "⚠ " + o.error, x + 2, y + h + 6, w - 4, font(12), C.red, 18);
+  if (o.error) {
+    // 感叹号画路径（直径 14），不用「⚠」字符；说明可能折行
+    icon.alert(ctx, x + 9, y + h + 15, C.red);
+    used += 6 + paragraph(ctx, o.error, x + 22, y + h + 6, w - 24, font(12), C.red, 18);
+  }
   return used;
 }
 
