@@ -123,6 +123,20 @@ for (const height of [667, 560]) {
     expect(before.top).toBe(0);
     expect(before.position).toBe("sticky");
 
+    // 头部背景必须是不透明的页面底色（--paper）：透明的话卡片滚过去会透出来，
+    // 而 elementFromPoint 仍然命中头部，下面那条拦不住（#118 复审）。
+    const bg = await top.evaluate((el) => {
+      const probe = document.createElement("div");
+      probe.style.backgroundColor = "var(--paper)";
+      document.body.appendChild(probe);
+      const paper = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return { header: getComputedStyle(el).backgroundColor, paper };
+    });
+    expect(bg.header).toBe(bg.paper);
+    // rgb(…) 是不透明；rgba(…, a<1) 或 transparent 都不行。
+    expect(bg.header).toMatch(/^rgb\(\d+, \d+, \d+\)$/);
+
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
 

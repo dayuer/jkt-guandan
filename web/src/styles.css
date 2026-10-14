@@ -1060,7 +1060,10 @@ a.btn {
   border-bottom-color: var(--line);
 }
 
-/* 首页期间关掉整页的下拉回弹：不然 iOS 橡皮筋会把固定头部一起拽下来（#111）。 */
+/* 首页期间关掉整页的下拉回弹：不然 iOS 橡皮筋会把固定头部一起拽下来（#111）。
+   用 none 而不是 contain：根滚动容器上 contain 只禁止「滚动链」，回弹效果照样有，
+   iOS 上头部还是会被拽下来；而安卓 Chrome 的下拉刷新两者都会关掉（规范如此）。
+   所以 contain 换不回下拉刷新，只是治不了 iOS。只在首页生效，离开首页就恢复。 */
 html.lock-overscroll,
 html.lock-overscroll body {
   overscroll-behavior-y: none;
