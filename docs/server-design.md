@@ -66,7 +66,6 @@ CREATE TABLE claim_tokens (
   user_id    TEXT NOT NULL REFERENCES users(id),
   expires_at INTEGER NOT NULL,             -- 签发后 10 分钟
   used_at    INTEGER,
-  attempts   INTEGER NOT NULL DEFAULT 0,
   issued_net TEXT                          -- 签发时的客户端网络（IPv4 /24、IPv6 /64），兑换认领码时必须一致（0002_claim_net.sql）
 );
 -- 有效码唯一（0002_claim_net.sql 改为 UNIQUE；作废旧码时写 used_at 把号码让出来）
@@ -232,7 +231,7 @@ CREATE INDEX events_name_at ON events(name, at);
   - 只有 POST 会消耗 token，GET 打开带 `?claim=` 的页面不会。所以微信、WhatsApp 的链接预览抓取器拿到这个链接，也用不掉它。
 - **凭认领码兑换**（`POST /api/claim/redeem {code}`）：只允许还没有身份的设备使用。兑换时只查有效记录（`used_at IS NULL AND expires_at > now`），并且有以下几层防护：
   1. **只能在签发时的同一个网络兑换**：兑换请求的客户端 IP（§10.13）必须和 `issued_net` 在同一个 /24 或 /64 网段内；
-  2. 同一个 IP 每分钟最多 10 次；每个码最多试 5 次；
+  2. 同一个 IP 每分钟最多 10 次；
   3. **全站失败预算**：全站加起来每分钟失败超过 20 次，就暂停凭码兑换 5 分钟，同时记 warn 日志。凭 token 兑换不受这个限制。
   4. 所有失败都返回同一个 `400 claim_invalid`。
 
@@ -726,7 +725,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 | 创建身份 `POST /api/me` | 每个 IP 每小时 20 次 |
 | 开局 | 每个用户每天 10 次 |
 | 报名、退出 | 每个用户每分钟 30 次 |
-| 认领码兑换 | 每个 IP 每分钟 10 次，每个码最多 5 次 |
+| 认领码兑换 | 每个 IP 每分钟 10 次 |
 | WebSocket | 每个 IP 最多 20 条连接，新连接每秒最多 5 条（防止部署后所有客户端同时重连） |
 | 蛋蛋 | 每台设备每天 30 次，每个 IP 每天 60 次（没有身份时只按 IP 算）；同时最多 4 个请求在调模型 |
 

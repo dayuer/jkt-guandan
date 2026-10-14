@@ -78,7 +78,9 @@ func TestMigrateAddsBreakingColumnToOldTable(t *testing.T) {
 
 // confirmedBreaking 列出已经按 runbook §2.3 人工确认过的 breaking 迁移。
 // 新加 breaking 迁移时这条测试会失败，逼着作者和复审方在 PR 里明确确认，而不是悄悄混进去。
-var confirmedBreaking = map[string]bool{}
+var confirmedBreaking = map[string]bool{
+	"0005_drop_claim_attempts.sql": true,
+}
 
 func TestEmbeddedBreakingMigrationsAreConfirmed(t *testing.T) {
 	names, err := migrationNames()
