@@ -34,7 +34,7 @@
 | 优先级 | `P0`（合并或进入下一阶段前必须修）、`P1`（本阶段内修）、`P2`（排进计划） |
 | 状态 | 主线 `status:triage` → `status:accepted` → `status:claimed` → `status:in-review` → `status:verified`；旁支 `status:rejected`、`status:blocked` |
 | 负责 | `owner:coord`、`owner:impl`、`owner:auditor`、`owner:design` |
-| 阶段 | `phase:1`、`phase:2`、`phase:3`，含义见第 9 节 |
+| 阶段 | `phase:1`、`phase:2`、`phase:3`、`phase:minigame`、`phase:later`，含义见第 9 节 |
 | 其他 | `needs-user`（等仓库所有者决定）、`board`（只用在协调看板上） |
 
 一个 issue 同一时刻只能有一个 `status:*` 标签。改状态请用 `scripts/agents/status.sh`。Action 也会自动去掉旧的状态标签，详见第 8 节。
@@ -156,5 +156,9 @@ coord 每次合并或分诊后，确认一下手写区是否需要更新。其�
 | `phase:1` | 微信内报名、身份系统（含 claim）、海报和话术分享、日历；设计稿 H5 改版 |
 | `phase:2` | Web Push（先 Android，再 iOS PWA）、11–14 引导屏、WhatsApp OG |
 | `phase:3` | 蛋蛋 Agent、牌友关系、学牌 |
+| `phase:minigame` | 二期：微信小游戏版约局（原生 Canvas，不用引擎），总览见 #91。仓库所有者 2026-10-14 已 `APPROVE phase=minigame` |
+| `phase:later` | 三期以后，暂不排期：掼蛋规则引擎（#87）、AI 对战训练（#88）。和上面的 `phase:3` 无关，不要混用 |
 
-进入下一阶段的条件：本阶段的 `P0` 全部 `verified`，并且仓库所有者在看板下评论 `APPROVE phase=<N>`。
+`phase:1`–`phase:3` 是 H5 方案里的旧分期；`phase:minigame` 是仓库所有者后来定的「二期」。带 `phase:later` 的 issue 保持 `status:blocked`，等仓库所有者重新排期再解除。
+
+进入下一阶段的条件：本阶段的 `P0` 全部 `verified`，并且仓库所有者在看板（或该阶段的总览 issue）下评论 `APPROVE phase=<N>`。
