@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,9 @@ const (
 	// MaxConns 是全进程的连接上限：/ws 不占 256 的并发名额（长连接会把名额一直占着），
 	// 改由它兜住内存。
 	MaxConns = 5000
+
+	// DefaultPresenceInterval 是同一牌局两次 presence 广播之间的最短间隔（#46）。
+	DefaultPresenceInterval = 2 * time.Second
 
 	DefaultPingInterval = 25 * time.Second
 	DefaultPongTimeout  = 10 * time.Second
@@ -93,10 +97,32 @@ type Hub struct {
 	conns   map[*conn]struct{}
 	closing bool
 	wg      sync.WaitGroup // 每个连接的读写 goroutine
+
+	// presence 是各 game: 主题「N 人正在看」的广播状态，只在内存里（#46）。
+	presence      map[string]*presenceState
+	presenceEvery time.Duration
+}
+
+type presenceState struct {
+	last     int         // 上次广播出去的人数
+	lastSent time.Time   // 上次广播的时间
+	timer    *time.Timer // 已排上的下一次广播；nil 表示没有
 }
 
 func NewHub() *Hub {
-	return &Hub{topics: make(map[string]map[*conn]struct{}), conns: make(map[*conn]struct{})}
+	return &Hub{
+		topics:        make(map[string]map[*conn]struct{}),
+		conns:         make(map[*conn]struct{}),
+		presence:      make(map[string]*presenceState),
+		presenceEvery: DefaultPresenceInterval,
+	}
+}
+
+// SetPresenceInterval 改 presence 广播的最短间隔（测试用）。
+func (h *Hub) SetPresenceInterval(d time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.presenceEvery = d
 }
 
 // Publish 把事件发给订阅了 ev.Topic 的所有连接。只在写事务提交后调用（store.Tx.AfterCommit）。
@@ -109,7 +135,11 @@ func (h *Hub) Publish(ev Event) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for c := range h.topics[ev.Topic] {
+	h.publishLocked(ev.Topic, msg)
+}
+
+func (h *Hub) publishLocked(topic string, msg []byte) {
+	for c := range h.topics[topic] {
 		if c.isKicked() {
 			continue
 		}
@@ -149,7 +179,103 @@ func (h *Hub) KickUser(userID string) {
 	}
 }
 
-// Subscribers 返回某个主题当前的订阅连接数（测试和 presence 用）。
+// Viewers 返回某个牌局主题当前有几台设备在看（#46）。同一设备开多个标签页算一个；
+// 没有身份的连接认不出设备，每条算一个。
+func (h *Hub) Viewers(topic string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.viewersLocked(topic)
+}
+
+func (h *Hub) viewersLocked(topic string) int {
+	seen := make(map[any]struct{}, len(h.topics[topic]))
+	for c := range h.topics[topic] {
+		if c.isKicked() {
+			continue
+		}
+		if c.deviceID != "" {
+			seen[c.deviceID] = struct{}{}
+		} else {
+			seen[c] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
+func presenceMsg(topic string, n int) []byte {
+	msg, _ := json.Marshal(Event{Topic: topic, Type: EventPresence, Data: map[string]int{"viewers": n}})
+	return msg
+}
+
+// EventPresence 是「N 人正在看」的事件类型（§5.5）。没有版本号。
+const EventPresence = "presence"
+
+// markPresenceLocked 在 game: 主题的订阅者变了之后调用：排一次广播，离上次广播不到
+// presenceEvery 就等到满了再发，期间的变化合并成一次。
+func (h *Hub) markPresenceLocked(topic string) {
+	if h.closing || !strings.HasPrefix(topic, "game:") {
+		return
+	}
+	st := h.presence[topic]
+	if st == nil {
+		st = &presenceState{}
+		h.presence[topic] = st
+	}
+	if st.timer != nil {
+		return
+	}
+	wait := time.Until(st.lastSent.Add(h.presenceEvery))
+	if wait < 0 {
+		wait = 0
+	}
+	st.timer = time.AfterFunc(wait, func() { h.flushPresence(topic) })
+}
+
+func (h *Hub) flushPresence(topic string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	st := h.presence[topic]
+	if st == nil || h.closing {
+		return
+	}
+	st.timer = nil
+	n := h.viewersLocked(topic)
+	if n == 0 {
+		delete(h.presence, topic) // 没人看了，也就没人收；下次有人来重新开始
+		return
+	}
+	if n == st.last {
+		return
+	}
+	st.last, st.lastSent = n, time.Now()
+	h.publishLocked(topic, presenceMsg(topic, n))
+}
+
+// greetPresence 在订阅回执之后单独告诉这条连接各牌局当前的人数：人数没变时不会广播，
+// 新来的标签页（同一设备的第二个）也得知道。
+func (h *Hub) greetPresence(c *conn, topics []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if c.isKicked() {
+		return
+	}
+	for _, t := range topics {
+		if !strings.HasPrefix(t, "game:") {
+			continue
+		}
+		if _, ok := h.topics[t][c]; !ok {
+			continue
+		}
+		select {
+		case c.send <- presenceMsg(t, h.viewersLocked(t)):
+		default:
+			c.slow()
+			return
+		}
+	}
+}
+
+// Subscribers 返回某个主题当前的订阅连接数（测试用）。
 func (h *Hub) Subscribers(topic string) int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -218,6 +344,7 @@ func (h *Hub) subscribe(c *conn, topics []string) (ok []string, rejected map[str
 			h.topics[t] = make(map[*conn]struct{})
 		}
 		h.topics[t][c] = struct{}{}
+		h.markPresenceLocked(t)
 		ok = append(ok, t)
 	}
 	return ok, rejected
@@ -234,10 +361,14 @@ func (h *Hub) unsubscribe(c *conn, topics []string) {
 func (h *Hub) removeLocked(topic string, c *conn) {
 	delete(c.topics, topic)
 	if subs := h.topics[topic]; subs != nil {
+		if _, ok := subs[c]; !ok {
+			return
+		}
 		delete(subs, c)
 		if len(subs) == 0 {
 			delete(h.topics, topic)
 		}
+		h.markPresenceLocked(topic)
 	}
 }
 
@@ -246,6 +377,12 @@ func (h *Hub) removeLocked(topic string, c *conn) {
 func (h *Hub) Shutdown(ctx context.Context) error {
 	h.mu.Lock()
 	h.closing = true
+	for t, st := range h.presence {
+		if st.timer != nil {
+			st.timer.Stop()
+		}
+		delete(h.presence, t)
+	}
 	for c := range h.conns {
 		c.kick(StatusServiceRestart, "server restarting")
 	}

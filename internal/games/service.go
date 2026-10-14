@@ -267,7 +267,7 @@ func (s *Service) Create(ctx context.Context, hostID string, in CreateInput, ide
 
 		tx.Touch(gameID)
 		// 新开一局是「首页列表多了一条」，所以发到片区主题（§5.5）。
-		s.publishFeedAfterCommit(tx, in.Area, EventFeedAdded, 1)
+		s.publishFeedAfterCommit(tx, code, in.Area, EventFeedAdded, 1)
 
 		// 记下这次的结果，下次同一个键直接用（§11.4）。
 		if idemKey != "" {
@@ -895,12 +895,13 @@ func (s *Service) Update(ctx context.Context, code, hostID string, patch Patch, 
 		}
 
 		tx.Touch(game.ID)
-		area := game.Area
-		if patch.Area != nil {
-			area = *patch.Area
-		}
+		// game.updated 发到 game:{code}，同时通知牌局现在所在片区的首页（includeFeed）。
 		s.publishAfterCommit(tx, code, EventGameUpdated, version, true)
-		s.publishFeedAfterCommit(tx, area, EventFeedChanged, version)
+		// 改了片区：原来那个片区的首页也要知道这局走了（条目里的 area 已经变了，客户端据此移除卡片）。
+		// 以前这里给新片区重复发了一次，原片区反而收不到（#46）。
+		if patch.Area != nil && *patch.Area != game.Area {
+			s.publishFeedAfterCommit(tx, code, game.Area, EventFeedChanged, version)
+		}
 
 		detail, err = loadDetailTx(ctx, tx, code, hostID)
 		return err
@@ -937,18 +938,33 @@ func (s *Service) publishAfterCommit(tx *store.Tx, code, eventType string, versi
 				Topic: FeedTopic(detail.Game.Area),
 				Type:  EventFeedChanged,
 				V:     version,
-				Data:  seatData(detail),
+				Data:  feedItem(detail),
 			})
 		}
 	})
 }
 
-// publishFeedAfterCommit 只通知片区主题（首页列表）。eventType 是 feed.game_added
-// 或者 feed.game_changed。
-func (s *Service) publishFeedAfterCommit(tx *store.Tx, area, eventType string, version int64) {
-	tx.AfterCommit(func(context.Context) {
-		s.pub.Publish(Event{Topic: FeedTopic(area), Type: eventType, V: version})
+// publishFeedAfterCommit 只通知某个片区的首页列表（feed:{area}）。eventType 是 feed.game_added
+// 或者 feed.game_changed。数据是提交后的列表条目（feedItem），首页据此直接插入或替换那一张卡片（#46）。
+// area 可以和牌局现在的片区不同：局头把局改到别的片区时，用它通知原来的片区，客户端看到条目里的
+// area 已经不是本片区，就把卡片移除。
+func (s *Service) publishFeedAfterCommit(tx *store.Tx, code, area, eventType string, version int64) {
+	tx.AfterCommit(func(ctx context.Context) {
+		detail, err := s.loadDetail(ctx, s.st.Read(), code, "")
+		if err != nil {
+			slog.Error("推首页事件前读牌局失败", "code", code, "err", err)
+			return
+		}
+		s.pub.Publish(Event{Topic: FeedTopic(area), Type: eventType, V: version, Data: feedItem(detail)})
 	})
+}
+
+// feedItem 是 feed:* 事件的数据：和 GET /api/games 列表里的一项完全相同，另外带上 version。
+// 片区里每一局的版本号各自独立，客户端按 short_code 比较 version 去重（§5.5）。
+func feedItem(d *Detail) map[string]any {
+	item := toSummariesJSON([]Summary{{Game: d.Game, HostName: d.HostName, Seats: d.Seats, Missing: d.Missing}})[0]
+	item["version"] = d.Game.Version
+	return item
 }
 
 // seatData 是事件里带的座位快照（§5.5：客户端据此直接更新，不用再拉一次 REST）。

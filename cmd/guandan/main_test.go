@@ -227,9 +227,15 @@ func TestGamesPublisherForwardsToHub(t *testing.T) {
 	_, _, _ = c.Read(ctx) // subscribed
 
 	gamesPublisher{hub}.Publish(games.Event{Topic: games.GameTopic("8K2"), Type: games.EventSeatTaken, V: 7, Data: map[string]int{"missing": 1}})
-	_, data, err := c.Read(ctx)
-	if err != nil {
-		t.Fatal(err)
+	var data []byte
+	for {
+		_, data, err = c.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), `"type":"presence"`) { // 订阅牌局后的在看人数（#46），跟这里无关
+			break
+		}
 	}
 	if got := string(data); got != `{"topic":"game:8K2","type":"seat.taken","v":7,"data":{"missing":1}}` {
 		t.Fatalf("收到 %s", got)

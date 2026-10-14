@@ -177,3 +177,67 @@ func TestNoEventsWhenTransactionRollsBack(t *testing.T) {
 		t.Fatalf("回滚的事务不该发布任何事件，实际 %v", got)
 	}
 }
+
+// #46：feed 事件带列表条目（和 GET /api/games 的一项相同，加上 version），首页据此只更新那一张卡片。
+func TestFeedEventsCarryListItem(t *testing.T) {
+	f, rec := newEventFixture(t)
+	host := f.newUser("局头")
+	code := f.newGame(host)
+
+	added, ok := rec.find(games.EventFeedAdded, games.FeedTopic("SCBD"))
+	if !ok {
+		t.Fatalf("没有 feed.game_added：%v", rec.all())
+	}
+	item, _ := added.Data.(map[string]any)
+	if item["short_code"] != code || item["area"] != "SCBD" || item["venue"] != "Pacific Place" ||
+		item["missing"] != 3 || item["seats"] != 1 || item["version"] != int64(1) || item["host"] == nil {
+		t.Fatalf("feed.game_added 的数据：%+v", item)
+	}
+
+	rec.reset()
+	if _, err := f.games.Join(context.Background(), code, f.newUser("牌友")); err != nil {
+		t.Fatal(err)
+	}
+	changed, ok := rec.find(games.EventFeedChanged, games.FeedTopic("SCBD"))
+	if !ok {
+		t.Fatalf("报名应通知首页：%v", rec.all())
+	}
+	item, _ = changed.Data.(map[string]any)
+	if item["short_code"] != code || item["missing"] != 2 || item["version"] != changed.V {
+		t.Fatalf("feed.game_changed 的数据：%+v（V=%d）", item, changed.V)
+	}
+}
+
+// #46：局头把局改到别的片区，原片区的首页收到一条 area 已变的 feed.game_changed（据此移除卡片），
+// 新片区收到一条（据此加上）；不再给新片区重复发。
+func TestAreaChangeNotifiesOldAndNewFeed(t *testing.T) {
+	f, rec := newEventFixture(t)
+	host := f.newUser("局头")
+	code := f.newGame(host)
+	d, err := f.games.Get(context.Background(), code, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.reset()
+	pik := "PIK"
+	if _, err := f.games.Update(context.Background(), code, host, games.Patch{Area: &pik}, d.Game.Version); err != nil {
+		t.Fatal(err)
+	}
+	count := func(topic string) (int, map[string]any) {
+		n := 0
+		var last map[string]any
+		for _, ev := range rec.all() {
+			if ev.Topic == topic && ev.Type == games.EventFeedChanged {
+				n++
+				last, _ = ev.Data.(map[string]any)
+			}
+		}
+		return n, last
+	}
+	if n, item := count(games.FeedTopic("SCBD")); n != 1 || item["area"] != "PIK" {
+		t.Fatalf("原片区应收到 1 条、area=PIK：%d %+v", n, item)
+	}
+	if n, _ := count(games.FeedTopic("PIK")); n != 1 {
+		t.Fatalf("新片区应只收到 1 条，实际 %d", n)
+	}
+}

@@ -102,7 +102,17 @@ func (e *env) mustDial(t *testing.T, user string) *websocket.Conn {
 	return c
 }
 
+// read 读下一条消息，跳过 presence（订阅牌局就会收到，跟大多数用例无关）。
 func read(t *testing.T, c *websocket.Conn) map[string]any {
+	t.Helper()
+	for {
+		if m := readAny(t, c); m["type"] != realtime.EventPresence {
+			return m
+		}
+	}
+}
+
+func readAny(t *testing.T, c *websocket.Conn) map[string]any {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -279,9 +289,13 @@ func TestSlowConsumerIsDisconnected(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		for {
-			if _, _, err := fast.Read(ctx); err != nil {
+			_, data, err := fast.Read(ctx)
+			if err != nil {
 				readErr <- err
 				return
+			}
+			if strings.Contains(string(data), `"type":"presence"`) {
+				continue // 人数变化跟这里无关
 			}
 			got <- struct{}{}
 		}
