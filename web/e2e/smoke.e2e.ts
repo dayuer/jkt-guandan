@@ -369,6 +369,48 @@ test("底部「牌友」能进 F1，标题对，约 TA 面板能打开", async (
   }
 });
 
+// #114：局头改时间 → 已报名的人看到改时间横幅（R1）；局头退出 → 下一位成为局头，看到「你现在是局头」（K2）。
+test("状态提示：改时间横幅，局头转交横幅（#114）", async ({ page }) => {
+  const host = await identity("E2E 原局头");
+  const code = await openGame(host, 30, AREAS[0]);
+
+  await signIn(page, "E2E 坐下的人");
+  await page.goto(`/g/${code}`);
+  await page.getByRole("button", { name: "报名占座" }).click();
+  await page.getByTestId("joined-sheet").getByRole("button", { name: "先不用" }).click();
+  await expect(page.locator(".disc.me")).toHaveCount(1);
+
+  // 局头把时间往后挪一小时：页面靠实时事件重新拉数据，比出变化。
+  const detail = await (await host.get(`/api/games/${code}`)).json();
+  const res = await host.patch(`/api/games/${code}`, {
+    data: { starts_at: detail.game.starts_at + 3600 },
+    headers: { "If-Match": String(detail.game.version) },
+  });
+  expect(res.ok(), `PATCH ${res.status()}`).toBeTruthy();
+
+  const moved = page.getByTestId("notice-rescheduled");
+  await expect(moved).toContainText("局头把时间改到");
+  await moved.getByRole("button", { name: "知道了" }).click();
+  await expect(moved).toHaveCount(0);
+  // 关掉之后刷新也不会再出来。
+  await page.reload();
+  await expect(page.locator(".disc.me")).toHaveCount(1);
+  await expect(page.getByTestId("notice-rescheduled")).toHaveCount(0);
+
+  // 局头退出：座位上剩下的我成为局头。
+  // 会改数据的请求没有请求体也要带 JSON 的 Content-Type（CSRF 规则，§10.5）。
+  const left = await host.delete(`/api/games/${code}/seat`, { headers: { "Content-Type": "application/json" } });
+  expect(left.ok(), `DELETE seat ${left.status()} ${await left.text()}`).toBeTruthy();
+  const crowned = page.getByTestId("notice-host");
+  await expect(crowned).toContainText("E2E 原局头退出了");
+  await expect(crowned).toContainText("你现在是局头");
+  await host.dispose();
+
+  // W4：服务端给了 my_role（#120），首页卡片上显示「已报名」。
+  await page.goto("/");
+  await expect(page.locator(".gamecard .need.mine").first()).toHaveText("已报名");
+});
+
 test("学牌：首页 Tab 能进学牌列表，规则速览能渲染、答题后进度 +1（#106）", async ({ page }) => {
   await page.goto("/");
   await page.locator(".tabbar button", { hasText: "学牌" }).click();

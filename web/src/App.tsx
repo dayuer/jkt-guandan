@@ -252,6 +252,7 @@ export function App() {
         <Me
           me={me}
           requireIdentity={requireIdentity}
+          toast={toast}
           onDevices={() => navigate("/me/devices")}
           onPrivacy={() => navigate("/privacy")}
         />
@@ -303,6 +304,7 @@ export function App() {
       ) : (
         <Home
           me={me}
+          toast={toast}
           onOpen={(code) => navigate(`/g/${code}`)}
           onCreate={() => {
             setPrefill(null);
