@@ -136,11 +136,61 @@ func (s *Service) List(ctx context.Context, area, day string, limit, offset int)
 		}
 		sum.Game.StartsAt = time.Unix(startsAt, 0)
 		sum.Game.CreatedAt = time.Unix(createdAt, 0)
-		sum.SeatsLen = seats
 		sum.Missing = Capacity - seats
 		out = append(out, sum)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachSeats(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// attachSeats 一次性把这些局的座位都读出来，避免每条一次查询。
+func (s *Service) attachSeats(ctx context.Context, items []Summary) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	byID := make(map[string]int, len(items))
+	args := make([]any, 0, len(items))
+	placeholders := ""
+	for i := range items {
+		byID[items[i].Game.ID] = i
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args = append(args, items[i].Game.ID)
+	}
+
+	rows, err := s.st.Read().QueryContext(ctx, `
+		SELECT s.game_id, s.seat_no, s.user_id, COALESCE(u.nickname, ''), s.created_at
+		  FROM seats s LEFT JOIN users u ON u.id = s.user_id
+		 WHERE s.game_id IN (`+placeholders+`)
+		 ORDER BY s.game_id, s.seat_no`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			gameID    string
+			seat      Seat
+			createdAt int64
+		)
+		if err := rows.Scan(&gameID, &seat.SeatNo, &seat.UserID, &seat.Nickname, &createdAt); err != nil {
+			return err
+		}
+		seat.CreatedAt = time.Unix(createdAt, 0)
+		if idx, ok := byID[gameID]; ok {
+			items[idx].Seats = append(items[idx].Seats, seat)
+		}
+	}
+	return rows.Err()
 }
 
 // ---------------------------------------------------------------------------
