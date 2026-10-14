@@ -66,14 +66,17 @@ type Server struct {
 	sem    chan struct{}
 	build  string
 	stats  *metrics.HTTP
+	// mux 是注册好路由表的 ServeMux。前端兜底要用它判断 /api 下的路径是「不存在」（404）
+	// 还是「方法不对」（405）：兜底的 "/" 不限方法，ServeMux 自己永远不会回 405。
+	mux *http.ServeMux
 }
 
 // New 组装路由和中间件：按路由表（Table）注册，每条路由套上身份中间件，外面再套通用中间件。
 func New(opts Options) http.Handler {
 	s := newServer(opts)
-	mux := http.NewServeMux()
-	mount(mux, opts.Identity, s.table(opts.Routes))
-	return s.middleware(mux)
+	s.mux = http.NewServeMux()
+	mount(s.mux, opts.Identity, s.table(opts.Routes))
+	return s.middleware(s.mux)
 }
 
 func newServer(opts Options) *Server {
