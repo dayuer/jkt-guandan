@@ -87,7 +87,8 @@ CREATE TABLE games (
              CHECK (status IN ('open','full','cancelled','done')),
   version    INTEGER NOT NULL DEFAULT 1,   -- 牌局有任何变化（改时间、改地点、座位变动、换局头）都 +1，用于乐观锁和 WebSocket 消息排序
   created_at INTEGER NOT NULL,
-  ended_at   INTEGER                       -- 变成 cancelled 或 done 的时间
+  ended_at   INTEGER,                      -- 变成 cancelled 或 done 的时间
+  rescheduled_at INTEGER                   -- 局头最近一次改时间或地点的时刻（0005_game_rescheduled_at.sql，#114）；空表示没改过
 );
 CREATE INDEX games_feed ON games(area, starts_at) WHERE status IN ('open','full');
 CREATE TABLE seats (
@@ -320,7 +321,7 @@ CREATE INDEX events_name_at ON events(name, at);
   {"type":"hello","server_time":1760367600}
   ```
 - `v` 是牌局的版本号，加上座位变化计数。客户端收到 `v` 不大于本地已有版本的消息时直接丢弃，所以消息乱序或重复都不会出错。
-- **首页事件**（`feed:{area}`，#46）：`data` 就是 `GET /api/games` 列表里的一项，外加 `version`，客户端按 `short_code` 直接插入或替换那张卡片，不用再拉 REST：
+- **首页事件**（`feed:{area}`，#46）：`data` 就是 `GET /api/games` 列表里的一项（没有 `my_role`、`waitlist_pos`，它们按身份算，广播不带；客户端用自己在列表里的值，报名、退出的结果以 REST 响应为准），外加 `version`，客户端按 `short_code` 直接插入或替换那张卡片，不用再拉 REST：
   ```json
   {"topic":"feed:SCBD","type":"feed.game_changed","v":9,
    "data":{"short_code":"8K2","starts_at":"…","area":"SCBD","venue":"…","kind":"…","status":"open",
@@ -364,12 +365,13 @@ CREATE INDEX events_name_at ON events(name, at);
 GET  /healthz                         存活检查：进程还在、能处理请求即可
 GET  /readyz                          就绪检查：数据库可写、后台任务的心跳没超时、磁盘剩余空间充足（§12.5）
 GET  /api/push/key                    VAPID 公钥
+GET  /api/config                      前端用的公开配置（09 牌友的群信息，#108）
 POST /api/me                          首次填称呼
 GET  /api/me                          当前身份
 POST /api/claim                       签发 claim token 和认领码
 POST /api/claim/redeem                凭 {token, confirm?} 或 {code} 兑换身份；设备已有别的身份时返回 409 claim_conflict（§5.2）
 DELETE /api/me/devices/{id}           退出这台以外的某个设备（§10.3「退出其他设备」）
-GET  /api/games?area=&day=            首页列表
+GET  /api/games?area=&day=            首页列表。每项带 my_role / waitlist_pos / rescheduled_at（见下面「列表条目」）
 POST /api/games                       开一局
 GET  /api/games/{code}                牌局详情
 PATCH /api/games/{code}               局头修改（版本号 +1）
@@ -390,6 +392,57 @@ GET  /ws                              WebSocket（见 §5.5）
 GET  /g/{code} · /g/{code}/og.png · /g/{code}/poster.png · /g/{code}/game.ics
 GET  /*                               内嵌的前端页面（单页应用，未知路径回落到 index.html）
 ```
+
+**列表条目 `GET /api/games`**（#114）：每一项除了 `short_code`、`starts_at`、`area`、`venue`、`kind`、`status`、`seat_list`、`seats`、`missing`、`host`，还有按当前身份算的：
+
+| 字段 | 含义 |
+|---|---|
+| `my_role` | `seated`（在座位上）/ `waitlist`（在候补里）/ `none`。访客没有身份，一律 `none` |
+| `waitlist_pos` | 候补第几位，从 1 开始；不在候补里是 0 |
+| `rescheduled_at` | 局头最近一次改时间或地点的时刻（Unix 秒）；没改过就没有这一项。改备注、片区或原样重发都不算 |
+
+- `GET /api/games/{code}` 的 `game` 对象里也有 `rescheduled_at`。改期横幅的做法：客户端把「上次看到这一局的 `rescheduled_at`」存在本机，服务端值更大且我在座位上（`my_role` 为 `seated`）就显示「局头把时间改到 X 了」，关掉时把本机的值更新成服务端的。
+- 这两个按身份算的字段只出现在 `GET /api/games` 里，首页事件（`feed:*`）是广播，不带 `my_role`、`waitlist_pos`，带 `rescheduled_at`。
+
+**绑定 WhatsApp**（#116，「我的」页 G2）。号码只给自己看：只出现在自己的 `GET /api/me` 里，牌友列表、牌局详情里都没有。注销时清空。
+
+- `GET /api/me` 多一个字段 `wa_phone`（E.164，比如 `"+6281234567890"`）。**没绑定时没有这个字段**。
+- `PUT /api/me/wa`（`route.User`）：请求 `{"phone":"+62 812-3456-7890"}`，成功返回 `200 {"wa_phone":"+6281234567890"}`，再次调用就是换号码。
+  - 服务端自己整理和校验，不信前端：去掉空格、横线、点、括号，开头的 `00` 当作 `+`，整理完必须是 `+` 加 8–15 位数字、首位不是 0。
+  - 不猜国家区号：「0812…」这种本地写法不合法。不合法时返回 `400 invalid_input`，`message` 提示要带区号。
+- `DELETE /api/me/wa`（`route.User`）：解绑，`204`，没绑定也是 `204`。
+- 限流：绑定和解绑合计每个用户每小时 10 次，超出返回 `429 rate_limited`。
+
+**09 牌友**（#108，设计稿 F1）。三个接口都要有身份（`route.User`），访客 401，被封禁 403：
+
+- `GET /api/friends`：和我一起坐过同一局的人。
+  ```json
+  {"friends":[
+    {"user":{"id":"01J…","nickname":"阿明"},"together_count":3,"last_together_at":1791986400,"starred":true},
+    {"user":{"id":"01J…","nickname":"Lily"},"together_count":5,"last_together_at":1791900000,"starred":false}
+  ]}
+  ```
+  - 「一起坐过」= 两个人在同一局的 seats 里，并且这一局没有取消（`open`、`full`、`done` 都算），从 seats 实时算，不单独存。
+  - 排序：星标的在前，然后按 `together_count` 从多到少、`last_together_at`（最近一起的那一局的开局时间）从新到旧。最多 200 人。
+  - 不出现：自己、已注销、被封禁、被合并掉的身份。只有这一个列表，不提供按称呼搜索用户的接口（§10.9）。
+  - 没有牌友时是 `{"friends":[]}`。
+- `PUT /api/follows/{user_id}` 星标、`DELETE /api/follows/{user_id}` 取消星标：都是幂等的，成功返回 `204`。只能对 `GET /api/friends` 里会出现的人做；不是牌友（没一起坐过、只在取消的局里同桌、自己、不存在、已注销、被封禁）一律 `404 not_friend`，接口不能用来探测用户 id。星标是单向的，对方看不到。
+- 合并身份（`guandan admin` 的 merge）时，星标两个方向都搬到保留的身份上；原来互相星标的不会变成自己星标自己。注销时删掉这个人的星标和别人对他的星标。
+
+**邀请牌友 `POST /api/games/{code}/invites`**（#115，08「邀请谁」，`route.User`）：
+- 请求：`{"user_ids":["01J…","01J…"]}`，去重后 1–20 个，否则 `400 invalid_input`。
+- 只有局头能调（否则 `403 not_host`），局要还开着（否则 `409 game_closed`）。
+- 只能邀请自己的牌友（和 `GET /api/friends` 同一套规则）。**只要有一个不是牌友，整次邀请就失败**：返回 `404 not_friend`，一个都不邀请，接口不能用来探测用户 id。
+- 已经在这一局里（座位或候补）、之前已经邀请过、被局头移出过这一局的人：跳过，不报错。
+- 一个人 24 小时内最多发出 50 条邀请，超出返回 `409 quota_exceeded`。
+- 成功：`200 {"invited":["01J…"],"skipped":["01J…"]}`。`invited` 是这次新邀请的人，每人收到一条 `invited` 推送（「有人邀请你打掼蛋」），同一个人对同一局只推一次。
+- 被邀请的人打开这一局（`GET /api/games/{code}`）时，`me` 里多一个 `invited_by: {"id","nickname"}`，前端显示「X 邀请了你」。只有被邀请的人自己看得到。
+
+**`GET /api/config`**：前端用的公开配置，不识别身份，`Cache-Control: public, max-age=300`。
+```json
+{"group":{"wechat_id":"jktguandan","whatsapp_group_url":"https://chat.whatsapp.com/AbCdEf"}}
+```
+`group` 是 09 牌友顶部「雅加达掼蛋群」横幅用的，来自 `GUANDAN_GROUP_WECHAT_ID`、`GUANDAN_GROUP_WHATSAPP_URL`；没配置的那一项是空串，两项都空时前端不显示横幅。
 
 **蛋蛋 `POST /api/agent`**（#11，§10.10）：只出草稿，不写库。
 
@@ -451,6 +504,8 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `GUANDAN_BACKUP_KEY` | 空 | 备份加密用的 age 公钥；设置了备份地址时必须提供 |
 | `ANTHROPIC_API_KEY` | 空 | 为空时蛋蛋不可用（`POST /api/agent` 返回 `503 agent_disabled`），前端退回到表单（phase:3） |
 | `GUANDAN_AGENT_MODEL` | `claude-sonnet-5-5` | 蛋蛋用的 Claude 模型 |
+| `GUANDAN_GROUP_WECHAT_ID` | 空 | 09 牌友顶部「雅加达掼蛋群」横幅里的微信号（#108），经 `GET /api/config` 给前端 |
+| `GUANDAN_GROUP_WHATSAPP_URL` | 空 | 同上，WhatsApp 群链接；必须是 https 地址，否则启动时报错 |
 
 ## 8. 打包与部署
 

@@ -73,7 +73,7 @@ func (s *Service) Get(ctx context.Context, code, viewerID string) (*Detail, erro
 }
 
 // List 返回某个片区未来几天的局（§10.9：只返回未来 7 天内，并且分页）。
-func (s *Service) List(ctx context.Context, area, day string, limit, offset int) ([]Summary, error) {
+func (s *Service) List(ctx context.Context, viewerID, area, day string, limit, offset int) ([]Summary, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
@@ -102,7 +102,7 @@ func (s *Service) List(ctx context.Context, area, day string, limit, offset int)
 	query := `
 		SELECT g.id, g.short_code, g.host_id, g.starts_at, g.area, g.venue, g.kind,
 		       COALESCE(g.note, ''), g.status, g.version, g.created_at,
-		       COALESCE(u.nickname, ''),
+		       COALESCE(g.rescheduled_at, 0), COALESCE(u.nickname, ''),
 		       (SELECT count(*) FROM seats s WHERE s.game_id = g.id)
 		  FROM games g
 		  LEFT JOIN users u ON u.id = g.host_id
@@ -126,17 +126,20 @@ func (s *Service) List(ctx context.Context, area, day string, limit, offset int)
 		var (
 			sum                 Summary
 			startsAt, createdAt int64
+			rescheduledAt       int64
 			seats               int
 		)
 		if err := rows.Scan(&sum.Game.ID, &sum.Game.ShortCode, &sum.Game.HostID, &startsAt,
 			&sum.Game.Area, &sum.Game.Venue, &sum.Game.Kind, &sum.Game.Note,
-			&sum.Game.Status, &sum.Game.Version, &createdAt,
+			&sum.Game.Status, &sum.Game.Version, &createdAt, &rescheduledAt,
 			&sum.HostName, &seats); err != nil {
 			return nil, err
 		}
 		sum.Game.StartsAt = time.Unix(startsAt, 0)
 		sum.Game.CreatedAt = time.Unix(createdAt, 0)
+		sum.Game.RescheduledAt = unixOrZero(rescheduledAt)
 		sum.Missing = Capacity - seats
+		sum.MyRole = "none"
 		out = append(out, sum)
 	}
 	if err := rows.Err(); err != nil {
@@ -145,7 +148,63 @@ func (s *Service) List(ctx context.Context, area, day string, limit, offset int)
 	if err := s.attachSeats(ctx, out); err != nil {
 		return nil, err
 	}
+	if err := s.attachMyRole(ctx, viewerID, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// attachMyRole 算出当前身份在这些局里的位置（座位上 / 候补第几位 / 都不是）。
+// 座位已经读出来了，从里面找；候补只查这个人在这些局里排的位置，不读别人的。
+// 没有身份时全是 none。
+func (s *Service) attachMyRole(ctx context.Context, viewerID string, items []Summary) error {
+	if viewerID == "" || len(items) == 0 {
+		return nil
+	}
+	byID := make(map[string]int, len(items))
+	args := []any{viewerID}
+	placeholders := ""
+	for i := range items {
+		byID[items[i].Game.ID] = i
+		for _, seat := range items[i].Seats {
+			if seat.UserID == viewerID {
+				items[i].MyRole = "seated"
+			}
+		}
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args = append(args, items[i].Game.ID)
+	}
+
+	// 位置和 loadDetailFrom 一致：先按 created_at，相同再按 rowid。
+	rows, err := s.st.Read().QueryContext(ctx, `
+		SELECT w.game_id,
+		       (SELECT count(*) FROM waitlist o
+		         WHERE o.game_id = w.game_id
+		           AND (o.created_at < w.created_at
+		                OR (o.created_at = w.created_at AND o.rowid <= w.rowid)))
+		  FROM waitlist w
+		 WHERE w.user_id = ? AND w.game_id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			gameID string
+			pos    int
+		)
+		if err := rows.Scan(&gameID, &pos); err != nil {
+			return err
+		}
+		if idx, ok := byID[gameID]; ok && items[idx].MyRole != "seated" {
+			items[idx].MyRole = "waitlist"
+			items[idx].WaitlistPos = pos
+		}
+	}
+	return rows.Err()
 }
 
 // attachSeats 一次性把这些局的座位都读出来，避免每条一次查询。
@@ -859,6 +918,11 @@ func (s *Service) Update(ctx context.Context, code, hostID string, patch Patch, 
 			sets = append(sets, "note = ?")
 			args = append(args, nullIfEmpty(*patch.Note))
 		}
+		// 时间或地点真的变了才记 rescheduled_at（#114）；原样重发不算。
+		if patch.TimeChanged(game.StartsAt) || (patch.Venue != nil && *patch.Venue != game.Venue) {
+			sets = append(sets, "rescheduled_at = ?")
+			args = append(args, now.Unix())
+		}
 		sets = append(sets, "version = version + 1")
 
 		query := "UPDATE games SET " + strings.Join(sets, ", ") + " WHERE id = ?"
@@ -872,7 +936,7 @@ func (s *Service) Update(ctx context.Context, code, hostID string, patch Patch, 
 		}
 
 		// 改了时间：作废旧的开局提醒，按新时间重排，并通知座位上的人（§5.1）。
-		if patch.TimeChanged() {
+		if patch.TimeChanged(game.StartsAt) {
 			if err := dropReminders(ctx, tx, game.ID, "", ReminderTMinus1h, now); err != nil {
 				return err
 			}
@@ -962,7 +1026,7 @@ func (s *Service) publishFeedAfterCommit(tx *store.Tx, code, area, eventType str
 // feedItem 是 feed:* 事件的数据：和 GET /api/games 列表里的一项完全相同，另外带上 version。
 // 片区里每一局的版本号各自独立，客户端按 short_code 比较 version 去重（§5.5）。
 func feedItem(d *Detail) map[string]any {
-	item := toSummariesJSON([]Summary{{Game: d.Game, HostName: d.HostName, Seats: d.Seats, Missing: d.Missing}})[0]
+	item := toSummariesJSON([]Summary{{Game: d.Game, HostName: d.HostName, Seats: d.Seats, Missing: d.Missing}})[0] // MyRole 留空：广播不带按身份算的字段
 	item["version"] = d.Game.Version
 	return item
 }

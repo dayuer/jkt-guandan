@@ -112,9 +112,10 @@ button:disabled {
   padding-bottom: calc(var(--bar-height, 0px) + var(--s4) + env(safe-area-inset-bottom, 0px));
 }
 
-/* tab 栏高度固定，写死就够。 */
+/* 有 Tab 栏的页面：给 Tab 栏留出空间。高度由 TabBar 自己量（--tabbar-height），
+   76px 只是它挂上之前的兜底。 */
 .body.has-bar {
-  --bar-height: 76px;
+  padding-bottom: calc(var(--tabbar-height, 76px) + var(--s4) + env(safe-area-inset-bottom, 0px));
 }
 
 /* 操作栏是**兜底值**：它会不会换行取决于宽度和按钮个数（局头有四颗按钮，
@@ -1017,9 +1018,10 @@ a.btn {
 .toast {
   position: fixed;
   left: 50%;
-  /* 底部固定条的**实际**高度 + 20px（由 useBarHeight 量出来写到 --toast-lift 上）。
-     写死 96px 在局头那种两行操作栏（155px）下会盖住上面那一行（#94 follow-up）。 */
-  bottom: calc(var(--toast-lift, 20px) + env(safe-area-inset-bottom, 0px));
+  /* 页面自己的底栏高度 + 20px（--toast-lift，由 useBarHeight 量）+ Tab 栏高度
+     （--tabbar-height）。两条都算上：蛋蛋那一页同时有输入框和 Tab 栏。
+     写死 96px 时，局头那种两行操作栏（155px）会被 toast 盖住（#94 follow-up）。 */
+  bottom: calc(var(--toast-lift, 20px) + var(--tabbar-height, 0px) + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   background: var(--ink);
   color: var(--cream);
@@ -1388,8 +1390,9 @@ html.lock-overscroll body {
 
 /* 07 · 约局 · 蛋蛋（设计稿 D1 / D3，#11） */
 .body.agent-page {
-  --bar-height: 76px; /* .composer：48 的输入框 + 上下内边距 */
-  padding-bottom: calc(var(--bar-height) + var(--s4) + env(safe-area-inset-bottom, 0px));
+  /* 这一页有两条底栏：蛋蛋的输入框（76：48 的输入框 + 上下内边距）+ Tab 栏。 */
+  --bar-height: 76px;
+  padding-bottom: calc(var(--bar-height) + var(--tabbar-height, 0px) + var(--s4) + env(safe-area-inset-bottom, 0px));
 }
 
 .agent-head {
@@ -1550,7 +1553,8 @@ html.lock-overscroll body {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: 0;
+  /* 坐在 Tab 栏上面（没有 Tab 栏时就是屏幕底）。 */
+  bottom: var(--tabbar-height, 0px);
   max-width: 480px;
   margin: 0 auto;
   display: flex;
@@ -1687,4 +1691,212 @@ html.lock-overscroll body {
 /* 头部下面已经留了 12px，列表标题少留一点，和固定之前的间距一样。 */
 .home-top + .listing {
   padding-top: 6px;
+}
+
+/* ── 09 牌友（设计稿 F1 / F2，#108）──────────────────────────── */
+
+/* 顶部「雅加达掼蛋群」横幅：图标 + 两行字 + 右边两个小按钮。 */
+.group-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  margin: var(--s2) 18px 0;
+  padding: 14px;
+  border-radius: var(--r-lg);
+  background: var(--beige);
+}
+
+.group-banner .gico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-12);
+  background: var(--red);
+  color: var(--cream);
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.group-banner .gtx {
+  flex: 1;
+  min-width: 0;
+}
+
+.group-banner .gtx b {
+  display: block;
+  font-size: var(--fs-15);
+  color: var(--ink);
+}
+
+.group-banner .gtx small {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-small);
+  color: var(--ink-2);
+}
+
+.group-banner .gact {
+  flex: none;
+  display: grid;
+  gap: 6px;
+}
+
+.pill-btn {
+  display: grid;
+  place-items: center;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--r-pill);
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  color: var(--red);
+  font-size: var(--fs-small);
+  font-weight: 700;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.pill-btn.wa {
+  background: var(--whatsapp);
+  border-color: var(--whatsapp);
+  color: var(--white);
+}
+
+/* 牌友列表：每人一张卡片。 */
+.friends {
+  display: grid;
+  gap: 10px;
+  margin: 14px 18px 0;
+}
+
+.friend {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: 12px 14px;
+  border-radius: var(--r-lg);
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-card);
+}
+
+.friend .avatar {
+  flex: none;
+  background: var(--beige);
+  color: var(--ink);
+  font-family: var(--font-serif);
+}
+
+/* 星标的牌友：红底反白头像（F1 最上面几位）。 */
+.friend .avatar.starred {
+  background: var(--red);
+  color: var(--cream);
+}
+
+.friend .tx {
+  flex: 1;
+  min-width: 0;
+}
+
+.friend .tx b {
+  display: block;
+  font-size: var(--fs-h3);
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.friend .tx small {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-small);
+  color: var(--ink-3);
+}
+
+.friend .star {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--line-2);
+  background: var(--card);
+  color: var(--ink-4);
+  font-size: 18px;
+}
+
+.friend .star.on {
+  color: var(--red);
+}
+
+/* F2「约 TA 打一局」：三行选项 + 整行取消。 */
+.sheet.invite .options {
+  display: grid;
+  gap: 10px;
+  margin-top: var(--s4);
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--card);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  text-align: left;
+  text-decoration: none;
+}
+
+.option .ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--beige);
+  color: var(--red);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.option .ico.wa {
+  background: var(--whatsapp);
+  color: var(--white);
+  font-family: var(--font-serif);
+}
+
+.option .tx {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-15);
+  font-weight: 700;
+}
+
+.option .tx small {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-small);
+  font-weight: 400;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.option .chev {
+  flex: none;
+  color: var(--ink-4);
+  font-size: 18px;
+}
+
+.sheet.invite .cancel {
+  margin-top: var(--s4);
 }

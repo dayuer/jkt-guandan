@@ -554,3 +554,29 @@ func record(register func(*routeRecorder)) []route.Route {
 	register(&r)
 	return r.routes
 }
+
+// GET /api/config 返回 09 牌友横幅要的群信息（#108）；没配置时是空串，前端据此隐藏横幅。不需要身份。
+func TestPublicConfig(t *testing.T) {
+	for _, tc := range []struct {
+		cfg              config.Config
+		wechat, whatsapp string
+	}{
+		{config.Config{}, "", ""},
+		{config.Config{GroupWeChatID: "jktguandan", GroupWhatsAppURL: "https://chat.whatsapp.com/AbCdEf"}, "jktguandan", "https://chat.whatsapp.com/AbCdEf"},
+	} {
+		f := newFixture(t, tc.cfg, nil)
+		resp, body := f.get(t, "/api/config")
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "public, max-age=300" {
+			t.Fatalf("%d %v", resp.StatusCode, resp.Header)
+		}
+		var got struct {
+			Group struct {
+				WeChatID         string `json:"wechat_id"`
+				WhatsAppGroupURL string `json:"whatsapp_group_url"`
+			} `json:"group"`
+		}
+		if err := json.Unmarshal([]byte(body), &got); err != nil || got.Group.WeChatID != tc.wechat || got.Group.WhatsAppGroupURL != tc.whatsapp {
+			t.Fatalf("%s：%+v %v", body, got, err)
+		}
+	}
+}

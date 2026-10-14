@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dayuer/jkt-guandan/internal/friends"
 	"github.com/dayuer/jkt-guandan/internal/identity"
 	"github.com/dayuer/jkt-guandan/internal/moderate"
 	"github.com/dayuer/jkt-guandan/internal/route"
@@ -29,6 +30,7 @@ func Routes(svc *Service) []route.Route {
 		{Method: http.MethodDelete, Pattern: "/api/games/{code}/seat", Access: route.User, Handler: http.HandlerFunc(h.leave)},
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/cancel", Access: route.User, Handler: http.HandlerFunc(h.cancel)},
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/kick", Access: route.User, Handler: http.HandlerFunc(h.kick)},
+		{Method: http.MethodPost, Pattern: "/api/games/{code}/invites", Access: route.User, Handler: http.HandlerFunc(h.invite)},
 	}
 }
 
@@ -56,7 +58,7 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
 
-	items, err := h.svc.List(r.Context(), q.Get("area"), q.Get("day"), limit, offset)
+	items, err := h.svc.List(r.Context(), viewer(r), q.Get("area"), q.Get("day"), limit, offset)
 	if err != nil {
 		writeServiceError(w, "读牌局列表失败", err)
 		return
@@ -206,6 +208,34 @@ func (h *handler) kick(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toDetailJSON(detail))
 }
 
+// invite 局头邀请牌友（#115）。返回这次新邀请的人和跳过的人（已在局里、已邀请过、被移出过）。
+func (h *handler) invite(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		UserIDs []string `json:"user_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "需要 user_ids")
+		return
+	}
+	res, err := h.svc.Invite(r.Context(), r.PathValue("code"), userID, body.UserIDs)
+	if err != nil {
+		writeGameError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invited": nonNil(res.Invited), "skipped": nonNil(res.Skipped)})
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
 // ---------------------------------------------------------------------------
 // JSON 与错误
 // ---------------------------------------------------------------------------
@@ -226,6 +256,8 @@ type gameJSON struct {
 	Status    string `json:"status"`
 	Version   int64  `json:"version"`
 	Capacity  int    `json:"capacity"`
+	// RescheduledAt 是局头最近一次改时间或地点的时刻（Unix 秒）；没改过就没有这一项。
+	RescheduledAt int64 `json:"rescheduled_at,omitempty"`
 }
 
 type seatJSON struct {
@@ -239,9 +271,10 @@ type waitJSON struct {
 }
 
 type meJSON struct {
-	Role     string `json:"role"`
-	SeatNo   int    `json:"seat_no,omitempty"`
-	Position int    `json:"position,omitempty"`
+	Role      string       `json:"role"`
+	SeatNo    int          `json:"seat_no,omitempty"`
+	Position  int          `json:"position,omitempty"`
+	InvitedBy *userRefJSON `json:"invited_by,omitempty"` // #115：谁邀请了我，只有被邀请的人看得到
 }
 
 func toDetailJSON(d *Detail) map[string]any {
@@ -252,6 +285,10 @@ func toDetailJSON(d *Detail) map[string]any {
 			SeatNo: s.SeatNo,
 			User:   userRefJSON{ID: s.UserID, Nickname: s.Nickname},
 		})
+	}
+	me := meJSON{Role: d.Me, SeatNo: d.MySeatNo, Position: d.MyPosition}
+	if d.MyInviter != nil {
+		me.InvitedBy = &userRefJSON{ID: d.MyInviter.UserID, Nickname: d.MyInviter.Nickname}
 	}
 	waiting := make([]waitJSON, 0, len(d.Waitlist))
 	for _, w := range d.Waitlist {
@@ -266,12 +303,13 @@ func toDetailJSON(d *Detail) map[string]any {
 			ID: d.Game.ID, ShortCode: d.Game.ShortCode, StartsAt: d.Game.StartsAt.Unix(),
 			Area: d.Game.Area, Venue: d.Game.Venue, Kind: d.Game.Kind, Note: d.Game.Note,
 			Status: d.Game.Status, Version: d.Game.Version, Capacity: Capacity,
+			RescheduledAt: unixSec(d.Game.RescheduledAt),
 		},
 		"host":     userRefJSON{ID: d.Game.HostID, Nickname: d.HostName},
 		"seats":    seats,
 		"waitlist": waiting,
 		"missing":  d.Missing,
-		"me":       meJSON{Role: d.Me, SeatNo: d.MySeatNo, Position: d.MyPosition},
+		"me":       me,
 	}
 }
 
@@ -285,7 +323,7 @@ func toSummariesJSON(items []Summary) []map[string]any {
 				User:   userRefJSON{ID: seat.UserID, Nickname: seat.Nickname},
 			})
 		}
-		out = append(out, map[string]any{
+		item := map[string]any{
 			"short_code": s.Game.ShortCode,
 			"starts_at":  s.Game.StartsAt.Unix(),
 			"area":       s.Game.Area,
@@ -296,9 +334,26 @@ func toSummariesJSON(items []Summary) []map[string]any {
 			"seats":      len(seats),
 			"missing":    s.Missing,
 			"host":       userRefJSON{ID: s.Game.HostID, Nickname: s.HostName},
-		})
+		}
+		if at := unixSec(s.Game.RescheduledAt); at != 0 {
+			item["rescheduled_at"] = at
+		}
+		// 按身份算的字段只在 GET /api/games 里有；首页事件是广播，MyRole 为空，不带。
+		if s.MyRole != "" {
+			item["my_role"] = s.MyRole
+			item["waitlist_pos"] = s.WaitlistPos
+		}
+		out = append(out, item)
 	}
 	return out
+}
+
+// unixSec 零值时间返回 0，其余返回 Unix 秒。
+func unixSec(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
 }
 
 // writeGameError 把业务错误映射成状态码（§6）。
@@ -320,6 +375,8 @@ func writeGameError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "not_host", "只有局头能做这件事")
 	case errors.Is(err, ErrStarted):
 		writeError(w, http.StatusConflict, "game_started", "这一局已经开始了")
+	case errors.Is(err, friends.ErrNotFriend):
+		writeError(w, http.StatusNotFound, "not_friend", "只能邀请一起打过局的牌友")
 	case errors.Is(err, ErrNotInGame):
 		writeError(w, http.StatusNotFound, "not_in_game", "这个人不在这一局里")
 	case errors.Is(err, ErrHostCantKickSelf):

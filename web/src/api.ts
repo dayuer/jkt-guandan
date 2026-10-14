@@ -372,3 +372,38 @@ export function issueClaim(): Promise<ClaimTicket> {
 export function redeemClaimCode(code: string): Promise<Identity> {
   return request<Identity>("POST", "/api/claim/redeem", { body: { code } });
 }
+
+// ── 牌友（#108，设计稿 F1 / F2）──────────────────────────────────────────────
+
+/** 一起坐过同一局的人（docs/server-design.md §6「09 牌友」）。服务端只给这些人，不提供搜用户的接口。 */
+export interface Friend {
+  user: UserRef;
+  /** 一起坐过几局（没取消的局，含还没开打的）。 */
+  together_count: number;
+  /** 最近一起那局的开局时间，Unix 秒。 */
+  last_together_at: number;
+  /** 我星标了 TA。 */
+  starred: boolean;
+}
+
+/** 已经排好序：星标在前，再按一起打过的局数、最近一次。 */
+export async function listFriends(): Promise<Friend[]> {
+  const body = await request<{ friends: Friend[] }>("GET", "/api/friends");
+  return body?.friends ?? [];
+}
+
+/** 星标 / 取消星标，两个方向都幂等。不是牌友（或自己、已注销）返回 404 not_friend。 */
+export function setStar(userID: string, starred: boolean): Promise<void> {
+  return request<void>(starred ? "PUT" : "DELETE", `/api/follows/${encodeURIComponent(userID)}`);
+}
+
+/** F1 顶部「雅加达掼蛋群」横幅（GET /api/config 的 group）。空字符串表示没配置。 */
+export interface GroupInfo {
+  wechat_id: string;
+  whatsapp_group_url: string;
+}
+
+export async function getGroupInfo(): Promise<GroupInfo> {
+  const body = await request<{ group?: Partial<GroupInfo> }>("GET", "/api/config");
+  return { wechat_id: body?.group?.wechat_id ?? "", whatsapp_group_url: body?.group?.whatsapp_group_url ?? "" };
+}

@@ -2,13 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, getMe, signOutCurrentDevice, type UserRef } from "./api";
 import { FirstLaunch } from "./components/FirstLaunch";
 import { NicknameSheet } from "./components/NicknameSheet";
+import { TabBar, type TabKey } from "./components/TabBar";
 import { shouldWelcome } from "./guide";
 import { clearIdentityMarker, redeemClaimFromURL } from "./identity";
-import { agentDisabled } from "./agent";
 import { Agent, type FormPrefill } from "./pages/Agent";
+import { ComingSoon } from "./pages/ComingSoon";
 import { CreateGame } from "./pages/CreateGame";
 import { Detail } from "./pages/Detail";
 import { Devices } from "./pages/Devices";
+import { Friends } from "./pages/Friends";
 import { Home } from "./pages/Home";
 import { Me } from "./pages/Me";
 import { Privacy } from "./pages/Privacy";
@@ -21,6 +23,8 @@ type Route =
   | { name: "new" }
   | { name: "agent" }
   | { name: "me" }
+  | { name: "learn" }
+  | { name: "friends" }
   | { name: "devices" }
   | { name: "privacy" };
 
@@ -31,11 +35,24 @@ function parseRoute(): Route {
   if (path === "/new") return { name: "new" };
   if (path === "/agent") return { name: "agent" };
   if (path === "/me") return { name: "me" };
+  if (path === "/learn") return { name: "learn" };
+  if (path === "/friends") return { name: "friends" };
   if (path === "/me/devices") return { name: "devices" };
   // 隐私说明不要求登录：还没有填称呼的人也应当能看到（§14）。
   if (path === "/privacy") return { name: "privacy" };
   return { name: "home" };
 }
+
+/** 哪些路由是 tab 级页面、各自对应哪个 tab（#107）。 */
+const TAB_FOR_ROUTE: Record<string, TabKey> = {
+  home: "games",
+  learn: "learn", // 学牌（#106）—— 现在是个占位页
+  friends: "friends", // 牌友（#108）—— 同上
+  // /agent 在 phase 1 界面上没有入口了（约局直接开表单），但直接输 URL 还能打开——
+  // 那也给它一条 Tab，别让误闯进来的人困在一个没有出口的页面上。
+  agent: "create",
+  me: "me",
+};
 
 type Claim =
   | { kind: "idle" }
@@ -244,6 +261,17 @@ export function App() {
             navigate("/me");
           }}
         />
+      ) : route.name === "learn" ? (
+        <ComingSoon title="学牌" note="掼蛋的规则、记牌和常见牌型，做成能翻的卡片。" />
+      ) : route.name === "friends" ? (
+        <Friends
+          toast={toast}
+          onGames={() => navigate("/")}
+          onNewGame={() => {
+            setPrefill(null);
+            navigate("/new");
+          }}
+        />
       ) : route.name === "privacy" ? (
         <Privacy
           hasIdentity={!!me}
@@ -258,18 +286,42 @@ export function App() {
       ) : (
         <Home
           me={me}
-          toast={toast}
           onOpen={(code) => navigate(`/g/${code}`)}
           onCreate={() => {
             setPrefill(null);
             navigate("/new");
           }}
-          // 服务端没配蛋蛋（503 agent_disabled）时，「约局」直接打开表单。
-          onAgent={() => {
-            setPrefill(null);
-            navigate(agentDisabled() ? "/new" : "/agent");
+        />
+      )}
+
+      {/* tab 级页面才有底部 Tab（#107）：详情页、开局表单、隐私页这类不挂。
+          放在 App 这一层，新增 tab 页时不会再漏（`/me` 就是漏了才让 iOS 主屏幕上的
+          用户进得去出不来）。 */}
+      {TAB_FOR_ROUTE[route.name] && (
+        <TabBar
+          active={TAB_FOR_ROUTE[route.name]}
+          onTab={(tab) => {
+            switch (tab) {
+              case "games":
+                navigate("/");
+                return;
+              case "me":
+                navigate("/me");
+                return;
+              case "create":
+                // phase 1 的约局就是手填表单：不上蛋蛋（用户的决定）。
+                // /agent 那条路由留在代码里（phase 3 的 #11 会回来），但界面上没有入口。
+                setPrefill(null);
+                navigate("/new");
+                return;
+              case "learn":
+                navigate("/learn");
+                return;
+              case "friends":
+                navigate("/friends");
+                return;
+            }
           }}
-          onMe={() => navigate("/me")}
         />
       )}
 

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { listGames, type GameSummary, type UserRef } from "../api";
 import { initial } from "../components/Table";
-import { useBarHeight } from "../useBarHeight";
 import { kindLabel, missingLabel, slashDate, timeHM } from "../format";
 import { OfflineDot, useRealtime } from "../useRealtime";
 
@@ -34,10 +33,6 @@ interface Props {
   me: UserRef | null;
   onOpen: (code: string) => void;
   onCreate: () => void;
-  /** 底部「约局」：打开 07 蛋蛋；蛋蛋没配时由 App 改成打开 08 表单。 */
-  onAgent?: () => void;
-  onMe: () => void;
-  toast: (text: string) => void;
 }
 
 /**
@@ -45,7 +40,7 @@ interface Props {
  *
  * 「今天 / 明天 / 周末」由服务端按 Asia/Jakarta 算（§13.2），前端只传筛选条件。
  */
-export function Home({ me, onOpen, onCreate, onAgent, onMe, toast }: Props) {
+export function Home({ me, onOpen, onCreate }: Props) {
   const [day, setDay] = useState<Day>("");
   const [area, setArea] = useState("");
   const [games, setGames] = useState<GameSummary[] | null>(null);
@@ -190,54 +185,6 @@ export function Home({ me, onOpen, onCreate, onAgent, onMe, toast }: Props) {
 
         <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
       </div>
-
-      <TabBar onCreate={onAgent ?? onCreate} onMe={onMe} onTodo={(name) => toast(`「${name}」还在做`)} />
     </>
-  );
-}
-
-/**
- * 底部 Tab（设计稿 A2）。中间那颗是「约局」，打开 07 蛋蛋（#11）；
- * 服务端没配蛋蛋时直接打开 D4 开局表单。
- * 「学牌」「牌友」「我的」分别在别的 issue 里，先提示一下。
- */
-function TabBar({
-  onCreate,
-  onMe,
-  onTodo,
-}: {
-  onCreate: () => void;
-  onMe: () => void;
-  onTodo: (name: string) => void;
-}) {
-  // 让 toast 知道底栏有多高（Tab 栏高度固定，但它也得报一次数）。
-  const bar = useBarHeight<HTMLElement>();
-  const tabs = [
-    { key: "games", label: "牌局", glyph: "♠", on: true },
-    { key: "learn", label: "学牌", glyph: "♣", on: false },
-    { key: "create", label: "约局", glyph: "蛋", on: false, egg: true },
-    { key: "friends", label: "牌友", glyph: "♦", on: false },
-    { key: "me", label: "我的", glyph: "♥", on: false },
-  ];
-  return (
-    <nav class="tabbar" ref={bar}>
-      {tabs.map((t) => (
-        <button
-          key={t.key}
-          class={`tab${t.on ? " on" : ""}${t.egg ? " egg" : ""}`}
-          aria-current={t.on ? "page" : undefined}
-          onClick={() => {
-            if (t.egg) onCreate();
-            else if (t.key === "me") onMe();
-            else if (!t.on) onTodo(t.label);
-          }}
-        >
-          <span class="g" aria-hidden="true">
-            {t.glyph}
-          </span>
-          {t.label}
-        </button>
-      ))}
-    </nav>
   );
 }

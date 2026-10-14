@@ -302,3 +302,69 @@ test("局头视角：toast 抬在操作栏上方，不盖住按钮", async ({ pa
   const barTop = await bar.evaluate((el) => el.getBoundingClientRect().top);
   expect(toastBottom).toBeLessThanOrEqual(barTop);
 });
+
+// #107：/me 以前没有 Tab 栏也没有返回键——iOS 主屏幕（独立窗口、没有浏览器返回键）上
+// 点进「我的」就出不来了。Tab 栏现在由 App 层统一挂，tab 级页面都有。
+test("我的页有 Tab 栏，点「牌局」回到首页", async ({ page }) => {
+  await page.goto("/me");
+  const tabbar = page.locator(".tabbar");
+  await expect(tabbar).toBeVisible();
+  // 当前高亮的是「我的」。
+  await expect(tabbar.locator(".tab.on")).toHaveText(/我的/);
+
+  await tabbar.getByRole("button", { name: /牌局/ }).click();
+
+  await expect(page).toHaveURL(new RegExp(`${ORIGIN.replace("/", "\\/")}/?$`));
+  await expect(page.locator("h1")).toContainText("随时掼掼蛋");
+  await expect(page.locator(".tab.on")).toHaveText(/牌局/);
+});
+
+// 非 tab 页（详情页）不挂 Tab 栏——那里有自己的操作栏，两个底栏会打架。
+test("详情页不显示 Tab 栏", async ({ page }) => {
+  await page.goto(`/g/${codes[2]}`);
+  await expect(page.locator(".actionbar")).toBeVisible();
+  await expect(page.locator(".tabbar")).toHaveCount(0);
+});
+
+// #108：底部「牌友」能点到 F1。服务端的 /api/friends、/api/config 在 #109：
+// 服务端还没有这两个接口时（现在未知的 /api/* 会落到 SPA 兜底，返回 200 的 HTML），这里用固定数据顶上；
+// 接口上线之后自动走真接口（新身份没有牌友，看到的是空状态）。
+test("底部「牌友」能进 F1，标题对，约 TA 面板能打开", async ({ page }) => {
+  const fallback: Record<string, unknown> = {
+    "/api/friends": {
+      friends: [{ user: { id: "e2e-u1", nickname: "E2E 老王" }, together_count: 3, last_together_at: 1791986400, starred: true }],
+    },
+    "/api/config": { group: { wechat_id: "", whatsapp_group_url: "" } },
+  };
+  for (const path of Object.keys(fallback)) {
+    await page.route(`**${path}`, async (route) => {
+      const resp = await route.fetch();
+      const json = (resp.headers()["content-type"] ?? "").includes("application/json");
+      if (resp.status() === 404 || !json) return route.fulfill({ status: 200, json: fallback[path] });
+      return route.fulfill({ response: resp });
+    });
+  }
+
+  await signIn(page, "E2E 牌友");
+  await page.goto("/");
+  await page.locator(".tabbar .tab", { hasText: "牌友" }).click();
+  await expect(page).toHaveURL(/\/friends$/);
+  await expect(page).toHaveTitle("牌友 · 随时掼掼蛋");
+  await expect(page.locator(".tabbar .tab.on")).toContainText("牌友");
+
+  const bar = await barBox(page, ".tabbar");
+  expect(bar.position).toBe("fixed");
+  expect(bar.bottom).toBe(bar.viewport);
+
+  const friend = page.getByTestId("friend").first();
+  await expect(friend.or(page.getByTestId("friends-empty"))).toBeVisible();
+  if (await friend.isVisible()) {
+    await friend.getByRole("button", { name: "约 TA" }).click();
+    const sheet = page.getByTestId("invite-sheet");
+    await expect(sheet).toContainText("打一局");
+    const href = (await sheet.locator("a.option").getAttribute("href")) ?? "";
+    expect(new URL(href).origin).toBe("https://wa.me");
+    await sheet.getByRole("button", { name: "取消" }).click();
+    await expect(sheet).toHaveCount(0);
+  }
+});

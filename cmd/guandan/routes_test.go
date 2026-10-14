@@ -19,6 +19,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/agent"
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/config"
+	"github.com/dayuer/jkt-guandan/internal/friends"
 	"github.com/dayuer/jkt-guandan/internal/games"
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/internal/identity"
@@ -71,7 +72,7 @@ func newApp(t *testing.T) *app {
 	opts := httpapi.Options{
 		Config: cfg, Store: st, Clock: clk, Identity: identitySvc,
 		Routes: appRoutes(appDeps{
-			identity: identitySvc, games: gamesSvc, notify: notifySvc,
+			identity: identitySvc, games: gamesSvc, notify: notifySvc, friends: friends.NewService(st, clk),
 			ws: realtime.Handler(realtime.Options{
 				Hub: hub, AllowOrigin: cfg.AllowsOrigin, Identify: realtimeIdentify,
 				Revalidate: func(ctx context.Context, p realtime.Principal) bool {
@@ -97,10 +98,13 @@ func TestRouteTable(t *testing.T) {
 	want := []row{
 		{"GET /healthz", "anonymous", "httpapi.(*Server).healthz"},
 		{"GET /readyz", "anonymous", "httpapi.(*Server).readyz"},
+		{"GET /api/config", "anonymous", "httpapi.(*Server).publicConfig"},
 		{"POST /api/me", "public", "identity.(*handler).createMe"},
 		{"GET /api/me", "user", "identity.(*handler).getMe"},
 		{"DELETE /api/me/devices/{id}", "user", "identity.(*handler).signOutDevice"},
 		{"DELETE /api/me", "user", "identity.(*handler).deleteMe"},
+		{"PUT /api/me/wa", "user", "identity.(*handler).putWA"},
+		{"DELETE /api/me/wa", "user", "identity.(*handler).deleteWA"},
 		{"POST /api/claim", "user", "identity.(*handler).issueClaim"},
 		{"POST /api/claim/redeem", "public", "identity.(*handler).redeemClaim"},
 		{"GET /api/games", "public", "games.(*handler).list"},
@@ -111,6 +115,7 @@ func TestRouteTable(t *testing.T) {
 		{"DELETE /api/games/{code}/seat", "user", "games.(*handler).leave"},
 		{"POST /api/games/{code}/cancel", "user", "games.(*handler).cancel"},
 		{"POST /api/games/{code}/kick", "user", "games.(*handler).kick"},
+		{"POST /api/games/{code}/invites", "user", "games.(*handler).invite"},
 		{"GET /ws", "public+deferidentity", "*realtime.handler"},
 		{"GET /g/{code}", "anonymous", "share.(*handler).ogPage"},
 		{"GET /g/{code}/og.png", "anonymous", "share.(*handler).ogImage"},
@@ -120,6 +125,9 @@ func TestRouteTable(t *testing.T) {
 		{"GET /api/push/key", "anonymous", "notify.(*handler).key"},
 		{"POST /api/push/subscribe", "user", "notify.(*handler).subscribe"},
 		{"DELETE /api/push/subscribe", "user", "notify.(*handler).unsubscribe"},
+		{"GET /api/friends", "user", "friends.(*handler).list"},
+		{"PUT /api/follows/{user_id}", "user", "friends.(*handler).star"},
+		{"DELETE /api/follows/{user_id}", "user", "friends.(*handler).unstar"},
 		{"POST /api/agent", "public", "agent.(*handler).draft"},
 		{" /", "anonymous", "httpapi.referrerPolicyForClaim.func1"},
 	}
@@ -160,6 +168,7 @@ func handlerName(h http.Handler) string {
 func TestAuthorizationMatrix(t *testing.T) {
 	hostOnly := map[string]bool{
 		"PATCH /api/games/{code}": true, "POST /api/games/{code}/cancel": true, "POST /api/games/{code}/kick": true,
+		"POST /api/games/{code}/invites": true,
 	}
 	for _, rt := range httpapi.Table(newApp(t).options) {
 		for _, role := range []string{"guest", "device", "host", "banned"} {
@@ -304,6 +313,8 @@ func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string, s
 		body, header["If-Match"] = map[string]any{"venue": "Grand Indonesia"}, "1"
 	case "POST /api/games/{code}/kick":
 		body = map[string]string{"user_id": "someone"}
+	case "POST /api/games/{code}/invites":
+		body = map[string]any{"user_ids": []string{"someone"}}
 	case "POST /api/push/subscribe":
 		body = map[string]any{"endpoint": "https://fcm.googleapis.com/fcm/send/x", "keys": map[string]string{"p256dh": "x", "auth": "y"}}
 	case "DELETE /api/push/subscribe":

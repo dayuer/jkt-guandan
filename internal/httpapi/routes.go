@@ -19,6 +19,7 @@ func (s *Server) table(app []route.Route) []route.Route {
 	t := []route.Route{
 		{Method: http.MethodGet, Pattern: "/healthz", Access: route.Anonymous, Handler: http.HandlerFunc(s.healthz)},
 		{Method: http.MethodGet, Pattern: "/readyz", Access: route.Anonymous, Handler: http.HandlerFunc(s.readyz)},
+		{Method: http.MethodGet, Pattern: "/api/config", Access: route.Anonymous, Handler: http.HandlerFunc(s.publicConfig)},
 	}
 	t = append(t, app...)
 	// 兜底放在最后：它匹配所有剩下的路径，交给内嵌的前端。
