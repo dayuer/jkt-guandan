@@ -390,7 +390,7 @@ DELETE /api/push/subscribe            取消订阅
 POST /api/agent                       蛋蛋（phase:3）：只返回草稿，不写库
 GET  /ws                              WebSocket（见 §5.5）
 GET  /g/{code} · /g/{code}/og.png · /g/{code}/poster.png · /g/{code}/game.ics
-GET  /*                               内嵌的前端页面（单页应用，未知路径回落到 index.html）
+GET  /*                               内嵌的前端页面（单页应用，未知路径回落到 index.html）；/api 下没有匹配的路径返回 404 {"error":{"code":"not_found"}}，路径存在但方法不对返回 405 method_not_allowed 并带 Allow（#119）
 ```
 
 **列表条目 `GET /api/games`**（#114）：每一项除了 `short_code`、`starts_at`、`area`、`venue`、`kind`、`status`、`seat_list`、`seats`、`missing`、`host`，还有按当前身份算的：
@@ -426,7 +426,8 @@ GET  /*                               内嵌的前端页面（单页应用，未
   - 排序：星标的在前，然后按 `together_count` 从多到少、`last_together_at`（最近一起的那一局的开局时间）从新到旧。最多 200 人。
   - 不出现：自己、已注销、被封禁、被合并掉的身份。只有这一个列表，不提供按称呼搜索用户的接口（§10.9）。
   - 没有牌友时是 `{"friends":[]}`。
-- `PUT /api/follows/{user_id}` 星标、`DELETE /api/follows/{user_id}` 取消星标：都是幂等的，成功返回 `204`。只能对 `GET /api/friends` 里会出现的人做；不是牌友（没一起坐过、只在取消的局里同桌、自己、不存在、已注销、被封禁）一律 `404 not_friend`，接口不能用来探测用户 id。星标是单向的，对方看不到。
+- `PUT /api/follows/{user_id}` 星标：幂等，成功返回 `204`。只能对 `GET /api/friends` 里会出现的人做；不是牌友（没一起坐过、只在取消的局里同桌、自己、不存在、已注销、被封禁）一律 `404 not_friend`，接口不能用来探测用户 id。星标是单向的，对方看不到。
+- `DELETE /api/follows/{user_id}` 取消星标：幂等，**一律 `204`，不查是不是牌友**。对方注销或被封禁之后，旧的星标也要能清掉；结果对任何 id 都一样，也就探测不出什么。
 - 合并身份（`guandan admin` 的 merge）时，星标两个方向都搬到保留的身份上；原来互相星标的不会变成自己星标自己。注销时删掉这个人的星标和别人对他的星标。
 
 **邀请牌友 `POST /api/games/{code}/invites`**（#115，08「邀请谁」，`route.User`）：

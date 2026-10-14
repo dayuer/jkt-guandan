@@ -580,3 +580,50 @@ func TestPublicConfig(t *testing.T) {
 		}
 	}
 }
+
+// #119：/api 下没有匹配的路径返回 404 JSON，不回落到前端页面；路径存在、方法不对的仍是 405。
+func TestUnknownAPIPathIs404JSON(t *testing.T) {
+	f := newFixture(t, config.Config{PublicURL: "https://guandan.id"}, func(mux *routeRecorder) {
+		mux.HandleFunc("GET /api/known", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	})
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/nope"},
+		{http.MethodGet, "/api"},
+		{http.MethodGet, "/api/"},
+		{http.MethodGet, "/api/games/ABC/nope"},
+		{http.MethodPost, "/api/nope"},
+	} {
+		req, _ := http.NewRequest(tc.method, f.srv.URL+tc.path, strings.NewReader("{}"))
+		req.Header.Set("Origin", "https://guandan.id")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body struct {
+			Error struct{ Code string } `json:"error"`
+		}
+		decErr := json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") ||
+			decErr != nil || body.Error.Code != "not_found" {
+			t.Errorf("%s %s：%d %s %v %+v，期望 404 JSON not_found", tc.method, tc.path, resp.StatusCode, resp.Header.Get("Content-Type"), decErr, body)
+		}
+	}
+	// 已有的路径换个方法：405，带 Allow（兜底的 "/" 不限方法，ServeMux 自己不会回 405）。
+	req, _ := http.NewRequest(http.MethodDelete, f.srv.URL+"/api/known", nil)
+	req.Header.Set("Origin", "https://guandan.id")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed || resp.Header.Get("Allow") != "GET" {
+		t.Fatalf("方法不对应 405 并带 Allow: GET，实际 %d %q", resp.StatusCode, resp.Header.Get("Allow"))
+	}
+	// /api 以外的未知路径仍交给前端（这里不断言 200：测试环境可能没构建前端），至少不是 API 的 404 JSON。
+	if resp, body := f.get(t, "/friends"); resp.StatusCode == http.StatusNotFound || strings.Contains(body, `"not_found"`) {
+		t.Fatalf("前端路由不该被当成 API 404：%d %s", resp.StatusCode, body)
+	}
+}
