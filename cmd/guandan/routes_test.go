@@ -103,6 +103,8 @@ func TestRouteTable(t *testing.T) {
 		{"GET /api/me", "user", "identity.(*handler).getMe"},
 		{"DELETE /api/me/devices/{id}", "user", "identity.(*handler).signOutDevice"},
 		{"DELETE /api/me", "user", "identity.(*handler).deleteMe"},
+		{"PUT /api/me/wa", "user", "identity.(*handler).putWA"},
+		{"DELETE /api/me/wa", "user", "identity.(*handler).deleteWA"},
 		{"POST /api/claim", "user", "identity.(*handler).issueClaim"},
 		{"POST /api/claim/redeem", "public", "identity.(*handler).redeemClaim"},
 		{"GET /api/games", "public", "games.(*handler).list"},

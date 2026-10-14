@@ -80,6 +80,7 @@ type Service struct {
 
 	createLimiter *ratelimit.Limiter // POST /api/me：每 IP 每小时 20 次（§12.3）
 	issueLimiter  *ratelimit.Limiter // POST /api/claim：每用户每小时 5 次（§5.2 修订）
+	waLimiter     *ratelimit.Limiter // PUT/DELETE /api/me/wa：每用户每小时 10 次（#116）
 	codeLimiter   *ratelimit.Limiter // 凭码兑换：每 IP 每分钟 10 次（§12.3）
 	codeBudget    *codeFailureBudget
 }
@@ -95,6 +96,7 @@ func NewService(st *store.Store, clk clock.Clock, dev bool) *Service {
 		cookies:       CookiePolicyFor(dev),
 		createLimiter: ratelimit.New(20.0/60, 20, clk),
 		issueLimiter:  ratelimit.New(5.0/60, 5, clk),
+		waLimiter:     ratelimit.New(10.0/60, 10, clk),
 		codeLimiter:   ratelimit.New(10, 10, clk),
 		codeBudget:    newCodeFailureBudget(clk),
 	}
