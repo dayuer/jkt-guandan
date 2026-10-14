@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -48,13 +49,11 @@ func newFixture(t *testing.T) *fixture {
 	}
 	// TLS：生产 cookie 带 __Host- 前缀和 Secure（见 identity 测试里的说明）。
 	srv := httptest.NewTLSServer(httpapi.New(httpapi.Options{
-		Config: config.Config{DataDir: dir, PublicURL: origin},
-		Store:  st,
-		Clock:  clk,
-		RegisterRoutes: func(mux *http.ServeMux) {
-			identity.Register(mux, ident)
-			notify.Register(mux, svc, ident)
-		},
+		Config:   config.Config{DataDir: dir, PublicURL: origin},
+		Store:    st,
+		Clock:    clk,
+		Identity: ident,
+		Routes:   slices.Concat(identity.Routes(ident), notify.Routes(svc)),
 	}))
 	t.Cleanup(srv.Close)
 	jar, _ := cookiejar.New(nil)

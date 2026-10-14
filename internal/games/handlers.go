@@ -1,7 +1,6 @@
 package games
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -11,101 +10,33 @@ import (
 	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/identity"
+	"github.com/dayuer/jkt-guandan/internal/route"
 	"github.com/dayuer/jkt-guandan/internal/store"
 )
 
-// 身份类型（和 internal/identity 的授权矩阵用同一套名字）。
-type Role = identity.Role
-
-const (
-	RoleGuest = identity.RoleGuest
-	RoleUser  = identity.RoleUser
-)
-
-// Route 是牌局包注册的一条路由，连同它的授权声明。
-//
-// 和 identity 一样，Register 按 Permitted 统一做「有没有身份」这一层检查；
+// Routes 是牌局包的全部路由（§6）。httpapi 按这张表注册、统一识别身份和授权（#41）。
 // 「是不是这一局的局头」要看具体是哪一局，属于业务逻辑，在 service 里判（§10.4）。
-type Route struct {
-	Method    string
-	Pattern   string
-	Permitted map[Role]bool
-}
-
-// Routes 是牌局包的全部路由（§6）。
-var Routes = []Route{
-	{Method: http.MethodGet, Pattern: "/api/games", Permitted: map[Role]bool{RoleGuest: true, RoleUser: true}},
-	{Method: http.MethodGet, Pattern: "/api/games/{code}", Permitted: map[Role]bool{RoleGuest: true, RoleUser: true}},
-	{Method: http.MethodPost, Pattern: "/api/games", Permitted: map[Role]bool{RoleUser: true}},
-	{Method: http.MethodPatch, Pattern: "/api/games/{code}", Permitted: map[Role]bool{RoleUser: true}},
-	{Method: http.MethodPost, Pattern: "/api/games/{code}/seat", Permitted: map[Role]bool{RoleUser: true}},
-	{Method: http.MethodDelete, Pattern: "/api/games/{code}/seat", Permitted: map[Role]bool{RoleUser: true}},
-	{Method: http.MethodPost, Pattern: "/api/games/{code}/cancel", Permitted: map[Role]bool{RoleUser: true}},
-	{Method: http.MethodPost, Pattern: "/api/games/{code}/kick", Permitted: map[Role]bool{RoleUser: true}},
+// svc 为 nil 时只能用来列路由，不能处理请求。
+func Routes(svc *Service) []route.Route {
+	h := &handler{svc: svc}
+	return []route.Route{
+		{Method: http.MethodGet, Pattern: "/api/games", Access: route.Public, Handler: http.HandlerFunc(h.list)},
+		{Method: http.MethodGet, Pattern: "/api/games/{code}", Access: route.Public, Handler: http.HandlerFunc(h.detail)},
+		{Method: http.MethodPost, Pattern: "/api/games", Access: route.User, Handler: http.HandlerFunc(h.create)},
+		{Method: http.MethodPatch, Pattern: "/api/games/{code}", Access: route.User, Handler: http.HandlerFunc(h.update)},
+		{Method: http.MethodPost, Pattern: "/api/games/{code}/seat", Access: route.User, Handler: http.HandlerFunc(h.join)},
+		{Method: http.MethodDelete, Pattern: "/api/games/{code}/seat", Access: route.User, Handler: http.HandlerFunc(h.leave)},
+		{Method: http.MethodPost, Pattern: "/api/games/{code}/cancel", Access: route.User, Handler: http.HandlerFunc(h.cancel)},
+		{Method: http.MethodPost, Pattern: "/api/games/{code}/kick", Access: route.User, Handler: http.HandlerFunc(h.kick)},
+	}
 }
 
 type handler struct {
-	svc   *Service
-	ident *identity.Service
+	svc *Service
 }
 
-// Register 把牌局路由挂到主 mux 上。ident 用来认人（§6 的身份中间件在这里等价实现）。
-func Register(mux *http.ServeMux, svc *Service, ident *identity.Service) {
-	h := &handler{svc: svc, ident: ident}
-	for _, rt := range Routes {
-		fn, ok := routeHandlers[rt.Method+" "+rt.Pattern]
-		if !ok {
-			panic("games: 路由表里的路由没有实现: " + rt.Method + " " + rt.Pattern)
-		}
-		mux.HandleFunc(rt.Method+" "+rt.Pattern, h.gate(rt, fn(h)))
-	}
-}
-
-var routeHandlers = map[string]func(*handler) http.HandlerFunc{
-	"GET /api/games":                func(h *handler) http.HandlerFunc { return h.list },
-	"GET /api/games/{code}":         func(h *handler) http.HandlerFunc { return h.detail },
-	"POST /api/games":               func(h *handler) http.HandlerFunc { return h.create },
-	"PATCH /api/games/{code}":       func(h *handler) http.HandlerFunc { return h.update },
-	"POST /api/games/{code}/seat":   func(h *handler) http.HandlerFunc { return h.join },
-	"DELETE /api/games/{code}/seat": func(h *handler) http.HandlerFunc { return h.leave },
-	"POST /api/games/{code}/cancel": func(h *handler) http.HandlerFunc { return h.cancel },
-	"POST /api/games/{code}/kick":   func(h *handler) http.HandlerFunc { return h.kick },
-}
-
-type identityKey struct{}
-
-// gate 解析身份、按路由表放行，并把身份放进 ctx。
-func (h *handler) gate(rt Route, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ident := h.current(r)
-		if ident == nil && !rt.Permitted[RoleGuest] {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "还没有身份")
-			return
-		}
-		next(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, ident)))
-	}
-}
-
-func (h *handler) current(r *http.Request) *identity.Identity {
-	token, ok := h.ident.Cookies().Read(r)
-	if !ok {
-		return nil
-	}
-	ident, err := h.ident.Current(r.Context(), token)
-	if err != nil {
-		return nil
-	}
-	return ident
-}
-
-// viewer 返回当前用户 id；访客返回空串。
-func viewer(r *http.Request) string {
-	ident, _ := r.Context().Value(identityKey{}).(*identity.Identity)
-	if ident == nil {
-		return ""
-	}
-	return ident.User.ID
-}
+// viewer 返回当前用户 id；访客返回空串。身份由 httpapi 的中间件放进 ctx。
+func viewer(r *http.Request) string { return identity.UserID(r.Context()) }
 
 func requireUser(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if id := viewer(r); id != "" {
