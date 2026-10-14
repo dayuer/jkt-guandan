@@ -5,6 +5,8 @@
 import { C, Ctx, Scroller, ease, ellipsize, fillRR, font, text, wrap } from "./ui";
 
 const TAP_SLOP = 8;
+/** 微信原生输入条的高度。先按 56 预留；#141 真机核对 onKeyboardHeightChange 的高度是否已经包含它，包含就改成 0。 */
+export const INPUT_BAR_H = 56;
 
 export interface Hit {
   id: string;
@@ -45,6 +47,9 @@ export interface Sheet {
   dialog?: boolean;
 }
 
+/** 弹层的运行时状态：内容超出可视高度时内部滚动（App 管）。 */
+type OpenSheet = Sheet & { t0: number; h: number; top: number; scroll: Scroller; focusFor: string };
+
 export interface Touch0 {
   x0: number; y0: number; x: number; y: number;
   hit: Hit | null;
@@ -79,7 +84,7 @@ export class App {
 
   stack: Scene[] = [];
   private trans: { from: Scene; to: Scene; dir: 1 | -1; t0: number } | null = null;
-  sheets: (Sheet & { t0: number; h: number })[] = [];
+  sheets: OpenSheet[] = [];
   private toastMsg: { msg: string; until: number } | null = null;
   private anims: Anim[] = [];
   hits: Hit[] = [];
@@ -88,6 +93,8 @@ export class App {
   private dirty = true;
   kbHeight = 0;
   editing: EditOptions | null = null;
+  /** 当帧画出来的激活字段（屏幕坐标），由 widgets.field 填；用来把它滚进可视区 */
+  focusRect: { y: number; h: number } | null = null;
   /** 底部 Tab 栏由外面画（main.ts），这里只存回调 */
   drawTabs: ((ctx: Ctx, active: string) => void) | null = null;
 
@@ -118,6 +125,9 @@ export class App {
 
   /** 内容区顶部：胶囊下方。导航栏和胶囊在同一行。 */
   get contentTop(): number { return this.menu.bottom + 8; }
+
+  /** 可视区底边：键盘弹起时 = 屏高 − 键盘高 − 输入条高（适配稿 2.2）。 */
+  get visibleBottom(): number { return this.kbHeight ? this.H - this.kbHeight - INPUT_BAR_H : this.H; }
 
   get top(): Scene { return this.stack[this.stack.length - 1]; }
 
@@ -162,7 +172,7 @@ export class App {
   }
 
   openSheet(sheet: Sheet) {
-    this.sheets.push(Object.assign(sheet, { t0: Date.now(), h: 240 }));
+    this.sheets.push(Object.assign(sheet, { t0: Date.now(), h: 240, top: this.H, scroll: new Scroller(), focusFor: "" }));
     this.redraw();
   }
   closeSheet(sheet?: Sheet) {
@@ -231,7 +241,11 @@ export class App {
       const h = this.pick(x, y);
       const sheet = this.sheets[this.sheets.length - 1];
       let scr = null;
-      if (sheet) scr = sheet.scrollerAt?.(x, y) ?? null;
+      if (sheet) {
+        scr = sheet.scrollerAt?.(x, y) ?? null;
+        // 弹层放不下时整体内部滚动
+        if (!scr && !sheet.dialog && sheet.scroll.max > 0 && y >= sheet.top) scr = { s: sheet.scroll, axis: "y" as const };
+      }
       else {
         const captured = this.top.onTouchStart?.(x, y, h);
         if (!captured) scr = this.top.scrollerAt?.(x, y) ?? null;
@@ -270,7 +284,10 @@ export class App {
     const now = Date.now();
     let busy = false;
     for (const s of this.stack) if (s.step && s.step()) busy = true;
-    for (const s of this.sheets) if (s.step && s.step()) busy = true;
+    for (const s of this.sheets) {
+      if (s.step && s.step()) busy = true;
+      if (s.scroll.step()) busy = true;
+    }
     if (this.anims.length) {
       busy = true;
       this.anims = this.anims.filter((a) => {
@@ -297,6 +314,7 @@ export class App {
     const ctx = this.ctx;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     this.hits = [];
+    this.focusRect = null;
     if (this.trans) {
       const p = ease.out(Math.min(1, (now - this.trans.t0) / 280));
       const { from, to, dir } = this.trans;
@@ -314,7 +332,7 @@ export class App {
     if (this.toastMsg) this.drawToast(ctx);
   }
 
-  private drawSheet(ctx: Ctx, s: Sheet & { t0: number; h: number }, now: number, topmost: boolean) {
+  private drawSheet(ctx: Ctx, s: OpenSheet, now: number, topmost: boolean) {
     const p = ease.out(Math.min(1, (now - s.t0) / 280));
     ctx.fillStyle = `rgba(28,20,17,${0.45 * p})`;
     ctx.fillRect(0, 0, this.W, this.H);
@@ -323,24 +341,62 @@ export class App {
     if (s.dialog) {
       const w = Math.min(this.W - 48, 340);
       const x = (this.W - w) / 2;
-      const y = Math.max(this.safeTop + 20, (this.H - s.h) / 2 - this.kbHeight / 2);
+      // 键盘弹起时在「状态栏底 ~ 可视底边」之间居中（适配稿 2.3）
+      const y = this.kbHeight
+        ? Math.max(this.safeTop + 8, this.safeTop + (this.visibleBottom - this.safeTop - s.h) / 2)
+        : Math.max(this.safeTop + 20, (this.H - s.h) / 2);
       ctx.save();
       ctx.globalAlpha = p;
       fillRR(ctx, x, y, w, s.h, 22, C.card);
       this.hit("sheet-body", x, y, w, s.h, null);
       ctx.translate(x, 0);
+      const prevH = s.h;
       s.h = s.draw(ctx, y, w);
+      if (s.h !== prevH) this.redraw();
       ctx.restore();
       this.shiftHits(x);
     } else {
-      const total = s.h + this.safeBottom;
-      const y = this.H - total * p - this.kbHeight;
-      fillRR(ctx, 0, y, this.W, total + 40, 26, C.card);
+      // 底边贴可视区底（键盘弹起时是输入条顶边）；顶边不高于 contentTop，放不下就内部滚动（适配稿 2.3）
+      const bottom = this.visibleBottom;
+      const full = s.h + (this.kbHeight ? 0 : this.safeBottom);
+      const viewH = Math.min(full, bottom - this.contentTop);
+      const y = bottom - viewH * p;
+      s.top = y;
+      s.scroll.setMax(full - viewH);
+      fillRR(ctx, 0, y, this.W, viewH + 40, 26, C.card);
+      this.hit("sheet-body", 0, y, this.W, viewH + 40, null);
+      const before = this.hits.length;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, y, this.W, bottom - y); ctx.clip();
+      const prevH = s.h;
+      s.h = s.draw(ctx, y - s.scroll.pos, this.W);
+      ctx.restore();
+      if (s.h !== prevH) this.redraw(); // 高度变了（比如编辑地点时胶囊收起），下一帧按新高度排
+      // 滚出可视区的热区裁掉
+      const visTop = y, visBottom = bottom;
+      this.hits = this.hits.filter((h, i) => {
+        if (i < before) return true;
+        const t = Math.max(h.y, visTop), b = Math.min(h.y + h.h, visBottom);
+        if (b <= t) return false;
+        h.y = t; h.h = b - t;
+        return true;
+      });
+      if (s.scroll.max > 0) fillRR(ctx, 0, y, this.W, 18, 0, C.card); // 滚动时把手下面不透出内容
       fillRR(ctx, this.W / 2 - 18, y + 8, 36, 4, 2, C.line2);
-      this.hit("sheet-body", 0, y, this.W, total + 40, null);
-      s.h = s.draw(ctx, y, this.W);
+      this.keepFocusVisible(s, y, bottom);
     }
     if (!topmost) this.hits = [];
+  }
+
+  /** 弹层里正在输入的字段要完整可见：键盘弹起或换字段时滚一次，之后不和手指抢。 */
+  private keepFocusVisible(s: OpenSheet, top: number, bottom: number) {
+    const f = this.focusRect, key = this.editing && this.kbHeight ? `${this.editing.key}@${this.kbHeight}` : "";
+    if (!key || !f || s.focusFor === key) { if (!key) s.focusFor = ""; return; }
+    s.focusFor = key;
+    let d = 0;
+    if (f.y + f.h > bottom - 16) d = f.y + f.h - (bottom - 16);
+    else if (f.y < top + 24) d = f.y - (top + 24);
+    if (d) { s.scroll.pos = Math.min(Math.max(0, s.scroll.pos + d), s.scroll.max); this.redraw(); }
   }
 
   /** 对话框里用了 translate，热区要换回屏幕坐标。 */

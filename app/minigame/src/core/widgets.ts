@@ -2,7 +2,7 @@
 // 每个控件当帧画、当帧登记热区；位置由调用方从上往下排，函数返回占用的高度。
 
 import type { App, Sheet } from "./app";
-import { C, Ctx, card, circle, ellipsize, fillRR, font, measure, paragraph, strokeRR, text, wrap } from "./ui";
+import { C, Ctx, Scroller, card, circle, ellipsize, fillRR, font, measure, paragraph, strokeRR, text, wrap } from "./ui";
 
 export const PAD = 16;
 
@@ -154,6 +154,68 @@ export function chipsWrap(app: App, ctx: Ctx, idPrefix: string, x: number, y: nu
   return y + 36;
 }
 
+// ── 时间胶囊行（适配稿第三节）：左边固定标签，右边单行横滑，伸到屏幕右边缘 ──
+export const ROW_X0 = 20 + 48; // 标签列：左边距 20，宽 48
+const ROW_H = 36, ROW_GAP = 8;
+function rowChipW(ctx: Ctx, label: string, on: boolean): number {
+  return measure(ctx, label, font(14, on ? "700" : "normal")) + 28;
+}
+/** 选中项落在可视区左起约 1/3 处的滚动量（不小于 0，不超过最大值）。 */
+export function chipRowScrollFor(app: App, ctx: Ctx, items: string[], on: number): number {
+  let x = 0, total = 0;
+  items.forEach((it, i) => {
+    const w = rowChipW(ctx, it, i === on) + ROW_GAP;
+    if (i < on) x += w;
+    total += w;
+  });
+  const view = app.W - ROW_X0;
+  return Math.max(0, Math.min(x - view / 3, total - ROW_GAP + 20 - view));
+}
+function rgba(hex: string, a: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+}
+/**
+ * 一行胶囊：可视区从 x = 68 到屏幕右边缘；右侧 32 渐隐，滑过之后左侧 20 渐隐。
+ * 不可选的胶囊画虚线边、--khaki 字，没有热区。返回下一行的 y（行距 10）。
+ */
+export function chipRow(
+  app: App, ctx: Ctx, id: string, y: number, label: string, items: string[], on: number, onPick: (i: number) => void,
+  o: { scroll: Scroller; disabled?: (i: number) => boolean; bg?: string },
+): number {
+  const W = app.W, bg = o.bg ?? C.card, x0 = ROW_X0;
+  text(ctx, label, 20, y + ROW_H / 2, font(13, "700"), C.ink2);
+  let total = 0;
+  const ws = items.map((it, i) => { const w = rowChipW(ctx, it, i === on); total += w + ROW_GAP; return w; });
+  o.scroll.setMax(total - ROW_GAP + 20 - (W - x0));
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0, y - 4, W - x0, ROW_H + 8); ctx.clip();
+  let x = x0 - o.scroll.pos;
+  items.forEach((it, i) => {
+    const w = ws[i], sel = i === on, off = !sel && !!o.disabled?.(i), cid = `${id}:${i}`;
+    if (x + w > x0 && x < W) {
+      fillRR(ctx, x, y, w, ROW_H, ROW_H / 2, sel ? C.red : app.isPressed(cid) ? C.beige : C.card);
+      if (!sel) strokeRR(ctx, x + 0.5, y + 0.5, w - 1, ROW_H - 1, ROW_H / 2, C.line, 1, off ? [3, 3] : undefined);
+      text(ctx, it, x + w / 2, y + ROW_H / 2, font(14, sel ? "700" : "normal"), sel ? C.cream : off ? C.khaki : C.ink2, "center");
+      // 热区只登记看得见的部分，免得点到标签列下面藏着的胶囊
+      const hx = Math.max(x, x0), hw = Math.min(x + w, W) - hx;
+      if (!off && hw > 0) app.hit(cid, hx, y, hw, ROW_H, () => onPick(i));
+    }
+    x += w + ROW_GAP;
+  });
+  ctx.restore();
+  const fade = (fx: number, w: number, toRight: boolean) => {
+    const g = ctx.createLinearGradient(fx, 0, fx + w, 0);
+    g.addColorStop(0, rgba(bg, toRight ? 0 : 1));
+    g.addColorStop(1, rgba(bg, toRight ? 1 : 0));
+    ctx.fillStyle = g;
+    ctx.fillRect(fx, y - 2, w, ROW_H + 4);
+  };
+  if (x - ROW_GAP > W + 0.5) fade(W - 32, 32, true);
+  if (o.scroll.pos > 0.5) fade(x0, 20, false);
+  return y + ROW_H + 10;
+}
+
 export function segmented(app: App, ctx: Ctx, id: string, x: number, y: number, w: number, items: string[], active: number, onPick: (i: number) => void, h = 44) {
   fillRR(ctx, x, y, w, h, 16, C.beige);
   const cw = (w - 8) / items.length;
@@ -192,7 +254,10 @@ export function field(app: App, ctx: Ctx, x: number, y: number, w: number, o: Fi
   const tw = w - 32 - (showCount ? 44 : 0);
   const lines = o.value ? wrap(ctx, o.value, tw, f) : [o.placeholder];
   const h = o.multiple ? Math.max(84, 28 + lines.length * lh) : 52;
-  if (focused) fillRR(ctx, x - 4, y - 4, w + 8, h + 8, 16, C.redRing); // 4px 焦点环（--sh-focus）
+  if (focused) {
+    fillRR(ctx, x - 4, y - 4, w + 8, h + 8, 16, C.redRing); // 4px 焦点环（--sh-focus）
+    app.focusRect = { y, h };
+  }
   fillRR(ctx, x, y, w, h, 12, o.error ? C.errTint : C.card);
   strokeRR(ctx, x + 0.5, y + 0.5, w - 1, h - 1, 12, o.error || focused ? C.red : C.line, focused ? 1.5 : 1);
   const ty = o.multiple ? y + 14 + lh / 2 : y + h / 2;
