@@ -25,6 +25,15 @@ func TestCheckBlocksGamblingAndMoney(t *testing.T) {
 		{"英语整词", "small bet ok?", "bet"},
 		{"英语 chips", "bring chips", "chips"},
 
+		// 繁体输入法（雅加达华人里不少）：同一个词换个字形不能就绕过去。
+		{"繁体钱", "一把50塊錢，輸了請宵夜", "钱"},
+		{"繁体赌", "賭博不好", "赌"},
+		{"繁体加空格", "賭 博不好", "赌"},
+		{"繁体筹码", "輸的人買籌碼", "筹码"},
+		{"繁体彩头", "帶點彩頭好玩", "彩头"},
+		{"繁体赢钱", "贏錢請宵夜", "钱"},
+		{"全角拉丁", "ｓｍａｌｌ ｂｅｔ ｏｋ？", "bet"},
+
 		// 绕过写法：加空格、加连字符、加零宽字符。
 		{"中间加空格", "赌 博不好", "赌"},
 		{"中间加连字符", "赌-博不好", "赌"},
@@ -63,6 +72,19 @@ func TestCheckBlocksGamblingAndMoney(t *testing.T) {
 				t.Fatalf("字段名是 %q，期望 note", hit.Field)
 			}
 		})
+	}
+}
+
+// 繁简映射表本身要能被读进来；词表里写繁体也应当照样匹配。
+func TestTraditionalMapIsLoaded(t *testing.T) {
+	if n := TraditionalPairs(); n < 8 {
+		t.Fatalf("繁简映射只读到 %d 条，traditional.txt 八成没读进来", n)
+	}
+	// 繁体写法直接用一次：Check 会 fold，映射表和词表都过一遍。
+	for _, text := range []string{"賭錢", "籌碼", "贏錢", "抽頭"} {
+		if hit := Check("note", text); hit == nil {
+			t.Errorf("%q 应当命中", text)
+		}
 	}
 }
 

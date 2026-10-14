@@ -38,7 +38,8 @@ func Check(field, text string) *Hit {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	folded := strings.ToLower(text)
+	// folded：小写 + 繁体转简体 + 全角转半角。
+	folded := fold(text)
 	// 汉字没有词边界，而且有人会加空格、加连字符来绕（「赌 博」「赌-博」），
 	// 所以去掉这些分隔符之后再比子串。
 	squeezed := squeeze(folded)
@@ -58,6 +59,9 @@ func Check(field, text string) *Hit {
 	return nil
 }
 
+// TraditionalPairs 返回繁简映射的条目数，给测试用（确认 traditional.txt 被读进来了）。
+func TraditionalPairs() int { return len(tradToSimp) }
+
 // Text 返回词表里所有的词（按文件顺序），给测试和排查用。
 func Text() []string {
 	out := make([]string, 0, len(words))
@@ -70,12 +74,62 @@ func Text() []string {
 //go:embed words.txt
 var rawList string
 
+//go:embed traditional.txt
+var rawTraditional string
+
+// tradToSimp 是繁体 → 简体的字形映射，见 traditional.txt。
+var tradToSimp = parsePairs(rawTraditional)
+
+// parsePairs 读 `繁=简` 的行，空行和 `#` 开头的行忽略。
+func parsePairs(raw string) map[rune]rune {
+	out := make(map[rune]rune)
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		from := []rune(strings.TrimSpace(parts[0]))
+		to := []rune(strings.TrimSpace(parts[1]))
+		if len(from) != 1 || len(to) != 1 {
+			continue
+		}
+		out[from[0]] = to[0]
+	}
+	return out
+}
+
+// simplify 把繁体字换成简体、全角换成半角。
+func simplify(s string) string {
+	return strings.Map(func(r rune) rune {
+		if simp, ok := tradToSimp[r]; ok {
+			return simp
+		}
+		// 全角拉丁字母和数字（ＡＢＣ１２３）：有人拿它绕整词匹配。
+		if r >= '\uFF01' && r <= '\uFF5E' {
+			return r - 0xFEE0
+		}
+		return r
+	}, s)
+}
+
 type word struct {
 	text  string
 	ascii bool
 }
 
 var words = parse(rawList)
+
+// fold 把文本拉回「词表写在里面的那个形状」：小写、繁体转简体、全角转半角。
+//
+// 少了这一步，同一个词换个字形就能绕过过滤——「賭博」挡住不了「赌」，
+// 尽管它们对用户来说是同一个词（雅加达用繁体输入法的人不少）。
+func fold(s string) string {
+	return simplify(strings.ToLower(s))
+}
 
 // parse 读词表：一行一个词，空行和 `#` 开头的行忽略。
 // 纯 ASCII 的词按整词匹配，含其他字符的（汉字等）按子串匹配。
@@ -86,7 +140,8 @@ func parse(raw string) []word {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		lowered := strings.ToLower(line)
+		// 词表里的词也过一遍 fold：有人直接写繁体进来也照样能匹配。
+		lowered := fold(line)
 		out = append(out, word{text: lowered, ascii: isASCII(lowered)})
 	}
 	return out
