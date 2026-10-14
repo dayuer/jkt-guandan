@@ -1869,3 +1869,86 @@ a.btn {
 .sheet.invite .cancel {
   margin-top: var(--s4);
 }
+
+/* ── 邀请谁（#115）──────────────────────────────────────────── */
+
+/* 08 表单里已选的牌友：胶囊 + 一个虚线的「从牌友里选」。 */
+.choices.invitees .chip {
+  padding: 9px 14px;
+}
+
+.choices.invitees button.add {
+  border-style: dashed;
+  color: var(--red);
+}
+
+/* 多选面板：列表太长时面板自己滚，「邀请」按钮不被切掉。 */
+.sheet.picker {
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+}
+
+.pick-list {
+  display: grid;
+  gap: var(--s2);
+  margin-top: var(--s4);
+}
+
+.pick {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1.5px solid var(--line);
+  background: var(--card);
+  text-align: left;
+  color: var(--ink);
+}
+
+.pick.on {
+  border-color: var(--red);
+  background: var(--red-tint);
+}
+
+.pick .avatar {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  font-size: var(--fs-15);
+  background: var(--beige);
+  color: var(--ink);
+}
+
+.pick .tx {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-15);
+  font-weight: 700;
+}
+
+.pick .tx small {
+  display: block;
+  font-size: var(--fs-small);
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.pick .check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-2);
+  color: var(--cream);
+  font-size: var(--fs-13);
+  font-weight: 900;
+}
+
+.pick.on .check {
+  background: var(--red);
+  border-color: var(--red);
+}
