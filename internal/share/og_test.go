@@ -187,3 +187,21 @@ func TestConcurrentImageRequests(t *testing.T) {
 		}
 	}
 }
+
+// 前端分享面板（#52）拼的是 /g/{code}/poster.png?v={version}：v 只用来让缓存失效，
+// 渲染一律以当前牌局为准，带旧的 v 也拿到最新的图。
+func TestPosterVersionQueryOnlyBustsCaches(t *testing.T) {
+	srv, st, clk := setupPages(t)
+	_, fresh := get(t, srv, "/g/SEED01/poster.png?v=1")
+	_, stale := get(t, srv, "/g/SEED01/poster.png?v=999")
+	if fresh != stale {
+		t.Fatal("v 参数不该影响渲染结果")
+	}
+	if _, err := st.CancelGame(context.Background(), "SEED01", clk.Now()); err != nil {
+		t.Fatal(err)
+	}
+	_, afterCancel := get(t, srv, "/g/SEED01/poster.png?v=1") // 旧的 v
+	if afterCancel == fresh {
+		t.Fatal("牌局变了，即使带着旧的 v 也应拿到新图")
+	}
+}
