@@ -102,7 +102,7 @@ echo "== 6. 新版本先跑完一条兼容迁移、然后才失败：旧版本�
 src="$work/src"
 mkdir -p "$src"
 git archive HEAD | tar -x -C "$src"
-printf -- '-- 测试用的兼容迁移\nCREATE TABLE deploytest_compat (x INTEGER);\n' > "$src/migrations/0999_deploytest_compat.sql"
+printf -- '-- 测试用的兼容迁移\nCREATE TABLE deploytest_compat (x INTEGER);\n' > "$src/server/migrations/0999_deploytest_compat.sql"
 docker build -q -t "$REPO:migrated-base" "$src" >/dev/null
 printf 'FROM %s\nENV GUANDAN_ADDR=:99999\n' "$REPO:migrated-base" | docker build -q -t "$REPO:migrated" - >/dev/null
 stage migrated

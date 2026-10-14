@@ -5,7 +5,7 @@
 | 文件 | 用途 | 以谁为准 |
 |---|---|---|
 | `../guandan-offline/掼蛋约局H5.html` + `screenshots/A1–H8` | 设计稿（Claude Design 导出） | **视觉**以它为准 |
-| `tokens.css` | 设计令牌：颜色、字体、圆角、阴影、间距、动效，数值从设计稿源码里提取 | **数值**以它为准，impl 直接引入 `web/` |
+| `tokens.css` | 设计令牌：颜色、字体、圆角、阴影、间距、动效，数值从设计稿源码里提取 | **数值**以它为准，impl 直接引入 `app/h5/` |
 | `prototype.html` | 手写 HTML 原型：重绘核心流程，并补齐服务端设计要求、但设计稿里还没有的状态 | **状态和交互**以它为准 |
 | `screenshots/` | 原型每一屏的截图（2 倍图），文件名就是编号，用 headless Chrome 从 `prototype.html#编号` 生成 | 供 PR 和 issue 引用 |
 

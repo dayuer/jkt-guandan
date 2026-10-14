@@ -1,7 +1,7 @@
 # 前端依赖与构建产物。dist 里留一个 .gitkeep，Go 的 embed 需要这个目录存在。
 node_modules/
-web/dist/*
-!web/dist/.gitkeep
+app/h5/dist/*
+!app/h5/dist/.gitkeep
 
 # 二进制与本地数据
 /bin/
@@ -16,8 +16,8 @@ web/dist/*
 .claude/worktrees/
 
 # Playwright 端到端测试的产物（#72）
-web/test-results/
-web/playwright-report/
+app/h5/test-results/
+app/h5/playwright-report/
 
-# go build ./cmd/... 在仓库根目录留下的二进制
+# go build ./server/cmd/... 在仓库根目录留下的二进制
 /guandan
