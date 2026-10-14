@@ -161,6 +161,7 @@ func (h *Hub) KickDevice(deviceID string) {
 	for c := range h.conns {
 		if c.deviceID == deviceID {
 			c.kick(StatusIdentityRevoked, "identity revoked")
+			h.markKickedPresenceLocked(c)
 		}
 	}
 }
@@ -175,7 +176,16 @@ func (h *Hub) KickUser(userID string) {
 	for c := range h.conns {
 		if c.userID == userID {
 			c.kick(StatusIdentityRevoked, "identity revoked")
+			h.markKickedPresenceLocked(c)
 		}
+	}
+}
+
+// markKickedPresenceLocked：被踢的连接马上不计入在看人数（viewersLocked 跳过它），
+// 但要等关闭握手结束才 unregister，客户端不回应时可能要几秒；所以踢的时候就排一次广播。
+func (h *Hub) markKickedPresenceLocked(c *conn) {
+	for t := range c.topics {
+		h.markPresenceLocked(t)
 	}
 }
 
