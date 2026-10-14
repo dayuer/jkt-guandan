@@ -342,7 +342,7 @@ func TestCSRFBearerAndWxExceptions(t *testing.T) {
 	}
 }
 
-// /ws：没有 Origin 时，只有带着有效 Bearer 的握手能连上。
+// /ws：没有 Origin、没有 cookie 的握手放行；带有效 Bearer 认出身份，否则是访客。带 cookie 却没有 Origin 的拒绝。
 func TestWSBearerWithoutOrigin(t *testing.T) {
 	f := newHubFixture(t)
 	wx := &fakeWx{sessions: map[string]identity.WxSession{}}
@@ -371,9 +371,20 @@ func TestWSBearerWithoutOrigin(t *testing.T) {
 		"无效 Bearer": {"Authorization": {"Bearer not-a-token"}},
 		"什么都没有":     {},
 	} {
-		if _, resp, err := dial(h); err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
-			t.Errorf("%s、没有 Origin 应 403：%v", name, err)
+		c, _, err := dial(h)
+		if err != nil {
+			t.Errorf("%s、没有 Origin 应能以访客连上：%v", name, err)
+			continue
 		}
+		if m := wsRead(t, c, time.Second); m["type"] != "hello" || m["user_id"] != nil && m["user_id"] != "" {
+			t.Errorf("%s：应是访客的 hello：%v", name, m)
+		}
+		c.CloseNow()
+	}
+
+	cookie := http.Header{"Cookie": {identity.DevCookieName + "=whatever; " + identity.ProdCookieName + "=whatever"}}
+	if _, resp, err := dial(cookie); err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Errorf("带 cookie、没有 Origin 应 403：%v", err)
 	}
 }
 

@@ -145,8 +145,8 @@ func run() error {
 	wsHandler := realtime.Handler(realtime.Options{
 		Hub:         hub,
 		AllowOrigin: cfg.AllowsOrigin,
-		// 小游戏的 wx.connectSocket 不发 Origin，只带 Bearer（#84）：身份认得出来才放行。
-		BearerOnly: identitySvc.BearerOnly,
+		// 小游戏的 wx.connectSocket 不发 Origin，也没有 cookie（#84）：放行，身份只从 Bearer 认，认不出是访客。
+		CookieFree: identitySvc.CookieFree,
 		// 身份由 httpapi 的身份中间件放进 ctx（#41）。被 guandan admin ban 封禁的用户或设备握手 403
 		// （先查 Origin 和连接数，过了才识别身份，所以这条路由是 DeferIdentity）；连上之后被封禁的，下一次心跳断开（#43）。
 		Identify: realtimeIdentify,

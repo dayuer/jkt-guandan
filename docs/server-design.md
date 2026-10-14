@@ -328,7 +328,7 @@ CREATE TABLE user_links (
 **协议**
 
 - 地址是 `GET /ws`，用 `__Host-gd_dev` cookie 识别身份（没有身份也能连，只是不能订阅 `user:*`）。
-- 握手时**必须校验 `Origin` 是本站**，防止跨站 WebSocket 劫持。小游戏（#84）没有 `Origin`，改用 `Authorization: Bearer` 头认身份，认得出来才放行（§10.5）。
+- 握手时**必须校验 `Origin` 是本站**，防止跨站 WebSocket 劫持。小游戏（#84）的 `wx.connectSocket` 没有 `Origin`：没有 `Origin`、也没有设备 cookie 的握手放行（浏览器的握手一定带 `Origin`，劫持靠的是自动附上的 cookie），身份只从 `Authorization: Bearer` 头认，认不出就是访客；带 cookie 却没有 `Origin` 的拒绝（§10.5）。
 - 消息都是 JSON，单条最大 4 KB：
   ```json
   // 客户端发给服务端
@@ -694,7 +694,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 - 小游戏（#84）的两个例外，`Content-Type: application/json` 仍然必须有：
   - **只带 Bearer、不带设备 cookie** 的请求不查 `Origin`：CSRF 靠浏览器自动附上 cookie，而 `Authorization` 头浏览器不会自动带，跨站页面要加就得过 CORS 预检，我们不对任何跨站来源放行。带着 cookie 的请求（哪怕同时有 Bearer）照常查 `Origin`；
   - `POST /api/wx/login`、`/api/wx/link` **没有 `Origin` 时放行，有但不是本站时拒绝**：`wx.request` 不发 `Origin`，而浏览器的跨站 POST 一定带 `Origin`；这两个接口只认微信 code、不读也不写 cookie，token 在响应体里跨站读不到，做不成登录 CSRF。其他没有凭证的写请求（比如 H5 的 `POST /api/me`）照旧要本站 `Origin`。
-- WebSocket 握手同样校验 `Origin`（§5.5）。唯一的例外：没有 `Origin`、只带 Bearer 头（`wx.connectSocket` 的 `header`）的握手，身份认得出来才放行，认不出就 403。
+- WebSocket 握手同样校验 `Origin`（§5.5）。唯一的例外：没有 `Origin`、也没有设备 cookie 的握手（小游戏的 `wx.connectSocket`）放行，身份只从 Bearer 头认，认不出就是访客；带 cookie 却没有 `Origin` 的照常 403。
 
 ### 10.6 注入与跨站脚本（XSS）
 

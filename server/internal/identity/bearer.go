@@ -44,6 +44,16 @@ func (s *Service) credential(r *http.Request) (string, bool) {
 	return bearerToken(r)
 }
 
+// CookieFree 说明这个请求没带设备 cookie（/ws 握手用）。
+//
+// 浏览器发起 WebSocket 握手一定带 Origin；没有 Origin 的握手只能来自非浏览器客户端（小游戏的 wx.connectSocket）。
+// 跨站 WebSocket 劫持靠的是浏览器自动附上 cookie，所以「没有 Origin、也没有 cookie」的握手可以放行：
+// 身份只从 Bearer 头认，认不出就是访客（只能收到公开的牌局变化）。带着 cookie 却没有 Origin 的照常拒绝。
+func (s *Service) CookieFree(r *http.Request) bool {
+	_, ok := s.cookies.Read(r)
+	return !ok
+}
+
 // BearerOnly 说明这个请求只用 Bearer 头带凭证、没有设备 cookie（CSRF 中间件和 /ws 握手用）。
 //
 // 浏览器跨站发请求时会自动带上 cookie，但带不上 Authorization 头（要过 CORS 预检，我们不放行任何跨站来源），

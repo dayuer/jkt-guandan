@@ -75,7 +75,7 @@ func newApp(t *testing.T) *app {
 		Routes: appRoutes(appDeps{
 			identity: identitySvc, games: gamesSvc, notify: notifySvc, friends: friends.NewService(st, clk),
 			ws: realtime.Handler(realtime.Options{
-				Hub: hub, AllowOrigin: cfg.AllowsOrigin, BearerOnly: identitySvc.BearerOnly, Identify: realtimeIdentify,
+				Hub: hub, AllowOrigin: cfg.AllowsOrigin, CookieFree: identitySvc.CookieFree, Identify: realtimeIdentify,
 				Revalidate: func(ctx context.Context, p realtime.Principal) bool {
 					return identitySvc.StillValid(ctx, p.UserID, p.DeviceID)
 				},
