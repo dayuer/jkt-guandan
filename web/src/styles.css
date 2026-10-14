@@ -133,6 +133,13 @@ button:disabled {
   color: var(--ink);
 }
 
+/* 深色描边的次要按钮：详情页左下角的「⇪ 分享」（原型 B1 / B3 / W1 / W2）。 */
+.btn.dark-ghost {
+  background: var(--card);
+  border: 1.5px solid var(--ink);
+  color: var(--ink);
+}
+
 .btn.soft {
   background: var(--beige);
   color: var(--ink-2);
@@ -302,7 +309,124 @@ button:disabled {
   box-shadow: 0 0 0 6px var(--gold-ring);
 }
 
-.disc.empty {
+.disc/* ── 分享面板（原型 04 / C1）──────────────────────────────────── */
+
+.sheet.share {
+  text-align: center;
+}
+
+.poster-frame {
+  margin: var(--s4) auto 0;
+  width: 270px;
+}
+
+.poster {
+  display: block;
+  width: 270px;
+  height: 360px;
+  object-fit: cover;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line);
+  background: var(--red-tint);
+  box-shadow: var(--sh-card);
+}
+
+/* 海报没加载出来时的占位：位置和尺寸跟真图一样，面板不会跳。 */
+.poster.placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--red);
+}
+
+.poster.placeholder small {
+  font-weight: 400;
+  color: var(--ink-3);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+}
+
+.sheet .hint {
+  margin-top: 10px;
+  color: var(--ink-3);
+  font-size: var(--fs-small);
+}
+
+.outlets {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  margin-top: var(--s4);
+}
+
+.outlet {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-small);
+  font-weight: 700;
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.outlet:disabled {
+  opacity: 0.45;
+}
+
+.outlet .ico {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--red-tint);
+  color: var(--red);
+  font-size: 20px;
+}
+
+/* WhatsApp 用它自己的绿，别用我们的红。 */
+.outlet .ico.wa {
+  background: #e6f4ea;
+  color: #128c7e;
+}
+
+/* 话术预览：左文右按钮，像设计稿里那样一眼能看出复制的是什么。 */
+.script {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: var(--s4);
+  padding: 12px 14px;
+  border-radius: var(--r-12);
+  background: var(--paper);
+  text-align: left;
+}
+
+.script p {
+  flex: 1;
+  color: var(--ink-2);
+  font-size: var(--fs-13);
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+/* 面板里的小按钮：.btn 默认是整行宽的主按钮，这里要它按内容宽。 */
+.btn.small {
+  flex: none;
+  width: auto;
+  min-height: 0;
+  padding: 10px 16px;
+  font-size: var(--fs-13);
+  white-space: nowrap;
+}
+
+.empty {
   background: transparent;
   border: 2.5px dashed var(--khaki);
 }
@@ -738,6 +862,28 @@ button:disabled {
   color: var(--ink-2);
   font-size: var(--fs-13);
   margin-top: 6px;
+}
+
+/* 「离线 · 15 秒刷新」小点（原型 R2）：WebSocket 连不上、降级成轮询时才出现。
+   连得上时组件什么都不渲染，所以这行字的位置和多出来的这一小段间距都不存在。 */
+.net {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--ink-3);
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  padding: 3px 8px;
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+
+.net i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--khaki);
 }
 
 .areachips {

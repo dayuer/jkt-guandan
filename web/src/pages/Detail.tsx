@@ -12,9 +12,11 @@ import {
   type Seat,
   type UserRef,
 } from "../api";
+import { ShareSheet } from "../components/ShareSheet";
 import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
 import { dayLabel, kindLabel, timeHM } from "../format";
+import { OfflineDot, useRealtime } from "../useRealtime";
 import { useRetrying } from "../useRetrying";
 
 interface Props {
@@ -49,6 +51,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   const [editOpen, setEditOpen] = useState(false);
   const [kickTarget, setKickTarget] = useState<Seat | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const retrying = useRetrying();
 
   const load = useCallback(async () => {
@@ -63,6 +66,16 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 这一局的实时（#49）：座位有人坐上、有人退出、局头改了时间……服务端都发到 game:{code} 上，
+  // 我们只当「有事发生」的信号，一律重新拉 REST。座位的落座动画由 GameTable 比对前后座位自己播，
+  // 所以这里不需要关心事件里带的是什么。
+  useRealtime({
+    topics: [`game:${code}`],
+    poll: true,
+    onEvent: () => void load(),
+    refresh: () => void load(),
+  });
 
   /** 把错误翻成人话。 */
   const explain = (err: unknown): string => {
@@ -223,7 +236,9 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         <div class={`when${closed ? " dim" : ""}`}>
           <div class="d">{dayLabel(game.starts_at)}</div>
           <div class="t">{timeHM(game.starts_at)}</div>
-          <div class="s">雅加达时间 WIB · {kindLabel(game.kind)}</div>
+          <div class="s">
+            雅加达时间 WIB · {kindLabel(game.kind)} <OfflineDot />
+          </div>
         </div>
 
         <GameTable detail={detail} meID={me?.id} onSeat={onSeatClick} />
@@ -304,6 +319,8 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         />
       )}
 
+      {shareOpen && <ShareSheet detail={detail} toast={toast} onClose={() => setShareOpen(false)} />}
+
       {conflict && (
         <ConflictDialog
           state={conflict}
@@ -318,6 +335,12 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       )}
 
       <div class="actionbar">
+        {/* 分享对所有能看到这一局的人都可用——报了名的、路过的，都能帮局头拉人（§5.4）。 */}
+        {!closed && (
+          <button class="btn dark-ghost" onClick={() => setShareOpen(true)}>
+            ⇪ 分享
+          </button>
+        )}
         {myRole.role !== "none" && (
           <button class="btn ghost" disabled={busy || closed} onClick={() => void run(() => leaveGame(code))}>
             {myRole.role === "waitlist" ? "候补中 · 退出候补" : "已报名 · 退出"}
