@@ -116,13 +116,23 @@ test("首页空状态没有虚线框（#56）", async ({ page }) => {
   expect(border).toBe("none");
 });
 
-test("详情页 SEED01：空座位 64×64，有操作栏，没有 Tab 栏（#55）", async ({ page }) => {
+test("详情页 SEED01：空座位是 64×64 的虚线圆，有操作栏，没有 Tab 栏（#55）", async ({ page }) => {
   await page.goto("/g/SEED01");
   const seat = page.locator(".disc.empty").first();
   await expect(seat).toBeVisible();
   const box = await seat.boundingBox();
   expect(box?.width).toBe(64);
   expect(box?.height).toBe(64);
+
+  // 只量 64×64 拦不住「虚线边框丢了」（#77 复审）。尺寸那条挡的是 padding 撑成椭圆，
+  // 这两条挡的是边框本身被改掉——#55/#56 是同一类问题，两条都要在。
+  const seatShape = await seat.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return { borderStyle: cs.borderTopStyle, radius: cs.borderRadius, padding: cs.paddingTop };
+  });
+  expect(seatShape.borderStyle).toBe("dashed");
+  expect(seatShape.radius).toBe("50%");
+  expect(seatShape.padding).toBe("0px");
 
   await expect(page.locator(".actionbar")).toBeVisible();
   const bar = await barBox(page, ".actionbar");
