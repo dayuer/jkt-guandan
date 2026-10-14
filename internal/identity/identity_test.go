@@ -548,29 +548,21 @@ func TestRedeemByCodeRejectsUnknownCode(t *testing.T) {
 	}
 }
 
-// 每个码最多试 5 次，超过就作废（§5.2）。
-func TestRedeemByCodeBurnsOutAfterMaxAttempts(t *testing.T) {
+// 猜错的码匹配不到任何行，数不出「每个码试了几次」（#95）；真正拦住猜码的是每 IP 限速：
+// 同一个 IP 连续猜错，用完额度后直接 429。
+func TestRedeemByCodeWrongGuessesHitPerIPLimit(t *testing.T) {
 	f := newFixture(t, false)
-	f.createIdentity(f.http, "老王")
-	code := f.do(http.MethodPost, "/api/claim", nil).str("code")
+	fresh := f.newBrowser()
 
-	burnTo := func(n int) {
-		t.Helper()
-		err := f.st.Write(context.Background(), func(ctx context.Context, tx *store.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE claim_tokens SET attempts = ? WHERE code = ?`, n, code)
-			return err
-		})
-		if err != nil {
-			t.Fatalf("改 attempts: %v", err)
+	for i := 0; i < 10; i++ {
+		r := f.doWith(fresh, http.MethodPost, "/api/claim/redeem", map[string]string{"code": "000000"})
+		if r.status != http.StatusBadRequest || r.errCode() != "claim_invalid" {
+			t.Fatalf("第 %d 次猜错应当是 claim_invalid，实际 %d %s", i+1, r.status, r.raw)
 		}
 	}
-
-	burnTo(identity.ClaimCodeMaxAttempts)
-
-	fresh := f.newBrowser()
-	resp := f.doWith(fresh, http.MethodPost, "/api/claim/redeem", map[string]string{"code": code})
-	if resp.status != http.StatusBadRequest || resp.errCode() != "claim_invalid" {
-		t.Fatalf("超过尝试上限的码应当作废，实际 %d %s", resp.status, resp.raw)
+	r := f.doWith(fresh, http.MethodPost, "/api/claim/redeem", map[string]string{"code": "000000"})
+	if r.status != http.StatusTooManyRequests || r.errCode() != "rate_limited" {
+		t.Fatalf("第 11 次应当被每 IP 限速拦下，实际 %d %s", r.status, r.raw)
 	}
 }
 
@@ -602,8 +594,8 @@ func TestUsedOrExpiredRowDoesNotShadowLiveCode(t *testing.T) {
 	// 塞一条同号的旧记录：已经用过、也过期了。
 	err := f.st.Write(context.Background(), func(ctx context.Context, tx *store.Tx) error {
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO claim_tokens (token_hash, code, user_id, expires_at, used_at, attempts, issued_net)
-			 VALUES (?, ?, ?, 0, 0, 0, NULL)`,
+			`INSERT INTO claim_tokens (token_hash, code, user_id, expires_at, used_at, issued_net)
+			 VALUES (?, ?, ?, 0, 0, NULL)`,
 			[]byte("stale-hash"), code, owner)
 		return err
 	})

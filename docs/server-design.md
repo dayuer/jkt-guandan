@@ -66,7 +66,7 @@ CREATE TABLE claim_tokens (
   user_id    TEXT NOT NULL REFERENCES users(id),
   expires_at INTEGER NOT NULL,             -- 签发后 10 分钟
   used_at    INTEGER,
-  attempts   INTEGER NOT NULL DEFAULT 0,   -- 见 §5.2：目前实际上不会超过 1，不构成防撞库的限制
+  attempts   INTEGER NOT NULL DEFAULT 0,   -- 已弃用：代码不再读写（#95），留着是为了回滚到旧版本时 INSERT 还能用；以后在计划好的 breaking 发布里再删
   issued_net TEXT                          -- 签发时的客户端网络，形如 203.0.113.0/24、2001:db8::/64；兑换认领码时必须一致（0002_claim_net.sql）。为空（0002 之前签发、或 IP 解析不出）时不做网络检查
 );
 -- 有效码唯一（0002_claim_net.sql 改为 UNIQUE；作废旧码时写 used_at 把号码让出来）
@@ -244,7 +244,7 @@ CREATE INDEX events_name_at ON events(name, at);
   3. **全站失败预算**：从窗口开始算起 1 分钟内全站失败超过 20 次，就暂停凭码兑换 5 分钟，同时记 warn 日志。格式不对的码、暂停期间的请求都算失败，所以持续撞库会让暂停一直延续下去。预算只在进程内存里，重启后清零。凭 token 兑换不受这个限制；
   4. 所有失败都返回同一个 `400 claim_invalid`。
 
-  **关于「每个码最多试 5 次」**：`claim_tokens.attempts` 和 `ClaimCodeMaxAttempts = 5` 在代码里存在，但实际上不起作用。猜错的码查不到记录，计不上数；网络不对等失败会让整个写事务回滚，计数也跟着回滚；查到并通过检查的那一次直接成功、码被用掉。所以真正限制撞库的是第 1–3 条，不是这一条（#95）。
+  **关于「每个码最多试 5 次」**：这个计数器从来没有生效过，已在 #95 删除（`ClaimCodeMaxAttempts` 常量和 `RedeemByCode` 里的读写都去掉了）。猜错的码查不到记录，本来就数不出每个码被猜了几次；网络不对等失败会让整个写事务回滚，计数也跟着回滚。`claim_tokens.attempts` 列暂时留在库里不再读写，以后在计划好的 breaking 发布里再删。真正限制撞库的是上面第 1–3 条。
 
   按这些限制估算：6 位码共 10⁶ 种，全站每 10 分钟最多大约 200 次失败尝试，而且攻击者必须和受害者在同一个网段，远程撞库几乎不可能成功。
 - **不提供面向用户的身份合并。** 代码里有 `mergeUsers`（`internal/identity/merge.go`），但目前只有测试调用它，`guandan admin` 也还没有合并子命令（§13.6）；任何用户能触发的路径都调不到它。将来做成 admin 命令时，语义以代码为准：
@@ -741,7 +741,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 | 创建身份 `POST /api/me` | 每个 IP 每小时 20 次 |
 | 开局 | 每个用户每天 10 次 |
 | 报名、退出 | 每个用户每分钟 30 次 |
-| 认领码兑换 | 每个 IP 每分钟 10 次，每个码最多 5 次 |
+| 认领码兑换 | 每个 IP 每分钟 10 次 |
 | WebSocket | 每个 IP 最多 20 条连接，新连接每秒最多 5 条（防止部署后所有客户端同时重连） |
 | 蛋蛋 | 每台设备每天 30 次，每个 IP 每天 60 次（没有身份时只按 IP 算）；同时最多 4 个请求在调模型 |
 

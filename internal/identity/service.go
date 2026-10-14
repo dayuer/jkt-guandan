@@ -24,8 +24,6 @@ const (
 	DeviceTokenBytes = 32
 	// ClaimTokenBytes 是 claim_token 的随机字节数（§5.2）。
 	ClaimTokenBytes = 16
-	// ClaimCodeMaxAttempts 是一个认领码最多能试几次（§5.2）。
-	ClaimCodeMaxAttempts = 5
 	// touchInterval 决定多久刷新一次设备的 last_seen。每次请求都写会白白占用唯一的写连接。
 	touchInterval = time.Hour
 )
@@ -322,8 +320,8 @@ func (s *Service) IssueClaim(ctx context.Context, userID, clientNet string) (tok
 		}
 
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO claim_tokens (token_hash, code, user_id, expires_at, used_at, attempts, issued_net)
-			 VALUES (?, ?, ?, ?, NULL, 0, ?)`,
+			`INSERT INTO claim_tokens (token_hash, code, user_id, expires_at, used_at, issued_net)
+			 VALUES (?, ?, ?, ?, NULL, ?)`,
 			hashToken(token), code, userID, expiresAt.Unix(), nullIfEmpty(clientNet))
 		return err
 	})
@@ -478,7 +476,7 @@ func consumeClaimToken(ctx context.Context, tx *store.Tx, token string, now time
 // 多层防护：
 //   - 只查「有效」的记录（未使用且未过期），所以旧记录不会挡住新的同号码；
 //   - 签发和兑换必须来自同一个网络前缀；
-//   - 单个码最多试 5 次；
+//   - 每 IP 限速在 handler 里（AllowCodeRedeem）；
 //   - 全站失败太多时整体暂停凭码兑换（s.codeBudget）。
 //
 // 所有失败都返回同一个 ErrClaimInvalid，不透露码是否存在（§10.3）。
@@ -496,16 +494,15 @@ func (s *Service) RedeemByCode(ctx context.Context, code, clientNet, userAgent s
 		var (
 			rowid     int64
 			userID    string
-			attempts  int
 			issuedNet sql.NullString
 		)
 		// 只看有效的记录：用过的、过期的都不参与，也就挡不住后续的同号码。
 		err := tx.QueryRowContext(ctx, `
-			SELECT rowid, user_id, attempts, issued_net
+			SELECT rowid, user_id, issued_net
 			  FROM claim_tokens
 			 WHERE code = ? AND used_at IS NULL AND expires_at > ?
 			 ORDER BY rowid DESC LIMIT 1`, code, now.Unix()).
-			Scan(&rowid, &userID, &attempts, &issuedNet)
+			Scan(&rowid, &userID, &issuedNet)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrClaimInvalid
 		}
@@ -516,15 +513,6 @@ func (s *Service) RedeemByCode(ctx context.Context, code, clientNet, userAgent s
 		// 只能在签发时的同一个网络里兑换。
 		if issuedNet.Valid && issuedNet.String != "" && issuedNet.String != clientNet {
 			return ErrClaimInvalid
-		}
-
-		// 已经试满 5 次的码直接作废，连尝试都不再记。
-		if attempts >= ClaimCodeMaxAttempts {
-			return ErrClaimInvalid
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE claim_tokens SET attempts = attempts + 1 WHERE rowid = ?`, rowid); err != nil {
-			return err
 		}
 
 		if _, err := tx.ExecContext(ctx,
