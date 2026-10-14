@@ -24,6 +24,7 @@ import (
 	"rsc.io/qr"
 
 	"github.com/dayuer/jkt-guandan/internal/games"
+	"github.com/dayuer/jkt-guandan/internal/textclean"
 )
 
 // OG 图和海报的服务端渲染（§5.4），视觉按设计稿 C2（海报成品），颜色取自 design/guandan-h5/tokens.css。
@@ -97,12 +98,12 @@ type Card struct {
 // CardFor 把牌局转成渲染用的信息。
 func CardFor(d *games.Detail, publicURL string, now time.Time) Card {
 	c := Card{
-		Code: d.Game.ShortCode, StartsAt: d.Game.StartsAt, Now: now, Venue: d.Game.Venue,
+		Code: d.Game.ShortCode, StartsAt: d.Game.StartsAt, Now: now, Venue: textclean.Clean(d.Game.Venue),
 		Missing: d.Missing, Status: d.Game.Status,
 		URL: strings.TrimSuffix(publicURL, "/") + "/g/" + d.Game.ShortCode,
 	}
 	for _, s := range d.Seats {
-		c.Seats = append(c.Seats, s.Nickname)
+		c.Seats = append(c.Seats, textclean.Clean(s.Nickname))
 	}
 	return c
 }

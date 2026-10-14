@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/dayuer/jkt-guandan/internal/games"
+	"github.com/dayuer/jkt-guandan/internal/textclean"
 )
 
 // Duration 是日历事件的时长。牌局没有结束时间字段，按一场掼蛋的常见时长算。
@@ -51,6 +52,9 @@ type Event struct {
 // EventFor 把牌局转成日历事件。publicURL 是本站地址（GUANDAN_PUBLIC_URL）。
 func EventFor(d *games.Detail, publicURL string) Event {
 	g := d.Game
+	// 渲染时再清一遍：修复前入库的旧数据里可能已有零宽和 BiDi 字符。
+	g.Venue, g.Note = textclean.Clean(g.Venue), textclean.Clean(g.Note)
+	hostName := textclean.Clean(d.HostName)
 	host := "guandan"
 	if u, err := url.Parse(publicURL); err == nil && u.Hostname() != "" {
 		host = u.Hostname()
@@ -62,7 +66,7 @@ func EventFor(d *games.Detail, publicURL string) Event {
 		kind = g.Kind
 	}
 	var details []string
-	details = append(details, fmt.Sprintf("%s · 局头 %s", kind, d.HostName))
+	details = append(details, fmt.Sprintf("%s · 局头 %s", kind, hostName))
 	if g.Note != "" {
 		details = append(details, g.Note)
 	}
