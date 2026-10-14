@@ -39,6 +39,9 @@ export function JumpOutGuide({ app, ios, signedIn, onCalendar, onClose }: Props)
       });
     return () => {
       alive = false;
+      // 不管是点按钮、点遮罩还是路由跳走，引导屏一没了就把令牌从地址栏拿掉，
+      // 免得之后「发送给朋友」把它带出去。真跳出去了也没关系：浏览器那边已经拿到了地址。
+      window.history.replaceState(null, "", withoutClaim(window.location.href));
     };
   }, [signedIn]);
 

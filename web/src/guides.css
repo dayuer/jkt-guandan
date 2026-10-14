@@ -339,6 +339,8 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  /* #app 是 flex 列：只写 margin: 0 auto 会缩到内容宽度，卡片随称呼长短变窄（#70 复审）。 */
+  width: 100%;
   max-width: 480px;
   margin: 0 auto;
   padding: calc(env(safe-area-inset-top) + 56px) var(--s5) calc(env(safe-area-inset-bottom) + var(--s5));

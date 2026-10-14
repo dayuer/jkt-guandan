@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { render } from "preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -140,6 +142,16 @@ describe("H1 · 跳出微信", () => {
     button(c, "算了，加日历就行").click();
     expect(window.location.search).toBe("");
     expect(onCalendar).toHaveBeenCalledOnce();
+  });
+
+  it("被父组件直接卸载（点遮罩、路由跳走）也把令牌从地址栏拿掉", async () => {
+    stubFetch({ "POST /api/claim": ticket });
+    const c = mount(<JumpOutGuide app="wechat" ios={false} signedIn onCalendar={() => {}} onClose={() => {}} />);
+    await vi.waitFor(() => expect(window.location.search).toContain("claim="));
+
+    render(null, c);
+    await vi.waitFor(() => expect(window.location.search).toBe(""));
+    expect(window.location.pathname).toBe("/g/8K2QXM");
   });
 
   it("「先不用」也能直接关掉", () => {
@@ -324,6 +336,14 @@ describe("H3–H8 · 主屏幕首开", () => {
   });
 });
 
+describe("首开页的布局", () => {
+  it(".firstrun 铺满 #app 这一列（flex 列里只写 margin auto 会缩到内容宽度）", () => {
+    const css = readFileSync(resolve(process.cwd(), "src/guides.css"), "utf8");
+    const rule = /\.firstrun\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(rule).toMatch(/(^|;|\s)width:\s*100%/);
+  });
+});
+
 describe("App：什么时候出首开引导", () => {
   const games = respond(200, { games: [] });
 
@@ -347,6 +367,28 @@ describe("App：什么时候出首开引导", () => {
     await tick();
     await tick();
     expect(c.querySelector("[data-testid^=firstrun]")).toBeNull();
+  });
+
+  it("微信里重载带 ?claim= 的页面：不自己兑换，令牌留给跳出去的浏览器", async () => {
+    push.support = { kind: "in-app-browser", app: "wechat" };
+    const calls = stubFetch({ "GET /api/games": games });
+    window.history.replaceState(null, "", "/g/8K2QXM?claim=tok123");
+    mount(<App />);
+    await vi.waitFor(() => expect(calls.some((x) => x.url === "/api/me")).toBe(true));
+    await tick();
+
+    expect(calls.some((x) => x.url === "/api/claim/redeem")).toBe(false);
+    expect(window.location.search).toBe("?claim=tok123");
+  });
+
+  it("普通浏览器打开带 ?claim= 的地址：照常兑换（对照）", async () => {
+    const calls = stubFetch({
+      "POST /api/claim/redeem": respond(200, { user: { id: "u1", nickname: "阿杰" } }),
+      "GET /api/games": games,
+    });
+    window.history.replaceState(null, "", "/?claim=tok123");
+    mount(<App />);
+    await vi.waitFor(() => expect(calls.some((x) => x.url === "/api/claim/redeem")).toBe(true));
   });
 
   it("浏览器标签页里不出", async () => {

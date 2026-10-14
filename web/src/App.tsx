@@ -9,7 +9,7 @@ import { Agent, type FormPrefill } from "./pages/Agent";
 import { CreateGame } from "./pages/CreateGame";
 import { Detail } from "./pages/Detail";
 import { Home } from "./pages/Home";
-import { isStandalone } from "./push";
+import { isStandalone, pushSupport } from "./push";
 import { APP_NAME } from "./title";
 
 type Route = { name: "home" } | { name: "detail"; code: string } | { name: "new" } | { name: "agent" };
@@ -79,7 +79,9 @@ export function App() {
     (async () => {
       // 先处理跳出链接里的 claim，再问一次身份。
       try {
-        const result = await redeemClaimFromURL();
+        // 应用内置浏览器里不兑换：这里的 ?claim= 是 H1 为「跳出去」签发的，
+        // 微信回收 webview 或下拉刷新时自己兑换，会把令牌用掉，浏览器那边就认不出人了（#70 复审）。
+        const result = pushSupport().kind === "in-app-browser" ? ({ kind: "none" } as const) : await redeemClaimFromURL();
         if (result.kind === "ok") setClaim({ kind: "ok", user: result.user });
         else if (result.kind === "conflict") setClaim({ kind: "conflict", other: result.otherNickname });
       } catch {
