@@ -110,7 +110,7 @@ func TestRouteTable(t *testing.T) {
 		{"DELETE /api/games/{code}/seat", "user", "games.(*handler).leave"},
 		{"POST /api/games/{code}/cancel", "user", "games.(*handler).cancel"},
 		{"POST /api/games/{code}/kick", "user", "games.(*handler).kick"},
-		{"GET /ws", "public+deferban", "*realtime.handler"},
+		{"GET /ws", "public+deferidentity", "*realtime.handler"},
 		{"GET /g/{code}", "anonymous", "share.(*handler).ogPage"},
 		{"GET /g/{code}/og.png", "anonymous", "share.(*handler).ogImage"},
 		{"GET /g/{code}/poster.png", "anonymous", "share.(*handler).posterImage"},
@@ -125,8 +125,8 @@ func TestRouteTable(t *testing.T) {
 	var got []row
 	for _, rt := range httpapi.Table(a.options) {
 		access := rt.Access.String()
-		if rt.DeferBan {
-			access += "+deferban"
+		if rt.DeferIdentity {
+			access += "+deferidentity"
 		}
 		got = append(got, row{rt.Key(), access, handlerName(rt.Handler)})
 	}
@@ -182,7 +182,11 @@ func TestAuthorizationMatrix(t *testing.T) {
 					}
 				}
 
-				status, errCode := a.probe(client, rt, code)
+				status, errCode, raw := a.probe(client, rt, code)
+				// 5xx 不算放行：授权之外的地方坏了，矩阵也该发现（没配 key 的蛋蛋是预期的 503）。
+				if status >= 500 && errCode != "agent_disabled" {
+					t.Fatalf("意外的 %d：%s", status, raw)
+				}
 				want := "pass"
 				switch {
 				case rt.Access == route.Anonymous:
@@ -197,8 +201,10 @@ func TestAuthorizationMatrix(t *testing.T) {
 				switch {
 				case status == http.StatusUnauthorized:
 					got = "unauthorized"
-				case status == http.StatusForbidden && (errCode == "banned" || rt.Pattern == "/ws"):
-					got = "banned" // /ws 握手被拒是纯文本 403
+				case status == http.StatusForbidden && errCode == "banned":
+					got = "banned"
+				case status == http.StatusForbidden && rt.Pattern == "/ws" && strings.TrimSpace(raw) == "forbidden":
+					got = "banned" // /ws 握手拒绝被封禁的身份是纯文本 403 forbidden
 				case status == http.StatusForbidden:
 					got = errCode
 				}
@@ -220,6 +226,12 @@ func (a *app) browser() *http.Client {
 }
 
 func (a *app) do(c *http.Client, method, path string, body any, header map[string]string) (int, map[string]any) {
+	a.t.Helper()
+	status, out, _ := a.doRaw(c, method, path, body, header)
+	return status, out
+}
+
+func (a *app) doRaw(c *http.Client, method, path string, body any, header map[string]string) (int, map[string]any, string) {
 	a.t.Helper()
 	var r io.Reader
 	if body != nil {
@@ -243,7 +255,7 @@ func (a *app) do(c *http.Client, method, path string, body any, header map[strin
 	raw, _ := io.ReadAll(resp.Body)
 	var out map[string]any
 	_ = json.Unmarshal(raw, &out)
-	return resp.StatusCode, out
+	return resp.StatusCode, out, string(raw)
 }
 
 func (a *app) signUp(c *http.Client, nickname string) string {
@@ -271,7 +283,7 @@ func (a *app) gameBody() map[string]any {
 }
 
 // probe 用一个格式合法的请求打这条路由，返回状态码和错误码。
-func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string) {
+func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string, string) {
 	a.t.Helper()
 	path := strings.NewReplacer("{code}", code, "{id}", "nonexistent").Replace(rt.Pattern)
 	method := rt.Method
@@ -298,10 +310,39 @@ func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string) {
 	case "POST /api/agent":
 		body = map[string]string{"text": "周四晚上打一局"}
 	}
-	status, out := a.do(c, method, path, body, header)
+	status, out, raw := a.doRaw(c, method, path, body, header)
 	var errCode string
 	if e, ok := out["error"].(map[string]any); ok {
 		errCode, _ = e["code"].(string)
 	}
-	return status, errCode
+	return status, errCode, raw
+}
+
+// GET /ws 是 DeferIdentity：先查 Origin，过了才识别身份。被封禁的身份带着错误的 Origin 来，
+// 应该被 Origin 拦下（origin not allowed），而不是被封禁拦下（forbidden）——以后有人去掉
+// DeferIdentity、把识别身份提到前面，这个测试就会失败。
+func TestRealtimeChecksOriginBeforeIdentity(t *testing.T) {
+	a := newApp(t)
+	c := a.browser()
+	id := a.signUp(c, "捣乱的")
+	if _, err := a.st.Ban(context.Background(), id, a.clk.Now()); err != nil {
+		t.Fatal(err)
+	}
+	get := func(origin string) (int, string) {
+		req, _ := http.NewRequest(http.MethodGet, a.srv.URL+"/ws", nil)
+		req.Header.Set("Origin", origin)
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, strings.TrimSpace(string(b))
+	}
+	if status, body := get("https://evil.example"); status != http.StatusForbidden || body != "origin not allowed" {
+		t.Fatalf("错误的 Origin 应先被拦下：%d %q", status, body)
+	}
+	if status, body := get(routesTestOrigin); status != http.StatusForbidden || body != "forbidden" {
+		t.Fatalf("Origin 正确时才轮到封禁：%d %q", status, body)
+	}
 }

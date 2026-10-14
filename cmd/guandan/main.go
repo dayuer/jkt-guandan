@@ -143,7 +143,7 @@ func run() error {
 		Hub:         hub,
 		AllowOrigin: cfg.AllowsOrigin,
 		// 身份由 httpapi 的身份中间件放进 ctx（#41）。被 guandan admin ban 封禁的用户或设备握手 403
-		// （先查 Origin 和连接数，所以这条路由是 DeferBan）；连上之后被封禁的，下一次心跳断开（#43）。
+		// （先查 Origin 和连接数，过了才识别身份，所以这条路由是 DeferIdentity）；连上之后被封禁的，下一次心跳断开（#43）。
 		Identify: realtimeIdentify,
 		Revalidate: func(ctx context.Context, p realtime.Principal) bool {
 			return identitySvc.StillValid(ctx, p.UserID, p.DeviceID)
@@ -414,7 +414,7 @@ func appRoutes(d appDeps) []route.Route {
 		identity.Routes(d.identity),
 		games.Routes(d.games),
 		// 没有身份也能连（只能订阅公开主题）。
-		[]route.Route{{Method: http.MethodGet, Pattern: "/ws", Access: route.Public, DeferBan: true, Handler: d.ws}},
+		[]route.Route{{Method: http.MethodGet, Pattern: "/ws", Access: route.Public, DeferIdentity: true, Handler: d.ws}},
 		share.Routes(d.share),
 		notify.Routes(d.notify),
 		agent.Routes(d.agent),
