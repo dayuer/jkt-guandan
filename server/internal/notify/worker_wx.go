@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dayuer/jkt-guandan/server/internal/store"
+	"github.com/dayuer/jkt-guandan/server/internal/wxapi"
 )
 
 // 订阅消息这一路的发送（#137，§5.3「订阅消息通道」）。
@@ -31,7 +32,6 @@ type wxJob struct {
 	d      due
 	key    wxQuotaKey
 	msg    WxMessage
-	code   int
 	err    error
 	reason string // 预占阶段就决定放弃时的原因
 }
@@ -99,7 +99,7 @@ func (w *Worker) sendWx(ctx context.Context, now time.Time, batch []due) (wxResu
 		go func(j *wxJob) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			j.code, j.err = ch.Sender.SendSubscribe(ctx, j.msg)
+			j.err = ch.Sender.SendSubscribe(ctx, j.msg)
 		}(j)
 	}
 	wg.Wait()
@@ -109,37 +109,30 @@ func (w *Worker) sendWx(ctx context.Context, now time.Time, batch []due) (wxResu
 		switch {
 		case j.reason != "":
 			res.decisions[id] = decision{outcomeDropped, j.reason}
-		case j.err == nil && j.code == 0:
+		case j.err == nil:
 			res.decisions[id] = decision{outcomeSent, ""}
 			res.sent++
-		case j.err == nil && j.code == wxErrNotSubscribed:
+		case isCode(j.err, wxErrNotSubscribed):
 			// 微信那边没有可用的订阅了（用户在设置里关掉、或者我们记的次数多了）：以微信为准。
 			res.exhausted = append(res.exhausted, j.key)
 			res.decisions[id] = decision{outcomeDropped, "订阅消息：用户没有订阅（43101）"}
 		default:
-			// 没发出去，次数在微信那边也没用掉，退回来。
+			// 没发出去，次数在微信那边也没用掉，退回来。网络错误、系统繁忙、限频、access_token 失效
+			// （wxapi 已作废缓存，下一轮换新的）重试；其他错误（模板参数不对、openid 无效……）重试也一样，放弃。
 			res.refund = append(res.refund, j.key)
-			logWxError(j.d.kind, j.code, j.err)
-			if j.err != nil || wxRetryable(j.code) {
-				reason := fmt.Sprintf("订阅消息：errcode %d", j.code)
-				if j.err != nil {
-					reason = "订阅消息：" + j.err.Error()
-				}
+			logWxError(j.d.kind, j.err)
+			reason := "订阅消息：" + j.err.Error()
+			if wxapi.Retryable(j.err) {
 				res.decisions[id] = decision{outcomeRetry, reason}
 			} else {
-				res.decisions[id] = decision{outcomeDropped, fmt.Sprintf("订阅消息：errcode %d", j.code)}
+				res.decisions[id] = decision{outcomeDropped, reason}
 			}
 		}
 	}
 	return res, nil
 }
 
-// wxRetryable：系统繁忙、限频、access_token 失效（已作废缓存，下一轮换新的）都值得重试；
-// 其他错误（模板参数不对、openid 无效……）重试也一样，直接放弃。
-func wxRetryable(code int) bool {
-	switch code {
-	case wxErrBusy, wxErrRateLimited, wxErrTokenInvalid, wxErrTokenExpired, wxErrTokenBad:
-		return true
-	}
-	return false
+func isCode(err error, code int) bool {
+	c, ok := wxapi.Code(err)
+	return ok && c == code
 }

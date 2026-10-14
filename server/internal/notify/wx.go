@@ -1,20 +1,15 @@
 package notify
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
-	"sync"
-	"time"
 
 	"github.com/dayuer/jkt-guandan/server/internal/clock"
 	"github.com/dayuer/jkt-guandan/server/internal/config"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
+	"github.com/dayuer/jkt-guandan/server/internal/wxapi"
 )
 
 // 小游戏订阅消息（#137，docs/server-design.md §5.3「订阅消息通道」）。
@@ -24,10 +19,7 @@ import (
 // 剩余次数记在 wx_subscribe_quota。
 
 const (
-	stableTokenURL   = "https://api.weixin.qq.com/cgi-bin/stable_token"
-	subscribeSendURL = "https://api.weixin.qq.com/cgi-bin/message/subscribe/send"
-	// tokenEarly：access_token 过期前这么久就换新的，免得发到一半过期。
-	tokenEarly = 5 * time.Minute
+	subscribeSendPath = "/cgi-bin/message/subscribe/send"
 	// MaxWxQuota 是每个模板最多攒的次数。客户端可以反复上报，没必要无限累加。
 	MaxWxQuota = 50
 	// wxThingMax 是模板里 thing 类型字段的上限（微信规定 20 个字符以内）。
@@ -42,87 +34,6 @@ var wxKindTemplate = map[string]string{
 	"rescheduled": config.WxTmplRemind,
 }
 
-// TokenSource 提供 access_token。生产用 StableToken，测试用假的。
-type TokenSource interface {
-	Token(ctx context.Context) (string, error)
-	// Invalidate 在微信说 token 无效（40001 等）时调用，下次 Token 强制换新的。
-	Invalidate()
-}
-
-// StableToken 调 cgi-bin/stable_token 拿 access_token，缓存到过期前 5 分钟。
-// 用 stable_token 而不是 cgi-bin/token：后者每调一次都让之前的 token 失效，和别的服务共用 AppID 时会互相踢。
-type StableToken struct {
-	AppID, Secret string
-	// Endpoint 为空时用微信的正式地址；测试里指向 httptest。
-	Endpoint string
-	Client   *http.Client
-	Clock    clock.Clock
-
-	mu      sync.Mutex
-	token   string
-	expires time.Time
-	force   bool
-}
-
-func (s *StableToken) now() time.Time {
-	if s.Clock == nil {
-		return time.Now()
-	}
-	return s.Clock.Now()
-}
-
-// Token 返回缓存的 token；快过期或被作废了就换新的。
-func (s *StableToken) Token(ctx context.Context) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.token != "" && !s.force && s.now().Before(s.expires.Add(-tokenEarly)) {
-		return s.token, nil
-	}
-	endpoint := s.Endpoint
-	if endpoint == "" {
-		endpoint = stableTokenURL
-	}
-	client := s.Client
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
-	body, _ := json.Marshal(map[string]any{
-		"grant_type": "client_credential", "appid": s.AppID, "secret": s.Secret, "force_refresh": s.force,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("调 stable_token: %T", err)
-	}
-	defer resp.Body.Close()
-	var out struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int64  `json:"expires_in"`
-		ErrCode     int    `json:"errcode"`
-		ErrMsg      string `json:"errmsg"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&out); err != nil {
-		return "", fmt.Errorf("stable_token 响应不是 JSON（HTTP %d）", resp.StatusCode)
-	}
-	if out.ErrCode != 0 || out.AccessToken == "" {
-		return "", fmt.Errorf("stable_token 返回 errcode=%d %s", out.ErrCode, out.ErrMsg)
-	}
-	s.token, s.force = out.AccessToken, false
-	s.expires = s.now().Add(time.Duration(out.ExpiresIn) * time.Second)
-	return s.token, nil
-}
-
-// Invalidate 作废缓存，下次带 force_refresh 重新拿。
-func (s *StableToken) Invalidate() {
-	s.mu.Lock()
-	s.force = true
-	s.mu.Unlock()
-}
-
 // WxMessage 是一条订阅消息。
 type WxMessage struct {
 	OpenID     string
@@ -131,76 +42,29 @@ type WxMessage struct {
 	Data       map[string]string
 }
 
-// WxSender 发一条订阅消息，返回微信的 errcode（0 成功）。网络错误时 err 非空。测试里换成假的。
+// WxSender 发一条订阅消息。微信返回非 0 errcode 时是 *wxapi.Error；没拿到回应时包着 wxapi.ErrUnavailable。
+// 测试里换成假的。
 type WxSender interface {
-	SendSubscribe(ctx context.Context, msg WxMessage) (errcode int, err error)
+	SendSubscribe(ctx context.Context, msg WxMessage) error
 }
 
-// 微信 errcode 里要特别处理的几个。
-const (
-	wxErrTokenInvalid  = 40001 // access_token 无效
-	wxErrTokenExpired  = 42001 // access_token 过期
-	wxErrTokenBad      = 40014 // access_token 不合法
-	wxErrNotSubscribed = 43101 // 用户没有订阅（或者次数在微信那边已经用完）
-	wxErrBusy          = -1    // 系统繁忙
-	wxErrRateLimited   = 45009 // 接口调用超过限额
-)
+// wxErrNotSubscribed：用户没有订阅（或者次数在微信那边已经用完）。
+const wxErrNotSubscribed = 43101
 
-// SubscribeClient 是真实的 subscribeMessage.send 客户端。
+// SubscribeClient 是真实的 subscribeMessage.send，建在 wxapi.Client 上（access_token 的缓存、作废都在那里）。
 type SubscribeClient struct {
-	Tokens TokenSource
-	// Endpoint 为空时用微信的正式地址；测试里指向 httptest。
-	Endpoint string
-	Client   *http.Client
+	API *wxapi.Client
 }
 
-// SendSubscribe 调 subscribeMessage.send。access_token 在查询串里，所以 URL 不能打日志；
-// token 无效时作废缓存，这条提醒按重试处理。
-func (c *SubscribeClient) SendSubscribe(ctx context.Context, msg WxMessage) (int, error) {
-	token, err := c.Tokens.Token(ctx)
-	if err != nil {
-		return 0, err
-	}
-	endpoint := c.Endpoint
-	if endpoint == "" {
-		endpoint = subscribeSendURL
-	}
-	client := c.Client
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
+// SendSubscribe 调 subscribeMessage.send。
+func (c *SubscribeClient) SendSubscribe(ctx context.Context, msg WxMessage) error {
 	data := make(map[string]map[string]string, len(msg.Data))
 	for k, v := range msg.Data {
 		data[k] = map[string]string{"value": v}
 	}
-	body, _ := json.Marshal(map[string]any{
+	return c.API.PostJSON(ctx, subscribeSendPath, map[string]any{
 		"touser": msg.OpenID, "template_id": msg.TemplateID, "page": msg.Page, "data": data, "lang": "zh_CN",
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"?access_token="+token, bytes.NewReader(body))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		// *url.Error 带着完整 URL（含 access_token），只报类型。
-		return 0, fmt.Errorf("调 subscribeMessage.send: %T", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("subscribeMessage.send 返回 HTTP %d", resp.StatusCode)
-	}
-	var out struct {
-		ErrCode int `json:"errcode"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&out); err != nil {
-		return 0, errors.New("subscribeMessage.send 响应不是 JSON")
-	}
-	switch out.ErrCode {
-	case wxErrTokenInvalid, wxErrTokenExpired, wxErrTokenBad:
-		c.Tokens.Invalidate()
-	}
-	return out.ErrCode, nil
+	}, nil)
 }
 
 // WxChannel 是订阅消息通道的配置：AppID（决定 openid 关联的 provider）、模板、发送器。
@@ -229,8 +93,8 @@ func NewWxChannel(cfg config.Config, clk clock.Clock) *WxChannel {
 		// 开发模式、没配 AppID：openid 关联记在 wx_openid:dev 下（identity.DevWxAppID），发送只记日志。
 		return &WxChannel{AppID: devWxAppID, Templates: tmpls, Sender: DevWxSender{}}
 	}
-	tokens := &StableToken{AppID: cfg.WxAppID, Secret: cfg.WxSecret, Clock: clk}
-	return &WxChannel{AppID: cfg.WxAppID, Templates: tmpls, Sender: &SubscribeClient{Tokens: tokens}}
+	tokens := &wxapi.StableToken{AppID: cfg.WxAppID, Secret: cfg.WxSecret, Clock: clk}
+	return &WxChannel{AppID: cfg.WxAppID, Templates: tmpls, Sender: &SubscribeClient{API: &wxapi.Client{Tokens: tokens}}}
 }
 
 // devWxAppID 要和 identity.DevWxAppID 一致（开发模式的小游戏登录把 openid 记在 wx_openid:dev 下）。
@@ -239,9 +103,9 @@ const devWxAppID = "dev"
 // DevWxSender 是开发模式的假发送器：只记日志（模板和事项，不记 openid），一律成功。
 type DevWxSender struct{}
 
-func (DevWxSender) SendSubscribe(_ context.Context, m WxMessage) (int, error) {
+func (DevWxSender) SendSubscribe(_ context.Context, m WxMessage) error {
 	slog.Info("开发模式：订阅消息不真发", "template", m.TemplateID, "page", m.Page, "data", m.Data)
-	return 0, nil
+	return nil
 }
 
 // TemplateIDs 是通道里配置了的模板 ID，按用途索引（GET /api/config 下发给小游戏）。
@@ -334,11 +198,8 @@ func clip(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// logWxError 只记 errcode，不记 openid（§5.2：openid 不出现在日志里）。
-func logWxError(kind string, code int, err error) {
-	if err != nil {
-		slog.Warn("订阅消息发送失败", "kind", kind, "err", err)
-		return
-	}
-	slog.Warn("订阅消息发送失败", "kind", kind, "errcode", code)
+// logWxError 只记错误（errcode 或错误类型），不记 openid（§5.2：openid 不出现在日志里）。
+// wxapi 返回的错误不含请求 URL，所以也没有 access_token。
+func logWxError(kind string, err error) {
+	slog.Warn("订阅消息发送失败", "kind", kind, "err", err)
 }

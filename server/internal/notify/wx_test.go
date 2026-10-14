@@ -17,6 +17,7 @@ import (
 
 	"github.com/dayuer/jkt-guandan/server/internal/config"
 	"github.com/dayuer/jkt-guandan/server/internal/identity"
+	"github.com/dayuer/jkt-guandan/server/internal/wxapi"
 )
 
 const (
@@ -34,14 +35,17 @@ type fakeWx struct {
 	calls []WxMessage
 }
 
-func (f *fakeWx) SendSubscribe(_ context.Context, m WxMessage) (int, error) {
+func (f *fakeWx) SendSubscribe(_ context.Context, m WxMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, m)
 	if f.err != nil {
-		return 0, f.err
+		return f.err
 	}
-	return f.code[m.TemplateID], nil
+	if c := f.code[m.TemplateID]; c != 0 {
+		return &wxapi.Error{Code: c}
+	}
+	return nil
 }
 
 func (f *fakeWx) n() int {
@@ -194,7 +198,7 @@ func TestWxDedupeWithWebPush(t *testing.T) {
 // 43101（用户没订阅）：次数清零，放弃；其他错误：退回次数，放弃。
 func TestWxFailureRefundsQuota(t *testing.T) {
 	e := newEnv(t)
-	f := &fakeWx{err: errors.New("connection reset")}
+	f := &fakeWx{err: fmt.Errorf("%w（*net.OpError）", wxapi.ErrUnavailable)}
 	e.withWx(f)
 	_, _ = e.svc.AddWxQuota(context.Background(), "u2", []string{tmplRemind})
 	id := e.reminder("u2", "t_minus_1h")
@@ -206,7 +210,7 @@ func TestWxFailureRefundsQuota(t *testing.T) {
 		t.Fatalf("重试状态 %s", got)
 	}
 
-	f.err, f.code = nil, map[string]int{tmplRemind: wxErrBusy}
+	f.err, f.code = nil, map[string]int{tmplRemind: wxapi.ErrCodeBusy}
 	e.clk.Advance(31 * time.Second)
 	if res, _ := NewWorker(e.svc, &fakeSender{}, e.clk).RunOnce(context.Background()); res != (Result{Retried: 1}) {
 		t.Fatalf("系统繁忙应重试：%+v", res)
@@ -294,35 +298,20 @@ func TestWxQuotaDeletedWithAccount(t *testing.T) {
 	}
 }
 
-// access_token：缓存到过期前 5 分钟；快过期时换新的；微信说无效（40001）时作废，下次带 force_refresh 重新拿。
-// 日志里不出现 openid 和 access_token。
-func TestStableTokenAndSubscribeClient(t *testing.T) {
-	var tokenCalls atomic.Int32
-	var forced atomic.Int32
-	var mu sync.Mutex
-	var sent []map[string]any
-	var sendCode atomic.Int32
+// subscribeMessage.send 的请求：touser、template_id、page、data（{字段: {value}}）、access_token 在查询串里。
+// 失败日志里没有 openid 和 access_token。
+func TestSubscribeClientRequest(t *testing.T) {
+	var got map[string]any
+	var token string
+	var code atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/token":
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body["appid"] != wxApp || body["secret"] != "sec" || body["grant_type"] != "client_credential" {
-				t.Errorf("stable_token 请求 %v", body)
-			}
-			if body["force_refresh"] == true {
-				forced.Add(1)
-			}
-			n := tokenCalls.Add(1)
-			fmt.Fprintf(w, `{"access_token":"tok%d","expires_in":7200}`, n)
-		case "/send":
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			body["_token"] = r.URL.Query().Get("access_token")
-			mu.Lock()
-			sent = append(sent, body)
-			mu.Unlock()
-			fmt.Fprintf(w, `{"errcode":%d,"errmsg":"x"}`, sendCode.Load())
+		case "/cgi-bin/stable_token":
+			fmt.Fprint(w, `{"access_token":"tok-secret","expires_in":7200}`)
+		case subscribeSendPath:
+			token = r.URL.Query().Get("access_token")
+			_ = json.NewDecoder(r.Body).Decode(&got)
+			fmt.Fprintf(w, `{"errcode":%d,"errmsg":"x"}`, code.Load())
 		}
 	}))
 	defer srv.Close()
@@ -332,48 +321,24 @@ func TestStableTokenAndSubscribeClient(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	defer slog.SetDefault(prev)
 
-	e := newEnv(t)
-	tokens := &StableToken{AppID: wxApp, Secret: "sec", Endpoint: srv.URL + "/token", Clock: e.clk}
-	c := &SubscribeClient{Tokens: tokens, Endpoint: srv.URL + "/send"}
+	c := &SubscribeClient{API: &wxapi.Client{BaseURL: srv.URL, Tokens: &wxapi.StableToken{AppID: wxApp, Secret: "sec", BaseURL: srv.URL}}}
 	msg := WxMessage{OpenID: openidOfU2, TemplateID: tmplRemind, Page: "?g=SEED01", Data: map[string]string{"thing1": "还有 1 小时开局"}}
-	ctx := context.Background()
-
-	for i := 0; i < 3; i++ {
-		if code, err := c.SendSubscribe(ctx, msg); code != 0 || err != nil {
-			t.Fatalf("发送 %d %v", code, err)
-		}
+	if err := c.SendSubscribe(context.Background(), msg); err != nil {
+		t.Fatal(err)
 	}
-	if tokenCalls.Load() != 1 {
-		t.Fatalf("token 应缓存，实际取了 %d 次", tokenCalls.Load())
-	}
-	data, _ := sent[0]["data"].(map[string]any)
-	if sent[0]["touser"] != openidOfU2 || sent[0]["template_id"] != tmplRemind || sent[0]["page"] != "?g=SEED01" ||
-		sent[0]["_token"] != "tok1" || data["thing1"].(map[string]any)["value"] != "还有 1 小时开局" {
-		t.Fatalf("请求 %v", sent[0])
+	data, _ := got["data"].(map[string]any)
+	if token != "tok-secret" || got["touser"] != openidOfU2 || got["template_id"] != tmplRemind || got["page"] != "?g=SEED01" ||
+		data["thing1"].(map[string]any)["value"] != "还有 1 小时开局" {
+		t.Fatalf("请求 %v token=%s", got, token)
 	}
 
-	// 过期前 5 分钟以内：换新的。
-	e.clk.Advance(2*time.Hour - 4*time.Minute)
-	_, _ = c.SendSubscribe(ctx, msg)
-	if tokenCalls.Load() != 2 || sent[len(sent)-1]["_token"] != "tok2" {
-		t.Fatalf("快过期时应刷新：取了 %d 次，用的 %v", tokenCalls.Load(), sent[len(sent)-1]["_token"])
+	code.Store(wxErrNotSubscribed)
+	err := c.SendSubscribe(context.Background(), msg)
+	if !isCode(err, wxErrNotSubscribed) || wxapi.Retryable(err) {
+		t.Fatalf("43101 应原样带出、不重试：%v", err)
 	}
-
-	// 40001：作废缓存，下次 force_refresh。
-	sendCode.Store(wxErrTokenInvalid)
-	if code, _ := c.SendSubscribe(ctx, msg); code != wxErrTokenInvalid || !wxRetryable(code) {
-		t.Fatalf("40001 应原样返回且可重试，实际 %d", code)
-	}
-	sendCode.Store(0)
-	_, _ = c.SendSubscribe(ctx, msg)
-	if tokenCalls.Load() != 3 || forced.Load() != 1 || sent[len(sent)-1]["_token"] != "tok3" {
-		t.Fatalf("40001 后应强制刷新：取了 %d 次，强制 %d 次", tokenCalls.Load(), forced.Load())
-	}
-
-	// 走一遍 worker 的失败日志：只有 errcode，没有 openid / token。
-	logWxError("t_minus_1h", 47003, nil)
-	logWxError("t_minus_1h", 0, errors.New("调 subscribeMessage.send: *url.Error"))
-	if s := logs.String(); strings.Contains(s, openidOfU2) || strings.Contains(s, "tok") {
+	logWxError("t_minus_1h", err)
+	if s := logs.String(); strings.Contains(s, openidOfU2) || strings.Contains(s, "tok-secret") {
 		t.Fatalf("日志里出现了 openid 或 access_token：%s", s)
 	}
 }
