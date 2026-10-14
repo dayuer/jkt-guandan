@@ -3,6 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GameDetail } from "../api";
 import { ShareSheet } from "./ShareSheet";
 
+const telemetry = vi.hoisted(() => ({ track: vi.fn() }));
+vi.mock("../telemetry", () => telemetry);
+
 /** C1 · 分享面板（设计稿 04、docs/h5-pwa-plan.md §5）。 */
 
 function detail(over: Partial<GameDetail["game"]> = {}, missing = 2): GameDetail {
@@ -76,6 +79,18 @@ describe("分享面板（04 / C1）", () => {
 
     await vi.waitFor(() => expect(copy.textContent).toBe("已复制 ✓"));
     expect(toasts.join()).toContain("话术已复制");
+    expect(telemetry.track).toHaveBeenCalledWith("share_channel", { game: "8K2QXM", channel: "copy" });
+  });
+
+  it("点 WhatsApp 出口记一条 share_channel（#117）", () => {
+    telemetry.track.mockClear();
+    const { container } = setup();
+    const wa = [...container.querySelectorAll("a.outlet")].find((a) =>
+      a.textContent?.includes("WhatsApp"),
+    ) as HTMLAnchorElement;
+    wa.addEventListener("click", (e) => e.preventDefault());
+    wa.click();
+    expect(telemetry.track).toHaveBeenCalledWith("share_channel", { game: "8K2QXM", channel: "whatsapp" });
   });
 
   it("WhatsApp 出口是 wa.me 链接，整句话都编码进去了", () => {

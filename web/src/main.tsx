@@ -4,6 +4,10 @@ import "./tokens.css";
 import "./styles.css";
 import { App } from "./App";
 import { registerServiceWorker } from "./push";
+import { installTelemetry } from "./telemetry";
+
+// 埋点和前端错误上报（#117）：先装上，渲染时出的错也能报上去。
+installTelemetry();
 
 render(<App />, document.getElementById("app")!);
 
