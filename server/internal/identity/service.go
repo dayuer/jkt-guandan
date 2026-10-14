@@ -83,6 +83,11 @@ type Service struct {
 	waLimiter     *ratelimit.Limiter // PUT/DELETE /api/me/wa：每用户每小时 10 次（#116）
 	codeLimiter   *ratelimit.Limiter // 凭码兑换：每 IP 每分钟 10 次（§12.3）
 	codeBudget    *codeFailureBudget
+	wxLimiter     *ratelimit.Limiter // POST /api/wx/login：每 IP 每分钟 20 次（#84）
+
+	// 小游戏登录（#84，wx.go）。wx 为 nil 时关闭。
+	wxAppID string
+	wx      WxExchanger
 }
 
 // NewService 建身份服务。dev 决定 cookie 策略（§10.3）。
@@ -99,6 +104,7 @@ func NewService(st *store.Store, clk clock.Clock, dev bool) *Service {
 		waLimiter:     ratelimit.New(10.0/60, 10, clk),
 		codeLimiter:   ratelimit.New(10, 10, clk),
 		codeBudget:    newCodeFailureBudget(clk),
+		wxLimiter:     ratelimit.New(20, 20, clk),
 	}
 }
 
@@ -149,9 +155,10 @@ func (s *Service) StillValid(ctx context.Context, userID, deviceID string) bool 
 	return err == nil && !banned
 }
 
-// FromRequest 用请求里的设备 cookie 认出身份；没有或无效时返回 nil。
+// FromRequest 用请求里的设备 cookie 认出身份；没有 cookie 时，/api/ 和 /ws 上也认小游戏的
+// Bearer 头（bearer.go）。没有或无效时返回 nil。
 func (s *Service) FromRequest(r *http.Request) *Identity {
-	token, ok := s.cookies.Read(r)
+	token, ok := s.credential(r)
 	if !ok {
 		return nil
 	}
@@ -493,32 +500,11 @@ func (s *Service) RedeemByCode(ctx context.Context, code, clientNet, userAgent s
 
 	var result Identity
 	err := s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		var (
-			rowid     int64
-			userID    string
-			issuedNet sql.NullString
-		)
-		// 只看有效的记录：用过的、过期的都不参与，也就挡不住后续的同号码。
-		err := tx.QueryRowContext(ctx, `
-			SELECT rowid, user_id, issued_net
-			  FROM claim_tokens
-			 WHERE code = ? AND used_at IS NULL AND expires_at > ?
-			 ORDER BY rowid DESC LIMIT 1`, code, now.Unix()).
-			Scan(&rowid, &userID, &issuedNet)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrClaimInvalid
-		}
+		rowid, userID, err := findLiveClaimByCode(ctx, tx, code, clientNet, now)
 		if err != nil {
 			return err
 		}
-
-		// 只能在签发时的同一个网络里兑换。
-		if issuedNet.Valid && issuedNet.String != "" && issuedNet.String != clientNet {
-			return ErrClaimInvalid
-		}
-
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE claim_tokens SET used_at = ? WHERE rowid = ?`, now.Unix(), rowid); err != nil {
+		if err := consumeClaimRow(ctx, tx, rowid, now); err != nil {
 			return err
 		}
 
@@ -541,6 +527,37 @@ func (s *Service) RedeemByCode(ctx context.Context, code, clientNet, userAgent s
 		return Identity{}, "", err
 	}
 	return result, deviceToken, nil
+}
+
+// findLiveClaimByCode 找出认领码对应的有效记录，并检查签发和兑换是不是同一个网络。不消耗。
+// 凭码兑换（RedeemByCode）和小游戏凭码关联（WxLink）共用它，防护完全一样。
+func findLiveClaimByCode(ctx context.Context, tx *store.Tx, code, clientNet string, now time.Time) (rowid int64, userID string, err error) {
+	var issuedNet sql.NullString
+	// 只看有效的记录：用过的、过期的都不参与，也就挡不住后续的同号码。
+	err = tx.QueryRowContext(ctx, `
+		SELECT rowid, user_id, issued_net
+		  FROM claim_tokens
+		 WHERE code = ? AND used_at IS NULL AND expires_at > ?
+		 ORDER BY rowid DESC LIMIT 1`, code, now.Unix()).
+		Scan(&rowid, &userID, &issuedNet)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", ErrClaimInvalid
+	}
+	if err != nil {
+		return 0, "", err
+	}
+
+	// 只能在签发时的同一个网络里兑换。
+	if issuedNet.Valid && issuedNet.String != "" && issuedNet.String != clientNet {
+		return 0, "", ErrClaimInvalid
+	}
+	return rowid, userID, nil
+}
+
+// consumeClaimRow 把 findLiveClaimByCode 找到的记录标成已用。
+func consumeClaimRow(ctx context.Context, tx *store.Tx, rowid int64, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `UPDATE claim_tokens SET used_at = ? WHERE rowid = ?`, now.Unix(), rowid)
+	return err
 }
 
 // loadDevice 读一台设备。

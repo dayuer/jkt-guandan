@@ -29,6 +29,10 @@ func Routes(svc *Service) []route.Route {
 		// 两种身份都能进来：有身份的人凭 token 兑换时会先拿到 409，确认后才切换。
 		// 「凭码兑换只给没有身份的设备用」是业务规则，在 handler 里判。
 		{Method: http.MethodPost, Pattern: "/api/claim/redeem", Access: route.Public, Handler: http.HandlerFunc(h.redeemClaim)},
+		// 小游戏（#84）：凭 wx.login 的 code 登录 / 凭认领码关联。不读 cookie（Anonymous），
+		// 身份只看微信 code；被封禁的用户在 service 里拦。device_token 在响应体里（§10.3 的唯一例外）。
+		{Method: http.MethodPost, Pattern: "/api/wx/login", Access: route.Anonymous, Handler: http.HandlerFunc(h.wxLogin)},
+		{Method: http.MethodPost, Pattern: "/api/wx/link", Access: route.Anonymous, Handler: http.HandlerFunc(h.wxLink)},
 	}
 }
 

@@ -90,6 +90,7 @@ func (s *Store) DeleteUserData(ctx context.Context, userID string) error {
 			`DELETE FROM push_subscriptions WHERE user_id = ?`,
 			`DELETE FROM devices WHERE user_id = ?`,
 			`DELETE FROM claim_tokens WHERE user_id = ?`,
+			`DELETE FROM user_links WHERE user_id = ?`,
 			`DELETE FROM follows WHERE user_id = ?1 OR target_id = ?1`,
 			`DELETE FROM invites WHERE user_id = ?1 OR invited_by = ?1`,
 			`DELETE FROM waitlist WHERE user_id = ?`,

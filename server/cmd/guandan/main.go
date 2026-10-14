@@ -141,9 +141,12 @@ func run() error {
 	hub := realtime.NewHub()
 	identitySvc := identity.NewService(st, clk, cfg.Dev)
 	identitySvc.SetPublisher(hubPublisher{hub})
+	setupWx(identitySvc, cfg)
 	wsHandler := realtime.Handler(realtime.Options{
 		Hub:         hub,
 		AllowOrigin: cfg.AllowsOrigin,
+		// 小游戏的 wx.connectSocket 不发 Origin，只带 Bearer（#84）：身份认得出来才放行。
+		BearerOnly: identitySvc.BearerOnly,
 		// 身份由 httpapi 的身份中间件放进 ctx（#41）。被 guandan admin ban 封禁的用户或设备握手 403
 		// （先查 Origin 和连接数，过了才识别身份，所以这条路由是 DeferIdentity）；连上之后被封禁的，下一次心跳断开（#43）。
 		Identify: realtimeIdentify,
@@ -343,6 +346,21 @@ func checkDataDir(dir string) error {
 		return fmt.Errorf("数据目录 %s 只剩 %d MB 空间，少于 500 MB", dir, free>>20)
 	}
 	return nil
+}
+
+// setupWx 接上小游戏登录（#84）：配了 GUANDAN_WX_APPID / GUANDAN_WX_SECRET 就调真实的 code2Session；
+// 没配时开发模式接受 dev:<openid> 的假 code（小游戏开发者工具连本机用），生产则关闭（503 wx_disabled）。
+func setupWx(svc *identity.Service, cfg config.Config) {
+	switch {
+	case cfg.WxEnabled():
+		svc.SetWx(cfg.WxAppID, identity.Code2Session{AppID: cfg.WxAppID, Secret: cfg.WxSecret})
+		slog.Info("小游戏登录已开启", "appid", cfg.WxAppID)
+	case cfg.Dev:
+		svc.SetWx(identity.DevWxAppID, identity.DevWxExchanger{})
+		slog.Info("开发模式：小游戏登录接受 dev:<openid> 形式的 code")
+	default:
+		slog.Info("没有配置 GUANDAN_WX_APPID / GUANDAN_WX_SECRET，小游戏登录关闭")
+	}
 }
 
 // setupLogging 见 §7：开发模式用文本日志，生产用 JSON 到 stdout。

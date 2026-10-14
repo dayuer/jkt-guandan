@@ -66,6 +66,8 @@ type Server struct {
 	sem    chan struct{}
 	build  string
 	stats  *metrics.HTTP
+	// ident 给 CSRF 校验判断「只带 Bearer、不带 cookie」的小游戏请求（#84）。可以为 nil。
+	ident *identity.Service
 	// mux 是注册好路由表的 ServeMux。前端兜底要用它判断 /api 下的路径是「不存在」（404）
 	// 还是「方法不对」（405）：兜底的 "/" 不限方法，ServeMux 自己永远不会回 405。
 	mux *http.ServeMux
@@ -92,6 +94,7 @@ func newServer(opts Options) *Server {
 		sem:    make(chan struct{}, maxConcurrentRequests),
 		build:  opts.Build,
 		stats:  opts.Metrics,
+		ident:  opts.Identity,
 	}
 }
 

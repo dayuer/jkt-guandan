@@ -86,6 +86,7 @@ func newFixtureWithHub(t *testing.T, dev bool, hub *realtime.Hub) *fixture {
 			Handler: realtime.Handler(realtime.Options{
 				Hub:         hub,
 				AllowOrigin: cfg.AllowsOrigin,
+				BearerOnly:  svc.BearerOnly,
 				Identify: func(r *http.Request) (realtime.Principal, error) {
 					userID, deviceID, err := identity.ForRealtime(r)
 					return realtime.Principal{UserID: userID, DeviceID: deviceID}, err

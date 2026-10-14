@@ -56,7 +56,15 @@ type Config struct {
 	// 读 GUANDAN_GROUP_WECHAT_ID、GUANDAN_GROUP_WHATSAPP_URL；都为空时前端不显示横幅。
 	GroupWeChatID    string
 	GroupWhatsAppURL string
+	// WxAppID、WxSecret 是小游戏登录（POST /api/wx/login，#84）调 code2Session 用的，读 GUANDAN_WX_APPID、
+	// GUANDAN_WX_SECRET。要么都设、要么都不设；都不设时小游戏登录关闭（503 wx_disabled），
+	// 开发模式下改为接受 dev:<openid> 形式的假 code。Secret 只放环境变量，不写日志。
+	WxAppID  string
+	WxSecret string
 }
+
+// WxEnabled 说明是否配置了真实的小游戏 AppID 和 AppSecret。
+func (c Config) WxEnabled() bool { return c.WxAppID != "" && c.WxSecret != "" }
 
 // Domains 把逗号分隔的域名拆开，去掉空项。
 func (c Config) Domains() []string {
@@ -132,6 +140,9 @@ func Load() (Config, error) {
 		GroupWeChatID:    strings.TrimSpace(os.Getenv("GUANDAN_GROUP_WECHAT_ID")),
 		GroupWhatsAppURL: strings.TrimSpace(os.Getenv("GUANDAN_GROUP_WHATSAPP_URL")),
 
+		WxAppID:  strings.TrimSpace(os.Getenv("GUANDAN_WX_APPID")),
+		WxSecret: strings.TrimSpace(os.Getenv("GUANDAN_WX_SECRET")),
+
 		BackupRegion:    env("AWS_REGION", "us-east-1"),
 		BackupAccessKey: strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")),
 		BackupSecretKey: strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")),
@@ -194,6 +205,10 @@ func Load() (Config, error) {
 		if u, err := url.Parse(c.GroupWhatsAppURL); err != nil || u.Scheme != "https" || u.Host == "" {
 			return Config{}, fmt.Errorf("GUANDAN_GROUP_WHATSAPP_URL=%q 必须是 https 地址", c.GroupWhatsAppURL)
 		}
+	}
+
+	if (c.WxAppID == "") != (c.WxSecret == "") {
+		return Config{}, fmt.Errorf("GUANDAN_WX_APPID 和 GUANDAN_WX_SECRET 要么都设置，要么都不设置")
 	}
 
 	if !dev && len(c.Domains()) > 0 && c.AdminEmail == "" {

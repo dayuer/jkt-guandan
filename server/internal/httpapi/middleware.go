@@ -110,8 +110,22 @@ func (s *Server) limitConcurrency(next http.Handler) http.Handler {
 	})
 }
 
+// wxCredentialFreeRoutes 是小游戏换凭证的两个接口（#84）：请求里没有任何凭证，小游戏也不发 Origin。
+var wxCredentialFreeRoutes = map[string]bool{"/api/wx/login": true, "/api/wx/link": true}
+
 // csrf 对会改数据的请求做 CSRF 校验（§10.5）：
 // 必须是 JSON，并且 Origin 等于本站的某个域名。cookie 本身的 SameSite=Lax 是第一道防线。
+//
+// 小游戏（#84）的两个例外，Content-Type 仍然必须是 JSON：
+//
+//   - 只带 `Authorization: Bearer`、不带设备 cookie 的请求不查 Origin。CSRF 靠的是浏览器替受害者自动附上 cookie；
+//     Authorization 头浏览器不会自动带，跨站页面要自己加这个头就得过 CORS 预检，而我们不对任何跨站来源放行。
+//     带着 cookie 的请求（哪怕同时有 Bearer）照常查 Origin：身份按 cookie 认，CSRF 风险也就和 H5 一样。
+//   - POST /api/wx/login、/api/wx/link 没有 Origin 时放行，有 Origin 但不是本站时拒绝。小游戏的 wx.request
+//     不发 Origin；而浏览器跨站发 POST 一定会带上 Origin（攻击者的页面去不掉它），所以「没有 Origin」只可能
+//     来自非浏览器客户端，它们本来就不受 CSRF 影响。再说这两个接口只认微信 code，不读 cookie、不写 cookie，
+//     token 在响应体里、跨站页面读不到，也就做不成「登录 CSRF」（把受害者的浏览器登成攻击者）。
+//     其他没有凭证的写接口（比如 H5 的 POST /api/me）照旧必须带本站 Origin。
 func (s *Server) csrf(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -124,7 +138,16 @@ func (s *Server) csrf(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "csrf", "会改数据的请求必须用 Content-Type: application/json")
 			return
 		}
-		if !s.cfg.AllowsOrigin(r.Header.Get("Origin")) {
+		origin := r.Header.Get("Origin")
+		if s.ident != nil && s.ident.BearerOnly(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if origin == "" && r.Method == http.MethodPost && wxCredentialFreeRoutes[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.cfg.AllowsOrigin(origin) {
 			writeError(w, http.StatusForbidden, "csrf", "请求来源不被接受")
 			return
 		}

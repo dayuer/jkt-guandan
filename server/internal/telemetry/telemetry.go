@@ -46,8 +46,8 @@ const (
 	errorEventName = "client_error"
 )
 
-// Envs 是允许的运行环境。
-var Envs = []string{"wechat", "whatsapp", "browser", "pwa"}
+// Envs 是允许的运行环境。minigame 是微信小游戏（#84）：用 Bearer 认身份，不带 Origin。
+var Envs = []string{"wechat", "whatsapp", "browser", "pwa", "minigame"}
 
 // channels 是 share_channel 允许的分享渠道。
 var channels = []string{"whatsapp", "wechat", "copy", "system", "poster"}

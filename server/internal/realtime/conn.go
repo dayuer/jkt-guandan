@@ -74,6 +74,11 @@ type Options struct {
 	Hub *Hub
 	// AllowOrigin 判断握手的 Origin 是不是本站（§5.5：防跨站 WebSocket 劫持）。
 	AllowOrigin func(origin string) bool
+	// BearerOnly 说明这次握手是不是只带 Bearer 头、不带 cookie（小游戏的 wx.connectSocket，#84）。
+	// 小游戏不发 Origin；跨站 WebSocket 劫持靠的是浏览器自动带 cookie，而 Bearer 头跨站页面加不上，
+	// 所以这种握手可以没有 Origin——但身份必须认得出来，认不出就和其他缺 Origin 的握手一样 403。
+	// 有 Origin 时照常检查。为 nil 时缺 Origin 一律拒绝。
+	BearerOnly func(r *http.Request) bool
 	// Identify 从请求（cookie）里认出用户和设备；没有身份返回零值。返回错误时拒绝握手（403），
 	// 比如设备被封禁。
 	Identify func(r *http.Request) (Principal, error)
@@ -106,7 +111,10 @@ type handler struct {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.opts.AllowOrigin == nil || !h.opts.AllowOrigin(r.Header.Get("Origin")) {
+	origin := r.Header.Get("Origin")
+	// 没有 Origin、只带 Bearer：先放过这一关（只看头，不查库），识别身份之后再要求必须认出来。
+	bearerNoOrigin := origin == "" && h.opts.BearerOnly != nil && h.opts.BearerOnly(r)
+	if !bearerNoOrigin && (h.opts.AllowOrigin == nil || !h.opts.AllowOrigin(origin)) {
 		http.Error(w, "origin not allowed", http.StatusForbidden)
 		return
 	}
@@ -137,6 +145,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		who = p
+	}
+	if bearerNoOrigin && who.UserID == "" {
+		// Bearer 无效（或者没接 Identify）：没有身份可以替代 Origin 检查。
+		http.Error(w, "origin not allowed", http.StatusForbidden)
+		return
 	}
 
 	// http.Server 的 ReadTimeout、WriteTimeout 会在连接上留下截止时间，接管之后要清掉，

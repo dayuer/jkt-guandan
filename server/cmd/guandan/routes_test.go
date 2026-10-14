@@ -75,7 +75,7 @@ func newApp(t *testing.T) *app {
 		Routes: appRoutes(appDeps{
 			identity: identitySvc, games: gamesSvc, notify: notifySvc, friends: friends.NewService(st, clk),
 			ws: realtime.Handler(realtime.Options{
-				Hub: hub, AllowOrigin: cfg.AllowsOrigin, Identify: realtimeIdentify,
+				Hub: hub, AllowOrigin: cfg.AllowsOrigin, BearerOnly: identitySvc.BearerOnly, Identify: realtimeIdentify,
 				Revalidate: func(ctx context.Context, p realtime.Principal) bool {
 					return identitySvc.StillValid(ctx, p.UserID, p.DeviceID)
 				},
@@ -109,6 +109,8 @@ func TestRouteTable(t *testing.T) {
 		{"DELETE /api/me/wa", "user", "identity.(*handler).deleteWA"},
 		{"POST /api/claim", "user", "identity.(*handler).issueClaim"},
 		{"POST /api/claim/redeem", "public", "identity.(*handler).redeemClaim"},
+		{"POST /api/wx/login", "anonymous", "identity.(*handler).wxLogin"},
+		{"POST /api/wx/link", "anonymous", "identity.(*handler).wxLink"},
 		{"GET /api/games", "public", "games.(*handler).list"},
 		{"GET /api/games/{code}", "public", "games.(*handler).detail"},
 		{"POST /api/games", "user", "games.(*handler).create"},
@@ -197,8 +199,8 @@ func TestAuthorizationMatrix(t *testing.T) {
 				}
 
 				status, errCode, raw := a.probe(client, rt, code)
-				// 5xx 不算放行：授权之外的地方坏了，矩阵也该发现（没配 key 的蛋蛋是预期的 503）。
-				if status >= 500 && errCode != "agent_disabled" {
+				// 5xx 不算放行：授权之外的地方坏了，矩阵也该发现（没配 key 的蛋蛋、没配 AppID 的小游戏登录是预期的 503）。
+				if status >= 500 && errCode != "agent_disabled" && errCode != "wx_disabled" {
 					t.Fatalf("意外的 %d：%s", status, raw)
 				}
 				want := "pass"
@@ -311,6 +313,10 @@ func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string, s
 		body = map[string]string{"nickname": "新名字"}
 	case "POST /api/claim/redeem":
 		body = map[string]string{"token": "not-a-real-token"}
+	case "POST /api/wx/login":
+		body = map[string]string{"code": "dev:someone"}
+	case "POST /api/wx/link":
+		body = map[string]string{"code": "123456", "wx_code": "dev:someone"}
 	case "POST /api/games":
 		body = a.gameBody()
 	case "PATCH /api/games/{code}":
