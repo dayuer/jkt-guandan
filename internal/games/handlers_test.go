@@ -100,6 +100,13 @@ func (r resp) gameField(key string) any {
 	return g[key]
 }
 
+// errField 取错误里的 field（422 sensitive_word 用它告诉前端是哪个输入框）。
+func (r resp) errField() string {
+	e, _ := r.body["error"].(map[string]any)
+	f, _ := e["field"].(string)
+	return f
+}
+
 func (r resp) errCode() string {
 	e, _ := r.body["error"].(map[string]any)
 	c, _ := e["code"].(string)
@@ -528,6 +535,9 @@ func TestCreateAcceptsNormalContent(t *testing.T) {
 		// #130 之后汉字算词边界，但含敏感词子串的正常拉丁词紧贴汉字时仍然放行。
 		{"starts_at": f.clk.Now().Add(2 * time.Hour).Unix(), "area": "Kemang",
 			"venue": "Betawi菜馆", "kind": "classic", "note": "alphabet街口集合，带上chipset笔记本也行"},
+		// chips 是薯片，不拦（#130）。
+		{"starts_at": f.clk.Now().Add(2 * time.Hour).Unix(), "area": "PIK",
+			"venue": "PIK Avenue", "kind": "classic", "note": "买点chips边吃边打"},
 	} {
 		r := f.do(f.http, http.MethodPost, "/api/games", body, nil)
 		if r.status != http.StatusOK {
@@ -544,22 +554,22 @@ func TestPatchRejectsSensitiveWords(t *testing.T) {
 
 	r := f.do(f.http, http.MethodPatch, "/api/games/"+code,
 		map[string]string{"note": "赢钱请宵夜"}, map[string]string{"If-Match": "1"})
-	if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" {
-		t.Fatalf("改备注应当 422 sensitive_word，实际 %d %s", r.status, r.raw)
+	if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" || r.errField() != "note" {
+		t.Fatalf("改备注应当 422 sensitive_word、field=note，实际 %d %s", r.status, r.raw)
 	}
 
 	r = f.do(f.http, http.MethodPatch, "/api/games/"+code,
 		map[string]string{"venue": "筹码酒吧"}, map[string]string{"If-Match": "1"})
-	if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" {
-		t.Fatalf("改地点应当 422 sensitive_word，实际 %d %s", r.status, r.raw)
+	if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" || r.errField() != "venue" {
+		t.Fatalf("改地点应当 422 sensitive_word、field=venue，实际 %d %s", r.status, r.raw)
 	}
 
 	// #130：改的时候拉丁词紧贴汉字也拦得住。
 	for field, text := range map[string]string{"note": "带点taruhan", "venue": "测试judi馆"} {
 		r = f.do(f.http, http.MethodPatch, "/api/games/"+code,
 			map[string]string{field: text}, map[string]string{"If-Match": "1"})
-		if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" {
-			t.Fatalf("改 %s 为 %q 应当 422 sensitive_word，实际 %d %s", field, text, r.status, r.raw)
+		if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" || r.errField() != field {
+			t.Fatalf("改 %s 为 %q 应当 422 sensitive_word、field=%s，实际 %d %s", field, text, field, r.status, r.raw)
 		}
 	}
 

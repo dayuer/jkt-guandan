@@ -23,7 +23,6 @@ func TestCheckBlocksGamblingAndMoney(t *testing.T) {
 		{"印尼语", "judi online santai", "judi"},
 		{"马来语", "taruhan kecil aja", "taruhan"},
 		{"英语整词", "small bet ok?", "bet"},
-		{"英语 chips", "bring chips", "chips"},
 
 		// 繁体输入法（雅加达华人里不少）：同一个词换个字形不能就绕过去。
 		{"繁体钱", "一把50塊錢，輸了請宵夜", "钱"},
@@ -62,6 +61,9 @@ func TestCheckBlocksGamblingAndMoney(t *testing.T) {
 		{"Tibet", "Tibet 餐厅", ""},
 		{"judicial", "judicial review 之后再约", ""},
 		{"chipset", "聊chipset的局", ""},
+		// chips 不在词表里：英语里也是「薯片」（#130）。中文「筹码」照样拦（见上面）。
+		{"薯片", "买点chips", ""},
+		{"薯片带空格", "bring chips and drinks", ""},
 		{"gambles 之外的 gambit", "开局gambit教学", ""},
 		{"wagering 之外的 swagger", "swagger 风格", ""},
 		{"数字紧贴", "bet365", ""},
