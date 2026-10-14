@@ -106,7 +106,7 @@ export function JoinedSheet({ detail, meID, toast, onCalendar, onGuide, onClose 
   return (
     <>
       <div class="scrim" onClick={onClose} />
-      <div class="sheet joined" role="dialog" aria-modal="true" aria-label={full ? "成局了" : "占上了"}>
+      <div class="sheet joined" role="dialog" aria-modal="true" data-testid="joined-sheet" aria-label={full ? "成局了" : "占上了"}>
         <div class="grab" />
         <div class="check" aria-hidden="true">
           ✓
