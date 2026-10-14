@@ -70,33 +70,35 @@ func waitViewers(t *testing.T, c *websocket.Conn, topic string, want int) {
 }
 
 // #46：按设备计数，同一设备多个标签页算一个；没有身份的连接每条算一个。
+// 用假时钟推进防抖（#74）：每一步先等 Hub 里的人数到位，再推进一个间隔，读到的就是这一步的结果。
 func TestPresenceCountsDistinctDevices(t *testing.T) {
 	e := newEnv(t, 0, 0)
-	e.hub.SetPresenceInterval(20 * time.Millisecond)
+	clk := clock.NewFake(time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC))
+	e.hub.SetClock(clk)
+	const every = 2 * time.Second
+	e.hub.SetPresenceInterval(every)
 	const topic = "game:8K2"
+	settle := func(want int) {
+		t.Helper()
+		eventually(t, fmt.Sprintf("人数到 %d", want), func() bool { return e.hub.Viewers(topic) == want })
+		clk.Advance(every)
+	}
 
 	tab1 := e.dialAs(t, "d1")
 	if n := subscribeGame(t, tab1, topic); n != 1 {
 		t.Fatalf("第一条应是 1，实际 %d", n)
 	}
 
-	// 同一设备的第二个标签页：人数不变，不广播，但它自己订阅后马上收到当前人数。
+	// 同一设备的第二个标签页：人数不变，不广播给别人；它自己在下一次 flush 时收到当前人数。
+	// 时钟不走就只有回执，推进一个间隔后才是人数，顺序是确定的。
 	tab2 := e.dialAs(t, "d1")
 	send(t, tab2, map[string]any{"op": "sub", "topics": []string{topic}})
-	gotAck, gotViewers := false, false
-	for !gotAck || !gotViewers {
-		m := readAny(t, tab2)
-		switch {
-		case m["type"] == "subscribed" && !gotAck:
-			gotAck = true
-		case m["type"] == realtime.EventPresence && !gotViewers && m["data"].(map[string]any)["viewers"] == float64(1):
-			gotViewers = true
-		default:
-			t.Fatalf("订阅后应只收到回执和一条当前人数 1：%v", m)
-		}
+	if m := readAny(t, tab2); m["type"] != "subscribed" {
+		t.Fatalf("时钟没走，应先只有回执：%v", m)
 	}
-	if n := e.hub.Viewers(topic); n != 1 {
-		t.Fatalf("同一设备两个标签页应算 1 人，实际 %d", n)
+	settle(1)
+	if m := readAny(t, tab2); m["type"] != realtime.EventPresence || m["data"].(map[string]any)["viewers"] != float64(1) {
+		t.Fatalf("新标签页应收到当前人数 1：%v", m)
 	}
 
 	other := e.dialAs(t, "d2")
@@ -104,16 +106,18 @@ func TestPresenceCountsDistinctDevices(t *testing.T) {
 	anon1, anon2 := e.dialAs(t, ""), e.dialAs(t, "")
 	subscribe(t, anon1, topic)
 	subscribe(t, anon2, topic)
+	settle(4)
 	waitViewers(t, tab1, topic, 4) // d1、d2、两条匿名连接
 
 	// 关掉一个标签页不算少一人；关掉另一台设备才少。
 	_ = tab2.Close(websocket.StatusNormalClosure, "")
 	_ = other.Close(websocket.StatusNormalClosure, "")
+	settle(3)
 	waitViewers(t, tab1, topic, 3)
-	eventually(t, "人数降到 3", func() bool { return e.hub.Viewers(topic) == 3 })
 
 	// 退订也算离开。
 	send(t, anon1, map[string]any{"op": "unsub", "topics": []string{topic}})
+	settle(2)
 	waitViewers(t, tab1, topic, 2)
 }
 
