@@ -1573,6 +1573,8 @@ a.btn {
 
 .prefill-note .problem {
   color: var(--red);
+  margin-top: var(--s1);
+}
 
 /* 11 · 报名成功弹层（设计稿 B4 / B5 / B6） */
 .sheet.joined h3 {
