@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import type { GameDetail } from "../api";
 import { dayShort, slashDate, timeHM, weekday } from "../format";
-import { hasPushSubscription, notificationPermission, pushSupport, subscribeToPush, type PushSupport } from "../push";
+import { hasPushSubscription, notificationPermission, pushSupport, subscribeToPush, type InAppBrowser, type PushSupport } from "../push";
 import { shareURL, whatsappURL } from "../share";
 import { initial } from "./Table";
 
@@ -12,8 +12,8 @@ interface Props {
   /** 「加到日历」：交给日历弹层（#6）。 */
   onCalendar: () => void;
   /**
-   * 微信 / WhatsApp 内置浏览器、iOS Safari 标签页里点「提醒我」：先出引导屏（#70 的 PushGuide）。
-   * 不给的话退回 B5 的样子，提示换个方式。
+   * 内置浏览器（微信、WhatsApp……）、iOS Safari 标签页里点「提醒我」：先出引导屏（#70 的 PushGuide）。
+   * 和 `needsPushGuide()` 的判断一致。不给的话退回 B5 的样子，提示换个方式。
    */
   onGuide?: () => void;
   onClose: () => void;
@@ -42,7 +42,7 @@ function initialMode(support: PushSupport): Mode {
 function guideHint(support: PushSupport): string {
   if (support.kind === "in-app-browser") {
     // 只点名认得准的两个；Instagram / Facebook / LINE 这些（#70）统一说「聊天软件」，别叫错名字。
-    const name: Record<string, string> = { wechat: "微信", whatsapp: "WhatsApp" };
+    const name: Partial<Record<InAppBrowser, string>> = { wechat: "微信", whatsapp: "WhatsApp" };
     return `${name[support.app] ?? "聊天软件"}里收不到网页提醒，换个方式`;
   }
   return "iPhone 要先加到主屏幕才收得到提醒，先换个方式";

@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { CalendarSheet } from "../components/CalendarSheet";
 import { JoinedSheet } from "../components/JoinedSheet";
+import { PushGuide } from "../components/PushGuide";
 import { ShareSheet } from "../components/ShareSheet";
 import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
@@ -70,6 +71,8 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   const [calendar, setCalendar] = useState(false);
   /** 刚报上名：报名成功弹层，问要不要提醒（B4–B6，#10）。 */
   const [joinedOpen, setJoinedOpen] = useState(false);
+  /** 「提醒我」在收不到推送的环境里点下去：跳出 / 加主屏幕引导屏（H1 / H2，#70）。 */
+  const [guide, setGuide] = useState(false);
   const retrying = useRetrying();
   // 操作栏在窄屏上会换行（局头有四颗按钮），高度要量出来（#75）。
   const actionBar = useBarHeight<HTMLDivElement>();
@@ -396,7 +399,21 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
             setJoinedOpen(false);
             setCalendar(true);
           }}
+          onGuide={() => setGuide(true)}
           onClose={() => setJoinedOpen(false)}
+        />
+      )}
+
+      {/* 微信 / WhatsApp 等内置浏览器 → H1，iOS Safari 标签页 → H2，盖在报名成功弹层上（#70）。 */}
+      {guide && (
+        <PushGuide
+          signedIn={!!me}
+          onCalendar={() => {
+            setGuide(false);
+            setJoinedOpen(false);
+            setCalendar(true);
+          }}
+          onClose={() => setGuide(false)}
         />
       )}
 

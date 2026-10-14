@@ -253,4 +253,29 @@ describe("加入日历", () => {
     await vi.waitFor(() => expect(container.querySelector("[data-testid=calendar-sheet]")).not.toBeNull());
     expect(container.querySelector(".sheet.joined")).toBeNull();
   });
+
+  it("微信里报上名、点「提醒我」：盖上 H1 跳出引导，不去要推送权限（#10b 接 #70）", async () => {
+    const WECHAT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148 MicroMessenger/8.0.49";
+    vi.stubGlobal("navigator", { userAgent: WECHAT, maxTouchPoints: 5 });
+    const requestPermission = vi.fn();
+    vi.stubGlobal("Notification", { requestPermission, permission: "default" });
+    const before = { ...detail(1), me: { role: "none" as const } };
+    const after = { ...detail(2), me: { role: "seat" as const, seat_no: 2 } };
+    const claim = respond(200, { claim_token: "tok", code: "123456", expires_at: 0 });
+    const { container } = setup(before, [respond(200, after), claim]);
+    await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+
+    ([...container.querySelectorAll(".actionbar button")].find((b) =>
+      b.textContent?.includes("报名占座"),
+    ) as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(container.querySelector("[data-testid=joined-sheet]")).not.toBeNull());
+
+    ([...container.querySelectorAll("[data-testid=joined-sheet] button")].find((b) =>
+      b.textContent?.includes("提醒我"),
+    ) as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(container.querySelector("[data-testid=guide-jumpout]")).not.toBeNull());
+    expect(requestPermission).not.toHaveBeenCalled();
+    // 引导屏盖在报名成功弹层上，关掉引导还回到弹层。
+    expect(container.querySelector("[data-testid=joined-sheet]")).not.toBeNull();
+  });
 });

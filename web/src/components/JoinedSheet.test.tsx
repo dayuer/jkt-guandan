@@ -167,7 +167,7 @@ describe("报名成功弹层（B4–B6）", () => {
     expect(container.textContent).toContain("微信里收不到网页提醒");
 
     document.body.innerHTML = "";
-    push.support = { kind: "in-app-browser", app: "instagram" } as unknown as PushSupport;
+    push.support = { kind: "in-app-browser", app: "instagram" };
     const other = mount(detail(3)).container;
     click(other, "提醒我");
     await flush();
