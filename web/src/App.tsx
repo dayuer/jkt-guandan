@@ -7,6 +7,7 @@ import { shouldWelcome } from "./guide";
 import { clearIdentityMarker, redeemClaimFromURL } from "./identity";
 import { agentDisabled } from "./agent";
 import { Agent, type FormPrefill } from "./pages/Agent";
+import { ComingSoon } from "./pages/ComingSoon";
 import { CreateGame } from "./pages/CreateGame";
 import { Detail } from "./pages/Detail";
 import { Devices } from "./pages/Devices";
@@ -22,6 +23,8 @@ type Route =
   | { name: "new" }
   | { name: "agent" }
   | { name: "me" }
+  | { name: "learn" }
+  | { name: "friends" }
   | { name: "devices" }
   | { name: "privacy" };
 
@@ -32,6 +35,8 @@ function parseRoute(): Route {
   if (path === "/new") return { name: "new" };
   if (path === "/agent") return { name: "agent" };
   if (path === "/me") return { name: "me" };
+  if (path === "/learn") return { name: "learn" };
+  if (path === "/friends") return { name: "friends" };
   if (path === "/me/devices") return { name: "devices" };
   // 隐私说明不要求登录：还没有填称呼的人也应当能看到（§14）。
   if (path === "/privacy") return { name: "privacy" };
@@ -41,8 +46,10 @@ function parseRoute(): Route {
 /** 哪些路由是 tab 级页面、各自对应哪个 tab（#107）。 */
 const TAB_FOR_ROUTE: Record<string, TabKey> = {
   home: "games",
+  learn: "learn", // 学牌（#106）—— 现在是个占位页
+  friends: "friends", // 牌友（#108）—— 同上
+  agent: "create", // 约局：蛋蛋那一页
   me: "me",
-  // 学牌（#106）、牌友（#108）落地后加进来，TabBar 里已经画好了。
 };
 
 type Claim =
@@ -252,6 +259,10 @@ export function App() {
             navigate("/me");
           }}
         />
+      ) : route.name === "learn" ? (
+        <ComingSoon title="学牌" note="掼蛋的规则、记牌和常见牌型，做成能翻的卡片。" />
+      ) : route.name === "friends" ? (
+        <ComingSoon title="牌友" note="常一起打的人，约起来更快。" />
       ) : route.name === "privacy" ? (
         <Privacy
           hasIdentity={!!me}
@@ -293,9 +304,11 @@ export function App() {
                 setPrefill(null);
                 navigate(agentDisabled() ? "/new" : "/agent");
                 return;
-              default:
-                // 学牌（#106）、牌友（#108）还没做，先如实说一句。
-                toast(`「${tab === "learn" ? "学牌" : "牌友"}」还在做`);
+              case "learn":
+                navigate("/learn");
+                return;
+              case "friends":
+                navigate("/friends");
                 return;
             }
           }}

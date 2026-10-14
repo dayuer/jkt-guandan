@@ -1,4 +1,4 @@
-import { useBarHeight } from "../useBarHeight";
+import { useTabBarHeight } from "../useBarHeight";
 
 /**
  * 底部 Tab 栏（设计稿 A2）。
@@ -25,8 +25,8 @@ interface Props {
 }
 
 export function TabBar({ active, onTab }: Props) {
-  // 让 toast 知道底栏有多高（Tab 栏高度固定 76px，但它也得报一次数）。
-  const bar = useBarHeight<HTMLElement>();
+  // 报自己的高度（`--tabbar-height`）：页面据此留白，toast 也据此让开。
+  const bar = useTabBarHeight<HTMLElement>();
 
   return (
     <nav class="tabbar" ref={bar}>

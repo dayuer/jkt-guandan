@@ -3,6 +3,21 @@ import { useCallback, useEffect, useRef } from "preact/hooks";
 /** toast 和底栏之间留的空隙。 */
 export const TOAST_GAP = 20;
 
+/** 页面自己的底栏（操作栏 / 蛋蛋输入框）：占 `--bar-height`，并且决定 toast 抬多高。 */
+export function useBarHeight<T extends HTMLElement = HTMLElement>() {
+  return useMeasured<T>("--bar-height", true);
+}
+
+/**
+ * Tab 栏：只报自己的高度（`--tabbar-height`）。
+ *
+ * 它不碰 toast 的抬升——蛋蛋那一页同时有输入框和 Tab 栏，toast 要同时让开两条；
+ * 让 toast 自己把 `--toast-lift` 和 `--tabbar-height` 加起来更清楚。
+ */
+export function useTabBarHeight<T extends HTMLElement = HTMLElement>() {
+  return useMeasured<T>("--tabbar-height", false);
+}
+
 /**
  * 量出底部固定条的真实高度，写到 `<html>` 的 `--bar-height` 上（#75）。
  *
@@ -22,7 +37,7 @@ export const TOAST_GAP = 20;
  * 「正在打开…」那一支，操作栏根本不在树上（对象 ref 的 `current` 会是 null，
  * 而 effect 只在挂载时跑一次，之后元素才出现——量不到）。
  */
-export function useBarHeight<T extends HTMLElement = HTMLElement>() {
+function useMeasured<T extends HTMLElement>(varName: string, liftToast: boolean) {
   const stop = useRef<() => void>(() => {});
 
   const attach = useCallback((el: T | null) => {
@@ -35,8 +50,11 @@ export function useBarHeight<T extends HTMLElement = HTMLElement>() {
       const height = Math.round(el.getBoundingClientRect().height);
       // 还没排版（0）时不动它，免得把 CSS 里的兜底值冲掉。
       if (height > 0) {
-        document.documentElement.style.setProperty("--bar-height", `${height}px`);
-        document.documentElement.style.setProperty("--toast-lift", `${height + TOAST_GAP}px`);
+        document.documentElement.style.setProperty(varName, `${height}px`);
+        // 页面自己的底栏顺带决定 toast 抬多高；Tab 栏不参与（见 useTabBarHeight）。
+        if (liftToast) {
+          document.documentElement.style.setProperty("--toast-lift", `${height + TOAST_GAP}px`);
+        }
       }
     };
 
@@ -44,7 +62,10 @@ export function useBarHeight<T extends HTMLElement = HTMLElement>() {
 
     // 卸载时把 toast 的抬升还给兜底值：这个页面已经没有底栏了（新页面的底栏
     // 紧接着会自己写一次，所以不会互相打架）。
-    const release = () => document.documentElement.style.removeProperty("--toast-lift");
+    const release = () => {
+      document.documentElement.style.removeProperty(varName);
+      if (liftToast) document.documentElement.style.removeProperty("--toast-lift");
+    };
 
     if (typeof ResizeObserver === "undefined") {
       // 老浏览器：没有 observer，至少跟着窗口变化重量一次。

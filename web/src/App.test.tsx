@@ -252,4 +252,39 @@ afterEach(() => {
     await vi.waitFor(() => expect(container.textContent).toContain("开一局"));
     expect(container.querySelector(".tabbar")).toBeNull();
   });
+
+  // 每个 tab 级页面都要有底部 Tab（#107，P0：用户截图说「每个 tab 的底部导航都要有」）。
+  for (const [path, active] of [
+    ["/", "牌局"],
+    ["/learn", "学牌"],
+    ["/friends", "牌友"],
+    ["/agent", "约局"],
+    ["/me", "我的"],
+  ] as const) {
+    it(`${path} 有 Tab 栏，高亮的是「${active}」`, async () => {
+      visit(path);
+      stubFetch((url) => {
+        if (url.startsWith("/api/me")) return respond(401, { error: { code: "unauthorized", message: "" } });
+        if (url.startsWith("/api/games")) return respond(200, { games: [] });
+        if (url.startsWith("/api/agent")) return respond(200, { messages: [], said: "", problem: "", draft: null });
+        return respond(404, { error: { code: "not_found", message: "" } });
+      });
+
+      const container = renderApp();
+      await vi.waitFor(() => expect(container.querySelector(".tabbar")).not.toBeNull());
+      expect(container.querySelector(".tab.on")?.textContent).toContain(active);
+    });
+  }
+
+  // 二级页面（详情、隐私、设备）不挂 Tab 栏，但必须有返回键——iOS 主屏幕上没有浏览器
+  // 返回键，这两条少哪一条都会把人困住。
+  it("二级页面没有 Tab 栏，但有返回键", async () => {
+    visit("/privacy");
+    stubFetch(anonymous);
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.textContent).toContain("我们存了什么"));
+
+    expect(container.querySelector(".tabbar")).toBeNull();
+    expect(container.querySelector('button[aria-label="返回"]')).not.toBeNull();
+  });
 });

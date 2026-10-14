@@ -18,6 +18,7 @@ const buttonFor = (container: HTMLElement, label: string) =>
 afterEach(() => {
   document.body.innerHTML = "";
   document.documentElement.style.removeProperty("--toast-lift");
+  document.documentElement.style.removeProperty("--tabbar-height");
   vi.restoreAllMocks();
 });
 
@@ -44,13 +45,30 @@ describe("TabBar", () => {
     expect(tabs).toEqual(["learn", "create", "friends", "me", "games"]);
   });
 
-  it("它得让 toast 知道底栏有多高（--toast-lift）", async () => {
+  it("报自己的高度（--tabbar-height），页面据此留白", async () => {
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
       (() => ({ height: 76, width: 375, top: 0, left: 0, right: 375, bottom: 76, x: 0, y: 0, toJSON: () => ({}) })) as unknown as () => DOMRect,
     );
     setup("games");
     await vi.waitFor(() =>
-      expect(document.documentElement.style.getPropertyValue("--toast-lift")).toBe("96px"),
+      expect(document.documentElement.style.getPropertyValue("--tabbar-height")).toBe("76px"),
+    );
+    // toast 的抬升由页面自己的底栏（操作栏 / 蛋蛋输入框）报，Tab 栏不掺和——
+    // 蛋蛋那一页两条底栏都要让开，加法写在 CSS 里更清楚。
+    expect(document.documentElement.style.getPropertyValue("--toast-lift")).toBe("");
+  });
+
+  it("卸载时把高度还回去，别让下一个页面顶着一个旧值", async () => {
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      (() => ({ height: 76, width: 375, top: 0, left: 0, right: 375, bottom: 76, x: 0, y: 0, toJSON: () => ({}) })) as unknown as () => DOMRect,
+    );
+    const { container } = setup("games");
+    await vi.waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--tabbar-height")).toBe("76px"),
+    );
+    render(null, container);
+    await vi.waitFor(() =>
+      expect(document.documentElement.style.getPropertyValue("--tabbar-height")).toBe(""),
     );
   });
 });
