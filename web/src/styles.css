@@ -1217,3 +1217,226 @@ a.btn {
   color: var(--ink-3);
   font-weight: 400;
 }
+
+/* 07 · 约局 · 蛋蛋（设计稿 D1 / D3，#11） */
+.body.agent-page {
+  --bar-height: 76px; /* .composer：48 的输入框 + 上下内边距 */
+  padding-bottom: calc(var(--bar-height) + var(--s4) + env(safe-area-inset-bottom, 0px));
+}
+
+.agent-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) 18px var(--s3);
+  border-bottom: 1px solid var(--line);
+}
+
+.agent-avatar {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--red);
+  color: var(--cream);
+  font-size: var(--fs-h2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-avatar.small {
+  width: 28px;
+  height: 28px;
+  font-size: var(--fs-small);
+}
+
+.agent-name {
+  font-size: var(--fs-h2);
+}
+
+.agent-sub {
+  font-size: var(--fs-13);
+  color: var(--ink-3);
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s3) 18px 0;
+}
+
+.chat-day {
+  text-align: center;
+  font-size: var(--fs-small);
+  color: var(--ink-3);
+}
+
+.chat-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s2);
+}
+
+.bubble {
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: var(--r-16);
+  background: var(--card);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: var(--fs-15);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.bubble.me {
+  align-self: flex-end;
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--cream);
+}
+
+.btn.agent-fallback {
+  align-self: flex-start;
+  width: auto;
+  height: 44px;
+  margin-left: 36px; /* 和气泡对齐：28 的头像 + 8 的间距 */
+  padding: 0 var(--s5);
+  font-size: var(--fs-15);
+}
+
+.confirm-card {
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  padding: var(--s4);
+  box-shadow: var(--sh-card);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.confirm-tag {
+  color: var(--red);
+  font-size: var(--fs-13);
+  font-weight: 700;
+}
+
+.confirm-tag::before {
+  content: "● ";
+}
+
+.confirm-card h3 {
+  font-size: var(--fs-h2);
+}
+
+.confirm-rows {
+  background: var(--cream);
+  border-radius: var(--r-md);
+  padding: var(--s1) var(--s4);
+}
+
+.confirm-rows > div {
+  display: flex;
+  gap: var(--s4);
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.confirm-rows > div:last-child {
+  border-bottom: none;
+}
+
+.confirm-rows dt {
+  flex: none;
+  width: 3em;
+  color: var(--ink-3);
+  font-size: var(--fs-13);
+}
+
+.confirm-rows dd {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: var(--fs-15);
+  overflow-wrap: anywhere;
+}
+
+.confirm-alt {
+  display: flex;
+  gap: var(--s3);
+}
+
+.confirm-foot {
+  font-size: var(--fs-small);
+  color: var(--ink-3);
+}
+
+.confirm-card .error {
+  margin: 0;
+}
+
+.composer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: 480px;
+  margin: 0 auto;
+  display: flex;
+  gap: var(--s2);
+  padding: 14px 18px calc(14px + env(safe-area-inset-bottom, 0px));
+  background: var(--paper);
+  border-top: 1px solid var(--line);
+  z-index: 10;
+}
+
+.composer input {
+  flex: 1;
+  min-width: 0;
+  height: 48px;
+  padding: 0 var(--s4);
+  border-radius: var(--r-pill);
+  border: 1.5px solid var(--line-2);
+  background: var(--card);
+  color: var(--ink);
+  font-size: var(--fs-15);
+}
+
+.composer input:focus {
+  outline: none;
+  border-color: var(--red);
+  box-shadow: var(--sh-focus);
+}
+
+.composer .send {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--red);
+  color: var(--cream);
+  font-size: var(--fs-h2);
+  font-weight: 700;
+}
+
+.composer .send[disabled] {
+  background: var(--khaki);
+}
+
+/* 08 表单顶部：从蛋蛋退回来时，提一下用户刚才说的话和缺什么 */
+.prefill-note {
+  margin: 0 18px var(--s3);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r-md);
+  background: var(--red-tint);
+  font-size: var(--fs-13);
+  color: var(--ink-2);
+}
+
+.prefill-note .problem {
+  color: var(--red);
+  margin-top: var(--s1);
+}
