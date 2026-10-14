@@ -1,0 +1,858 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>随时掼掼蛋 · 小游戏适配稿（#142）</title>
+<style>
+/* 浏览页本身的样式，不属于产品。产品画面全部画在 <canvas> 里，和小游戏一样只用 Canvas 2D。 */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #e9e2d6; color: #2a1c17; font-family: "PingFang SC", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+.head { padding: 40px 48px 8px; max-width: 1100px; }
+.head h1 { font-size: 30px; font-weight: 900; color: #b3352c; }
+.head p { color: #5c4a3a; font-size: 14px; margin-top: 8px; line-height: 1.7; }
+.head label { font-size: 13px; color: #5c4a3a; margin-right: 18px; }
+.group { padding: 28px 48px 8px; }
+.group > h2 { font-size: 20px; }
+.row { display: flex; flex-wrap: wrap; gap: 28px; margin-top: 16px; align-items: flex-start; }
+figure { cursor: zoom-in; }
+figure canvas { display: block; border-radius: 14px; box-shadow: 0 18px 36px -22px rgba(42,28,23,.5); background: #f6efe4; }
+figure.phone canvas { width: 292px; height: 633px; }
+figure.card canvas { height: 300px; width: auto; }
+figure.wide canvas { width: 600px; }
+figcaption { margin-top: 10px; font-size: 13px; line-height: 1.5; max-width: 292px; }
+figure.card figcaption { max-width: 375px; }
+figure.wide figcaption { max-width: 600px; }
+figcaption b { margin-right: 6px; }
+figcaption span { display: block; color: #7a6a5c; font-size: 12px; }
+/* #编号：只显示这一屏，按 100% 大小，给 headless Chrome 截图用 */
+body.solo { background: #f6efe4; }
+body.solo .head, body.solo figcaption, body.solo .group > h2 { display: none; }
+body.solo .group { padding: 0; }
+body.solo .row { margin: 0; gap: 0; }
+body.solo figure { display: none; }
+body.solo figure.on { display: block; }
+body.solo figure canvas { border-radius: 0; box-shadow: none; }
+</style>
+</head>
+<body>
+<div class="head">
+  <h1>小游戏适配稿 · #142</h1>
+  <p>原生 Canvas 版约局和 H5 设计稿不同的地方：右上角胶囊、原生输入条、时间胶囊行、系统字体、转发卡片。规则和数值见同目录 <code>README.md</code>，颜色、圆角、字号仍以 <code>design/guandan-h5/tokens.css</code> 为准。
+  画面尺寸按 iPhone 14（390×844，胶囊 297/51/87×32）；蓝色虚线和蓝字是标注，不属于产品。点任一屏可单独打开（<code>#编号</code>）。</p>
+  <p><label><input type="checkbox" id="android"> 模拟安卓（没有宋体：衬线退回无衬线）</label></p>
+</div>
+<div id="groups"></div>
+<script>
+// ════════ 令牌（与 tokens.css、app/minigame/src/core/ui.ts 一致）════════
+const C = {
+  red: "#b3352c", redDeep: "#8e2a23", redInk: "#7a231d", redTint: "#f6e2df", redRing: "rgba(179,53,44,0.18)",
+  ink: "#2a1c17", ink2: "#5c4a3a", ink3: "#7a6a5c", ink4: "#9a8a7c",
+  paper: "#f6efe4", card: "#fffcf7", cream: "#fff7ec", sand: "#f1e4cc",
+  beige: "#ede3d3", line: "#e8dccb", line2: "#e3d6c3", khaki: "#c9b79e",
+  gold: "#e9c46a", green: "#3e7c4f", greenTint: "#e3efe5", errTint: "#fbefed",
+  // 标注色：只在设计稿里用
+  note: "#2f6fd6", noteFill: "rgba(47,111,214,0.10)",
+};
+let ANDROID = false;
+const SANS = () => ANDROID ? "sans-serif" : '"PingFang SC", "Noto Sans SC", "Hiragino Sans GB", sans-serif';
+const SERIF = () => ANDROID ? "sans-serif" : '"Songti SC", "Noto Serif SC", "STSong", serif';
+const font = (size, weight = "normal", serif = false) => `${weight} ${size}px ${serif ? SERIF() : SANS()}`;
+
+// 设备：iPhone 14
+const E = { W: 390, H: 844, safeTop: 47, safeBottom: 34, menu: { top: 51, bottom: 83, left: 297, right: 384, width: 87, height: 32 } };
+E.navY = (E.menu.top + E.menu.bottom) / 2;
+E.contentTop = E.menu.bottom + 8;
+const PAD = 16;
+const KB = 336;       // 键盘高度（wx.onKeyboardHeightChange）
+const INPUT_BAR = 56; // 微信原生输入条，按 56 预留，#141 真机核对
+
+// ════════ 画图工具（同 ui.ts）════════
+function rr(ctx, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath(); ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function fillRR(ctx, x, y, w, h, r, c) { rr(ctx, x, y, w, h, r); ctx.fillStyle = c; ctx.fill(); }
+function strokeRR(ctx, x, y, w, h, r, c, lw = 1, dash) { rr(ctx, x, y, w, h, r); ctx.strokeStyle = c; ctx.lineWidth = lw; if (dash) ctx.setLineDash(dash); ctx.stroke(); ctx.setLineDash([]); }
+function text(ctx, s, x, y, f, c, align = "left") { ctx.font = f; ctx.fillStyle = c; ctx.textAlign = align; ctx.textBaseline = "middle"; ctx.fillText(s, x, y); }
+function measure(ctx, s, f) { ctx.font = f; return ctx.measureText(s).width; }
+function circle(ctx, cx, cy, r, fill, stroke, lw = 1, dash) {
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; if (dash) ctx.setLineDash(dash); ctx.stroke(); ctx.setLineDash([]); }
+}
+function ellipsize(ctx, s, maxW, f) {
+  if (f) ctx.font = f;
+  if (ctx.measureText(s).width <= maxW) return s;
+  const ch = Array.from(s); let lo = 0, hi = ch.length;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (ctx.measureText(ch.slice(0, m).join("") + "…").width <= maxW) lo = m; else hi = m - 1; }
+  return ch.slice(0, lo).join("") + "…";
+}
+function wrap(ctx, s, maxW, f) {
+  if (f) ctx.font = f;
+  const out = [];
+  const tokens = s.match(/[A-Za-z0-9@#&+\-_.:/%'’]+|\s+|./gu) || [""];
+  let line = "";
+  for (const t of tokens) {
+    if (ctx.measureText(line + t).width <= maxW || !line) line += t;
+    else { out.push(line.trimEnd()); line = t.trimStart(); }
+  }
+  out.push(line);
+  return out;
+}
+function card(ctx, x, y, w, h, r = 18) { fillRR(ctx, x, y + 2, w, h, r, C.line); fillRR(ctx, x, y, w, h, r, C.card); strokeRR(ctx, x + .5, y + .5, w - 1, h - 1, r, C.line, 1); }
+function line(ctx, x1, y1, x2, y2, c, lw = 1, dash) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.strokeStyle = c; ctx.lineWidth = lw; if (dash) ctx.setLineDash(dash); ctx.stroke(); ctx.setLineDash([]); }
+
+// ── 路径图标：凡是颜色表示状态的、或系统字体里不一定有的符号，一律画路径 ──
+const icon = {
+  back(ctx, x, cy, c) { ctx.beginPath(); ctx.moveTo(x + 9, cy - 9); ctx.lineTo(x, cy); ctx.lineTo(x + 9, cy + 9); stroke(ctx, c, 2.4); },
+  chevron(ctx, x, cy, c) { ctx.beginPath(); ctx.moveTo(x - 3, cy - 6); ctx.lineTo(x + 3, cy); ctx.lineTo(x - 3, cy + 6); stroke(ctx, c, 2); },
+  close(ctx, cx, cy, c) { ctx.beginPath(); ctx.moveTo(cx - 5, cy - 5); ctx.lineTo(cx + 5, cy + 5); ctx.moveTo(cx + 5, cy - 5); ctx.lineTo(cx - 5, cy + 5); stroke(ctx, c, 1.8); },
+  check(ctx, cx, cy, c) { ctx.beginPath(); ctx.moveTo(cx - 5, cy); ctx.lineTo(cx - 1.5, cy + 4); ctx.lineTo(cx + 6, cy - 5); stroke(ctx, c, 2.2); },
+  alert(ctx, cx, cy, c) { circle(ctx, cx, cy, 7, c); ctx.fillStyle = "#fff"; ctx.fillRect(cx - 1, cy - 4.2, 2, 5); ctx.fillRect(cx - 1, cy + 2.2, 2, 2); },
+  share(ctx, cx, cy, c) { // 方框 + 向上箭头（替代 ⇪）
+    ctx.beginPath(); ctx.moveTo(cx - 6, cy - 1); ctx.lineTo(cx - 6, cy + 7); ctx.lineTo(cx + 6, cy + 7); ctx.lineTo(cx + 6, cy - 1);
+    ctx.moveTo(cx, cy + 2); ctx.lineTo(cx, cy - 8); ctx.moveTo(cx - 4, cy - 4.5); ctx.lineTo(cx, cy - 8.5); ctx.lineTo(cx + 4, cy - 4.5); stroke(ctx, c, 1.8);
+  },
+  heart(ctx, cx, cy, s, c) {
+    ctx.beginPath(); ctx.moveTo(cx, cy + s * .42);
+    ctx.bezierCurveTo(cx - s * .95, cy - s * .12, cx - s * .5, cy - s * .78, cx, cy - s * .28);
+    ctx.bezierCurveTo(cx + s * .5, cy - s * .78, cx + s * .95, cy - s * .12, cx, cy + s * .42);
+    ctx.fillStyle = c; ctx.fill();
+  },
+  spade(ctx, cx, cy, s, c) {
+    ctx.beginPath(); ctx.moveTo(cx, cy - s * .5);
+    ctx.bezierCurveTo(cx - s * .95, cy + s * .05, cx - s * .5, cy + s * .62, cx, cy + s * .18);
+    ctx.bezierCurveTo(cx + s * .5, cy + s * .62, cx + s * .95, cy + s * .05, cx, cy - s * .5);
+    ctx.fillStyle = c; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx, cy + s * .12); ctx.lineTo(cx - s * .2, cy + s * .5); ctx.lineTo(cx + s * .2, cy + s * .5); ctx.closePath(); ctx.fill();
+  },
+  diamond(ctx, cx, cy, s, c) {
+    ctx.beginPath(); ctx.moveTo(cx, cy - s * .5);
+    ctx.quadraticCurveTo(cx + s * .12, cy - s * .12, cx + s * .38, cy); ctx.quadraticCurveTo(cx + s * .12, cy + s * .12, cx, cy + s * .5);
+    ctx.quadraticCurveTo(cx - s * .12, cy + s * .12, cx - s * .38, cy); ctx.quadraticCurveTo(cx - s * .12, cy - s * .12, cx, cy - s * .5);
+    ctx.fillStyle = c; ctx.fill();
+  },
+  club(ctx, cx, cy, s, c) {
+    const r = s * .2;
+    circle(ctx, cx, cy - s * .24, r, c); circle(ctx, cx - s * .22, cy + s * .06, r, c); circle(ctx, cx + s * .22, cy + s * .06, r, c);
+    ctx.beginPath(); ctx.moveTo(cx, cy - s * .05); ctx.lineTo(cx - s * .18, cy + s * .5); ctx.lineTo(cx + s * .18, cy + s * .5); ctx.closePath(); ctx.fillStyle = c; ctx.fill();
+  },
+};
+function stroke(ctx, c, lw) { ctx.strokeStyle = c; ctx.lineWidth = lw; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.stroke(); }
+
+// ════════ 系统层：状态栏、胶囊、原生输入条和键盘（不归我们画，这里只为看效果）════════
+function statusBar(ctx, dark = true) {
+  const c = dark ? C.ink : "#fff";
+  text(ctx, "9:41", 44, 27, "600 16px -apple-system, sans-serif", c, "center");
+  fillRR(ctx, E.W - 50, 21, 25, 12, 3.5, c); fillRR(ctx, E.W - 24, 25, 2, 4, 1, c);
+  for (let i = 0; i < 4; i++) fillRR(ctx, E.W - 86 + i * 5, 29 - i * 2.5, 3, 4 + i * 2.5, 1, c);
+  fillRR(ctx, E.W / 2 - 62, 11, 124, 36, 18, "#0b0807");
+}
+function capsule(ctx) {
+  const m = E.menu;
+  fillRR(ctx, m.left, m.top, m.width, m.height, m.height / 2, "rgba(255,255,255,0.6)");
+  strokeRR(ctx, m.left + .5, m.top + .5, m.width - 1, m.height - 1, m.height / 2, "rgba(0,0,0,0.12)", 1);
+  const mid = m.left + m.width / 2;
+  line(ctx, mid, m.top + 8, mid, m.bottom - 8, "rgba(0,0,0,0.15)", 1);
+  for (let i = -1; i <= 1; i++) circle(ctx, m.left + m.width / 4 + i * 7, E.navY, i === 0 ? 3 : 2.2, "#000");
+  circle(ctx, m.left + m.width * 3 / 4, E.navY, 8.5, null, "#000", 2);
+  circle(ctx, m.left + m.width * 3 / 4, E.navY, 3, "#000");
+}
+function homeBar(ctx) { fillRR(ctx, E.W / 2 - 67, E.H - 13, 134, 5, 3, C.ink); }
+/** 微信原生输入条 + 键盘：返回输入条顶边 y */
+function keyboard(ctx, value) {
+  const ky = E.H - KB, by = ky - INPUT_BAR;
+  ctx.fillStyle = "#f7f7f7"; ctx.fillRect(0, by, E.W, INPUT_BAR);
+  line(ctx, 0, by + .5, E.W, by + .5, "rgba(0,0,0,0.1)");
+  fillRR(ctx, 10, by + 9, E.W - 92, 38, 6, "#fff");
+  const f = "16px -apple-system, \"PingFang SC\", sans-serif";
+  const v = ellipsizeStart(ctx, value, E.W - 120, f);
+  text(ctx, v, 20, by + 28, f, "#111");
+  ctx.fillStyle = "#07c160"; ctx.fillRect(20 + measure(ctx, v, f) + 1, by + 18, 2, 20);
+  fillRR(ctx, E.W - 74, by + 9, 64, 38, 6, "#07c160");
+  text(ctx, "完成", E.W - 42, by + 28, "500 16px -apple-system, \"PingFang SC\", sans-serif", "#fff", "center");
+  ctx.fillStyle = "#d1d4da"; ctx.fillRect(0, ky, E.W, KB);
+  const rows = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"];
+  rows.forEach((r, i) => {
+    const kw = 33, gap = 6, tw = r.length * kw + (r.length - 1) * gap, x0 = (E.W - tw) / 2;
+    for (let k = 0; k < r.length; k++) {
+      const x = x0 + k * (kw + gap), y = ky + 10 + i * 54;
+      fillRR(ctx, x, y + 1, kw, 42, 5, "#898a8d"); fillRR(ctx, x, y, kw, 42, 5, "#fff");
+      text(ctx, r[k], x + kw / 2, y + 21, "20px -apple-system, sans-serif", "#111", "center");
+    }
+  });
+  fillRR(ctx, 90, ky + 172, E.W - 180, 42, 5, "#fff");
+  text(ctx, "空格", E.W / 2, ky + 193, "15px \"PingFang SC\", sans-serif", "#111", "center");
+  fillRR(ctx, E.W - 84, ky + 172, 76, 42, 5, "#adb3bc");
+  text(ctx, "完成", E.W - 46, ky + 193, "15px \"PingFang SC\", sans-serif", "#111", "center");
+  homeBar(ctx);
+  return by;
+}
+function ellipsizeStart(ctx, s, maxW, f) {
+  ctx.font = f; if (ctx.measureText(s).width <= maxW) return s;
+  const ch = Array.from(s); let i = 0;
+  while (i < ch.length && ctx.measureText("…" + ch.slice(i).join("")).width > maxW) i++;
+  return "…" + ch.slice(i).join("");
+}
+
+// ════════ 标注 ════════
+function noteBox(ctx, x, y, w, h, label, where = "below") {
+  ctx.fillStyle = C.noteFill; ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = C.note; ctx.lineWidth = 1; ctx.setLineDash([4, 3]); ctx.strokeRect(x + .5, y + .5, w - 1, h - 1); ctx.setLineDash([]);
+  if (label) noteTag(ctx, label, where === "below" ? x : x, where === "below" ? y + h + 10 : y - 10);
+}
+function noteTag(ctx, s, x, y, align = "left") {
+  const f = "600 11px -apple-system, \"PingFang SC\", sans-serif", w = measure(ctx, s, f) + 10;
+  const bx = align === "right" ? x - w : align === "center" ? x - w / 2 : x;
+  fillRR(ctx, bx, y - 9, w, 18, 4, C.note);
+  text(ctx, s, bx + 5, y, f, "#fff");
+}
+function marker(ctx, n, x, y) {
+  circle(ctx, x, y, 9, C.note, "#fff", 1.5);
+  text(ctx, String(n), x, y + .5, "700 11px -apple-system, sans-serif", "#fff", "center");
+}
+function legend(ctx, y, items) {
+  const h = 22 + items.length * 34;
+  fillRR(ctx, 12, y, E.W - 24, h, 14, "rgba(255,255,255,0.94)");
+  strokeRR(ctx, 12.5, y + .5, E.W - 25, h - 1, 14, C.note, 1, [4, 3]);
+  items.forEach(([n, s], i) => {
+    const cy = y + 28 + i * 34;
+    if (n) marker(ctx, n, 34, cy);
+    const ls = wrap(ctx, s, E.W - 84, "12px -apple-system, \"PingFang SC\", sans-serif");
+    ls.forEach((l, j) => text(ctx, l, 52, cy + (j - (ls.length - 1) / 2) * 15, "12px -apple-system, \"PingFang SC\", sans-serif", "#1d3f7a"));
+  });
+}
+function noteLine(ctx, y, label, x0 = 0, x1 = E.W) {
+  line(ctx, x0, y + .5, x1, y + .5, C.note, 1, [5, 4]);
+  if (label) noteTag(ctx, label, x1 - 4, y + 12, "right");
+}
+
+// ════════ 产品控件 ════════
+function nav(ctx, title, left) {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.contentTop);
+  if (left === "back") icon.back(ctx, 21, E.navY, C.ink);
+  else if (left) text(ctx, left, PAD + 2, E.navY, font(15, "600"), C.ink3);
+  const maxW = (E.menu.left - 8 - E.W / 2) * 2;
+  if (title) text(ctx, ellipsize(ctx, title, maxW, font(17, "700")), E.W / 2, E.navY, font(17, "700"), C.ink, "center");
+}
+function button(ctx, x, y, w, h, label, style, opts = {}) {
+  const r = opts.radius ?? Math.min(16, h / 2);
+  let bg = C.red, fg = C.cream, border = null;
+  if (style === "ghost") { bg = C.card; fg = C.ink; border = C.line2; }
+  if (style === "dark") { bg = C.card; fg = C.ink; border = C.ink; }
+  if (style === "soft") { bg = C.beige; fg = C.ink2; }
+  if (style === "danger") { bg = C.card; fg = C.red; border = "#e3b5ae"; }
+  if (opts.disabled) { if (style === "primary") { bg = C.khaki; fg = C.cream; } else fg = C.ink4; }
+  fillRR(ctx, x, y, w, h, r, bg);
+  if (border) strokeRR(ctx, x + .75, y + .75, w - 1.5, h - 1.5, r, border, style === "dark" ? 1.5 : 1);
+  const f = font(opts.size ?? 16, "700");
+  if (opts.icon) {
+    const tw = measure(ctx, label, f), cx = x + w / 2 - (tw + 22) / 2;
+    opts.icon(ctx, cx + 7, y + h / 2, fg);
+    text(ctx, label, cx + 22, y + h / 2 + .5, f, fg);
+  } else text(ctx, ellipsize(ctx, label, w - 20, f), x + w / 2, y + h / 2 + .5, f, fg, "center");
+}
+function chip(ctx, x, y, label, on, opts = {}) {
+  const h = opts.h ?? 36, f = font(14, on ? "700" : "normal");
+  const w = measure(ctx, label, f) + 28;
+  fillRR(ctx, x, y, w, h, h / 2, on ? C.red : C.card);
+  if (!on) strokeRR(ctx, x + .5, y + .5, w - 1, h - 1, h / 2, C.line, 1, opts.disabled ? [3, 3] : undefined);
+  text(ctx, label, x + w / 2, y + h / 2, f, on ? C.cream : opts.disabled ? C.khaki : C.ink2, "center");
+  return w;
+}
+function chipsWrap(ctx, x, y, maxW, items, on) {
+  let cx = x;
+  items.forEach((it, i) => {
+    const w = measure(ctx, it, font(14, i === on ? "700" : "normal")) + 28;
+    if (cx + w > x + maxW && cx > x) { cx = x; y += 44; }
+    chip(ctx, cx, y, it, i === on); cx += w + 8;
+  });
+  return y + 36;
+}
+/** 输入框。state: "idle" | "active" | "error" */
+function field(ctx, x, y, w, o) {
+  const fs = 16, f = font(fs), lh = fs + 8, active = o.state === "active", err = o.state === "error";
+  const lines = o.value ? (o.multiple ? wrap(ctx, o.value, w - 32, f) : [o.value]) : [o.placeholder];
+  const h = o.multiple ? Math.max(84, 28 + lines.length * lh) : 52;
+  if (active) fillRR(ctx, x - 4, y - 4, w + 8, h + 8, 16, C.redRing); // --sh-focus：4px 焦点环
+  fillRR(ctx, x, y, w, h, 12, err ? C.errTint : C.card);
+  strokeRR(ctx, x + .5, y + .5, w - 1, h - 1, 12, err || active ? C.red : C.line, active ? 1.5 : 1);
+  const showCount = active && o.max && Array.from(o.value).length >= o.max * 0.8;
+  const tw = w - 32 - (showCount ? 44 : 0);
+  const ty = o.multiple ? y + 14 + lh / 2 : y + h / 2;
+  const shown = o.multiple ? lines : [ellipsizeStart(ctx, lines[0], tw, f)];
+  shown.forEach((ln, i) => text(ctx, ln, x + 16, ty + i * lh, f, o.value ? C.ink : C.ink4));
+  if (active) {
+    const last = o.value ? shown[shown.length - 1] : "";
+    ctx.fillStyle = C.red; ctx.fillRect(x + 16 + measure(ctx, last, f) + 1, ty + (shown.length - 1) * lh - lh / 2 + 3, 1.5, lh - 6);
+  }
+  if (showCount) text(ctx, `${Array.from(o.value).length}/${o.max}`, x + w - 14, o.multiple ? y + h - 14 : y + h / 2, font(11), C.ink4, "right");
+  let used = h;
+  if (err) { icon.alert(ctx, x + 9, y + h + 15, C.red); text(ctx, o.error, x + 22, y + h + 15, font(12), C.red); used += 28; }
+  return used;
+}
+function tabBar(ctx, active) {
+  const TAB_H = 56, y = E.H - TAB_H - E.safeBottom, tw = E.W / 5;
+  ctx.fillStyle = C.card; ctx.fillRect(0, y, E.W, TAB_H + E.safeBottom); ctx.fillStyle = C.line; ctx.fillRect(0, y, E.W, 1);
+  const tabs = [["games", "spade", "牌局"], ["learn", "club", "学牌"], ["create", null, "约局"], ["friends", "diamond", "牌友"], ["me", "heart", "我的"]];
+  tabs.forEach(([k, ic, label], i) => {
+    const cx = tw * i + tw / 2;
+    if (!ic) {
+      circle(ctx, cx, y + 6, 31, C.card); circle(ctx, cx, y + 6, 27, C.red);
+      text(ctx, "蛋", cx, y + 7, font(24, "900", true), C.cream, "center");
+      circle(ctx, cx + 20, y - 13, 5, C.green, C.card, 2);
+      text(ctx, label, cx, y + 46, font(11), C.ink3, "center");
+      return;
+    }
+    const on = k === active;
+    icon[ic](ctx, cx, y + 20, 22, on ? C.red : C.ink3);
+    text(ctx, label, cx, y + 42, font(11, on ? "700" : "normal"), on ? C.red : C.ink3, "center");
+  });
+  homeBar(ctx);
+}
+function scrim(ctx) { ctx.fillStyle = "rgba(28,20,17,0.45)"; ctx.fillRect(0, 0, E.W, E.H); }
+function sheetBox(ctx, y, h) {
+  fillRR(ctx, 0, y, E.W, h + 40, 26, C.card);
+  fillRR(ctx, E.W / 2 - 18, y + 8, 36, 4, 2, C.line2);
+}
+function sheetHeader(ctx, y, title, sub) {
+  text(ctx, title, 20, y + 36, font(20, "900", true), C.ink);
+  let cy = y + 56;
+  if (sub) { text(ctx, sub, 20, cy + 6, font(13), C.ink3); cy += 22; }
+  return cy + 6;
+}
+
+// ── 详情页上半部分（时间 + 牌桌） ──
+const SEATS = [["老", "host"], ["L", "other"], ["阿", "other"], null];
+function detailTop(ctx, y, opts = {}) {
+  const W = E.W, cx = W / 2;
+  text(ctx, "今天 10/14 周三", cx, y + 14, font(14, "700"), C.red, "center");
+  text(ctx, "19:30", cx, y + 54, font(44, "900", true), C.ink, "center");
+  text(ctx, "雅加达时间 WIB · 经典掼蛋", cx, y + 88, font(13), C.ink3, "center");
+  y += 116;
+  const size = 196, x = cx - size / 2, ty = y + 34, mid = ty + size / 2;
+  fillRR(ctx, x, ty + 6, size, size, 24, "rgba(142,42,35,0.25)");
+  fillRR(ctx, x, ty, size, size, 24, C.redDeep);
+  strokeRR(ctx, x + 3, ty + 3, size - 6, size - 6, 21, C.redInk, 6);
+  strokeRR(ctx, x + 22, ty + 22, size - 44, size - 44, 14, "rgba(233,196,106,0.45)", 1, [4, 3]);
+  text(ctx, "3/4", cx, mid - 6, font(40, "900", true), C.cream, "center");
+  text(ctx, "对家为搭档", cx, mid + 26, font(12), "rgba(255,247,236,0.8)", "center");
+  const at = [[cx, ty], [x + size, mid], [cx, ty + size], [x, mid]];
+  SEATS.forEach((s, i) => {
+    const [sx, sy] = at[i];
+    if (!s) { circle(ctx, sx, sy, 30, C.paper); circle(ctx, sx, sy, 30, null, C.khaki, 2, [5, 4]); text(ctx, "+", sx, sy, font(24, "300"), C.khaki, "center"); return; }
+    circle(ctx, sx, sy, 36, C.paper);
+    circle(ctx, sx, sy, 32, s[1] === "host" ? C.redTint : C.beige, s[1] === "host" ? "#e3b5ae" : "#e6dccd", 3);
+    text(ctx, s[0], sx, sy + 1, font(26, "900", true), s[1] === "host" ? C.red : C.ink, "center");
+  });
+  return ty + size + 46;
+}
+function detailNames(ctx, y, names) {
+  const f = font(13); let total = 0;
+  const ws = names.map((n) => measure(ctx, n, f) + 24); total = ws.reduce((a, b) => a + b, 0) + 8 * (ws.length - 1);
+  let x = (E.W - total) / 2;
+  names.forEach((n, i) => { fillRR(ctx, x, y, ws[i], 30, 15, C.card); strokeRR(ctx, x + .5, y + .5, ws[i] - 1, 29, 15, C.line, 1); text(ctx, n, x + ws[i] / 2, y + 15, f, C.ink2, "center"); x += ws[i] + 8; });
+  return y + 46;
+}
+function detailInfo(ctx, y) {
+  const x = PAD, w = E.W - PAD * 2, rows = [["地点", "Pacific Place · 鼎泰丰包间"], ["商圈", "SCBD"], ["局头", "老王"]];
+  card(ctx, x, y, w, 52 * rows.length, 18);
+  rows.forEach((r, i) => {
+    text(ctx, r[0], x + 16, y + 26 + i * 52, font(13), C.ink3); text(ctx, r[1], x + 80, y + 26 + i * 52, font(15), C.ink);
+    if (i < rows.length - 1) { ctx.fillStyle = C.line2; ctx.fillRect(x + 16, y + 52 * (i + 1), w - 32, 1); }
+  });
+  return y + 52 * rows.length + 16;
+}
+function bar(ctx, h) { const y = E.H - h - E.safeBottom; ctx.fillStyle = C.card; ctx.fillRect(0, y, E.W, h + E.safeBottom); ctx.fillStyle = C.line; ctx.fillRect(0, y, E.W, 1); return y; }
+
+// ── 开一局表单 ──
+const AREAS = ["SCBD", "PIK", "Central Park", "Kemang", "Kuningan", "Senayan", "Kelapa Gading", "BSD", "Other"];
+function createForm(ctx, y0, st) {
+  const W = E.W, fw = W - PAD * 2; let y = y0;
+  const label = (s, hint) => { text(ctx, s, PAD, y + 20, font(14, "700"), C.ink); if (hint) text(ctx, hint, W - PAD, y + 20, font(12), C.ink4, "right"); y += 36; };
+  label("什么时候");
+  y = chipsWrap(ctx, PAD, y, fw, ["今晚 周三 19:30", "明晚 周四 19:30", "后天 周五 19:30"], 0) + 14;
+  label("哪个片区");
+  y = chipsWrap(ctx, PAD, y, fw, AREAS, 0) + 14;
+  label("具体地点");
+  const venueY = y;
+  y += field(ctx, PAD, y, fw, { value: st.venue || "", placeholder: "比如：Pacific Place · 鼎泰丰包间", state: st.venueState, max: 40, error: st.venueError }) + 14;
+  label("怎么打");
+  let x = PAD; for (const [k, on] of [["经典", 1], ["不升级", 0], ["带新手", 0]]) x += chip(ctx, x, y, k, !!on) + 8;
+  y += 50;
+  label("备注", "可不填");
+  y += field(ctx, PAD, y, fw, { value: st.note || "", placeholder: "比如：新手也欢迎，慢慢打", multiple: true, state: st.noteState, max: 200 }) + 14;
+  return { y, venueY };
+}
+
+// ── 时间胶囊行 ──
+const DAYS = ["今天", "明天", "周五 10/16", "周六 10/17", "周日 10/18", "周一 10/19", "周二 10/20", "周三 10/21"];
+const HOURS = Array.from({ length: 15 }, (_, i) => `${9 + i}点`);
+const MINS = [":00", ":15", ":30", ":45"];
+const ROW_LABEL_W = 48, ROW_H = 36, ROW_GAP = 8;
+/** 一行：左边固定标签，右边单行横滑，伸到屏幕右边缘；右侧渐隐，滑过之后左侧也渐隐。 */
+function chipRow(ctx, y, label, items, on, opts = {}) {
+  const x0 = 20 + ROW_LABEL_W, bg = opts.bg ?? C.card;
+  text(ctx, label, 20, y + ROW_H / 2, font(13, "700"), C.ink2);
+  ctx.save(); ctx.beginPath(); ctx.rect(x0, y - 4, E.W - x0, ROW_H + 8); ctx.clip();
+  let x = x0 - (opts.scroll ?? 0);
+  items.forEach((it, i) => { x += chip(ctx, x, y, it, i === on, { disabled: opts.disabled?.(i) }) + ROW_GAP; });
+  ctx.restore();
+  const fade = (fx, w, dir) => {
+    const g = ctx.createLinearGradient(fx, 0, fx + w, 0);
+    const c0 = hexA(bg, 0), c1 = hexA(bg, 1);
+    g.addColorStop(0, dir > 0 ? c0 : c1); g.addColorStop(1, dir > 0 ? c1 : c0);
+    ctx.fillStyle = g; ctx.fillRect(fx, y - 2, w, ROW_H + 4);
+  };
+  if (x - ROW_GAP > E.W) fade(E.W - 32, 32, 1);
+  if ((opts.scroll ?? 0) > 0) fade(x0, 20, -1);
+  return y + ROW_H + 10;
+}
+function hexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+/** 让选中的胶囊落在可视区左起约 1/3 处：返回 scroll 值 */
+function scrollFor(ctx, items, on) {
+  let x = 0; for (let i = 0; i < on; i++) x += measure(ctx, items[i], font(14)) + 28 + ROW_GAP;
+  const view = E.W - (20 + ROW_LABEL_W);
+  let total = 0; items.forEach((it, i) => total += measure(ctx, it, font(14, i === on ? "700" : "normal")) + 28 + ROW_GAP);
+  return Math.max(0, Math.min(x - view / 3, total - ROW_GAP + 20 - view));
+}
+
+// ════════ 转发卡片（5:4，逻辑尺寸 500×400，导出 750×600）════════
+function shareCard(ctx, d, W = 500, H = 400) {
+  const closed = d.status === "cancelled" || d.status === "done";
+  const bg = closed ? "#8a7d70" : C.redDeep, ink = closed ? "#6f645a" : C.redInk;
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);                      // 满版，不留纸色边
+  strokeRR(ctx, 8, 8, W - 16, H - 16, 22, ink, 8);                    // 牌桌内描边
+  strokeRR(ctx, 24, 24, W - 48, H - 48, 14, "rgba(233,196,106,0.45)", 2, [6, 5]);
+  const CW = W - 96;                                                  // 文字区宽：左右各 48
+  // 先量地点：26px 起，两行放不下每次缩 2px，最小 20px，还放不下第二行末尾省略
+  let fs = 26, vl = wrap(ctx, d.venue, CW, font(fs, "700"));
+  while (vl.length > 2 && fs > 20) { fs -= 2; vl = wrap(ctx, d.venue, CW, font(fs, "700")); }
+  if (vl.length > 2) vl = [vl[0], ellipsize(ctx, vl.slice(1).join(""), CW, font(fs, "700"))];
+  const vlh = Math.round(fs * 1.3);
+  // 信息块：日期 30 + 时间 84 + 地点 n×行高 + 间距 10 + 次要信息 22，在 [36, H−118] 里垂直居中
+  const blockH = 30 + 84 + vl.length * vlh + 10 + 22;
+  let y = 36 + Math.max(0, (H - 118 - 36 - blockH) / 2);
+  text(ctx, `${d.day} · ${d.date}`, W / 2, y + 15, font(22, "700"), closed ? C.cream : C.gold, "center");
+  y += 30;
+  text(ctx, d.time, W / 2, y + 44, font(76, "900", true), C.cream, "center");
+  y += 84;
+  vl.forEach((ln, i) => text(ctx, ln, W / 2, y + vlh / 2 + i * vlh, font(fs, "700"), C.cream, "center"));
+  y += vl.length * vlh + 10;
+  const host = ellipsize(ctx, d.host, 104, font(17));                // 局头称呼最宽 104（约 6 个汉字）
+  text(ctx, ellipsize(ctx, `${d.area} · ${d.kind} · 局头 ${host}`, CW, font(17)), W / 2, y + 11, font(17), "rgba(255,247,236,0.75)", "center");
+  // 底部：左边四个座位，右边状态签，圆心在 H−70
+  const cy = H - 70;
+  for (let i = 0; i < 4; i++) {
+    const cx = 70 + i * 52, s = d.seats[i];
+    if (s) { circle(ctx, cx, cy, 22, s[1] === "host" ? C.redTint : C.beige); text(ctx, s[0], cx, cy + 2, font(20, "900", true), s[1] === "host" ? C.red : C.ink, "center"); }
+    else circle(ctx, cx, cy, 21, null, "rgba(255,247,236,0.65)", 2.5, [6, 5]);
+  }
+  const missing = 4 - d.seats.length;
+  const label = d.status === "cancelled" ? "已取消" : d.status === "done" ? "已结束" : missing <= 0 ? (d.wait ? `已满 · ${d.wait} 人候补` : "已满 · 可排候补") : `还差 ${missing} 人`;
+  const loud = !closed && missing > 0;
+  const room = W - 48 - 262;                                          // 座位占到 x≈262
+  let ls = loud ? 24 : 20, lf = font(ls, loud ? "900" : "700");
+  while (measure(ctx, label, lf) + 32 > room && ls > 14) lf = font(--ls, loud ? "900" : "700");
+  const lw = Math.min(room, measure(ctx, label, lf) + 32), lx = W - 48 - lw;
+  fillRR(ctx, lx, cy - 22, lw, 44, 22, loud ? C.gold : "rgba(255,247,236,0.16)");
+  text(ctx, label, lx + lw / 2, cy + 1, lf, loud ? C.redInk : C.cream, "center");
+}
+const CARD_BASE = { day: "今天", date: "周三 10/14", time: "19:30", venue: "Pacific Place · 鼎泰丰包间", area: "SCBD", kind: "经典掼蛋", host: "老王", status: "open" };
+const CARDS = [
+  { id: "C1", t: "还差 3 人", d: { ...CARD_BASE, seats: [["老", "host"]] } },
+  { id: "C2", t: "还差 1 人", d: { ...CARD_BASE, day: "明天", date: "周四 10/15", time: "20:00", seats: [["老", "host"], ["L"], ["阿"]] } },
+  { id: "C3", t: "已满 · 有候补", d: { ...CARD_BASE, status: "full", wait: 2, seats: [["老", "host"], ["L"], ["阿"], ["熊"]] } },
+  { id: "C4", t: "超长地点 + 超长称呼", note: "地点缩到 22px 两行；局头称呼先截到 104px，整行再截到文字区宽", d: { ...CARD_BASE, venue: "Grand Indonesia West Mall 5F 鼎泰丰旁边的茶室包间（找前台报老王的名字）", area: "Central Park", kind: "带新手", host: "王大锤ABCDEFG超长名字", seats: [["王", "host"], ["L"]] } },
+  { id: "C5", t: "已取消", note: "整张变灰，状态签变弱；只有从「···」转发已取消的局才会看到", d: { ...CARD_BASE, status: "cancelled", seats: [["老", "host"], ["L"]] } },
+];
+
+// ════════ 画面 ════════
+const SCREENS = [];
+const add = (group, id, t, note, draw, kind = "phone", size) => SCREENS.push({ group, id, t, note, draw, kind, size });
+
+// ── 一、胶囊 ──
+add("一、右上角胶囊", "M1", "规格：胶囊行与禁区", "胶囊外扩 8px 是禁区，不放字、不放热区。导航栏和胶囊同一行，标题居中、最宽到禁区为止；内容从胶囊底边 +8 开始", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  detailTop(ctx, E.contentTop + 4);
+  nav(ctx, "牌局详情", "back");
+  statusBar(ctx); capsule(ctx);
+  const m = E.menu, maxW = (m.left - 8 - E.W / 2) * 2;
+  noteBox(ctx, m.left - 8, 0, E.W - m.left + 8, m.bottom + 8, "");
+  marker(ctx, 1, m.left - 8, m.bottom + 8);
+  noteBox(ctx, 0, E.navY - 22, 60, 44, "");
+  marker(ctx, 2, 60, E.navY + 22);
+  line(ctx, E.W / 2 - maxW / 2, E.navY + 15, E.W / 2 + maxW / 2, E.navY + 15, C.note, 1.5);
+  marker(ctx, 3, E.W / 2 - maxW / 2, E.navY + 15);
+  noteLine(ctx, E.contentTop, "");
+  marker(ctx, 4, 14, E.contentTop);
+  legend(ctx, 560, [
+    [1, `禁区：胶囊外扩 8（x ≥ ${m.left - 8}，y ≤ ${m.bottom + 8}），不放字、不放热区`],
+    [2, "左槽：返回 60×44，或文字按钮 72×44（「取消」）"],
+    [3, `标题居中，最宽 2×(胶囊左 − 8 − W/2) = ${maxW}，超出省略`],
+    [4, `内容区顶 = 胶囊底 + 8 = ${E.contentTop}；导航行 y = 胶囊垂直中线 ${E.navY}`],
+    [0, "所有数值从 wx.getMenuButtonBoundingClientRect() 现算，不写死"],
+  ]);
+});
+add("一、右上角胶囊", "M2", "首页：胶囊行只放城市", "胶囊行左侧放「Jakarta · 雅加达时间」和离线点，右端不超过胶囊左 − 16。大标题从内容区开始；右侧两张小牌离胶囊底至少 8px。花色全部画路径", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  text(ctx, "Jakarta · 雅加达时间", PAD, E.navY, font(13), C.ink3);
+  const titleY = E.contentTop + 22;
+  text(ctx, "随时掼掼蛋", PAD, titleY, font(28, "900", true), C.red);
+  text(ctx, "找人凑一桌，就差你一个", PAD, titleY + 28, font(13), C.ink3);
+  // 两张小牌：顶边 ≥ 胶囊底 + 8
+  const mini = (dx, rot, suit, color) => {
+    ctx.save(); ctx.translate(E.W - 86 + dx + 18, E.contentTop + 28); ctx.rotate(rot);
+    fillRR(ctx, -17, -23, 34, 46, 5, C.line); fillRR(ctx, -18, -24, 34, 46, 5, C.card); strokeRR(ctx, -18, -24, 34, 46, 5, C.line2, 1);
+    icon[suit](ctx, -1, -1, 18, color); ctx.restore();
+  };
+  mini(0, -0.12, "spade", C.ink); mini(36, 0.1, "heart", C.red);
+  const segY = titleY + 46;
+  fillRR(ctx, PAD, segY, E.W - PAD * 2, 44, 16, C.beige);
+  const cw = (E.W - PAD * 2 - 8) / 4;
+  ["全部", "今天", "明天", "周末"].forEach((d, i) => { if (!i) fillRR(ctx, PAD + 4, segY + 4, cw, 36, 13, C.card); text(ctx, d, PAD + 4 + i * cw + cw / 2, segY + 22, font(15, i ? "500" : "700"), i ? C.ink3 : C.ink, "center"); });
+  let x = PAD; const cy = segY + 56;
+  ["全部", ...AREAS].slice(0, 6).forEach((a, i) => { x += chip(ctx, x, cy, a, !i) + 8; });
+  text(ctx, "可报名的局", PAD, cy + 64, font(18, "900", true), C.ink);
+  text(ctx, "8 桌在等人", E.W - PAD, cy + 64, font(12), C.ink4, "right");
+  let gy = cy + 86;
+  [["今天", "19:30", "SCBD", "Pacific Place · 鼎泰丰包间", 1], ["今天", "20:00", "PIK", "PIK Avenue · 茶室二楼", 2], ["明天", "14:00", "Central Park", "Central Park Mall · 咖啡厅", 3]].forEach(([d, t, a, v, m]) => {
+    card(ctx, PAD, gy, E.W - PAD * 2, 116, 18);
+    fillRR(ctx, PAD + 14, gy + 14, 82, 88, 10, C.paper);
+    text(ctx, d, PAD + 55, gy + 34, font(12, "700"), C.red, "center");
+    text(ctx, t, PAD + 55, gy + 58, font(22, "900", true), C.ink, "center");
+    text(ctx, "10/14", PAD + 55, gy + 82, font(11), C.ink3, "center");
+    const tx = PAD + 110; let w = measure(ctx, a, font(12)) + 14;
+    fillRR(ctx, tx, gy + 16, w, 22, 6, C.sand); text(ctx, a, tx + 7, gy + 27, font(12), C.ink2);
+    text(ctx, ellipsize(ctx, v, E.W - PAD - 14 - tx, font(16, "700")), tx, gy + 54, font(16, "700"), C.ink);
+    for (let k = 0; k < 4; k++) k < 4 - m ? circle(ctx, tx + 12 + k * 30, gy + 86, 12, k ? C.beige : C.redTint) : circle(ctx, tx + 12 + k * 30, gy + 86, 12, null, C.khaki, 1.5, [3, 3]);
+    const lab = `差 ${m} 人`, lw = measure(ctx, lab, font(13, "700")) + 20;
+    fillRR(ctx, E.W - PAD - 14 - lw, gy + 74, lw, 26, 8, m === 1 ? C.red : C.redTint);
+    text(ctx, lab, E.W - PAD - 14 - lw / 2, gy + 87, font(13, "700"), m === 1 ? C.cream : C.red, "center");
+    gy += 130;
+  });
+  tabBar(ctx, "games");
+  statusBar(ctx); capsule(ctx);
+  noteBox(ctx, E.menu.left - 8, 0, E.W - E.menu.left + 8, E.menu.bottom + 8, "");
+  noteLine(ctx, E.menu.bottom + 8, "小牌顶边 ≥ 胶囊底 + 8", E.W - 100, E.W);
+});
+add("一、右上角胶囊", "M3", "开一局：「取消」在左上", "开一局是从「约局」进来的新建流程，左上用文字「取消」，不用返回箭头；右上什么都不放。主按钮在底部操作栏", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  const by = E.H - 76 - E.safeBottom;
+  ctx.save(); ctx.beginPath(); ctx.rect(0, E.contentTop, E.W, by - E.contentTop); ctx.clip();
+  createForm(ctx, E.contentTop + 4, { venueState: "idle", noteState: "idle" });
+  ctx.restore();
+  nav(ctx, "开一局", "取消");
+  bar(ctx, 76);
+  button(ctx, PAD, by + 12, E.W - PAD * 2, 52, "开这一局", "primary", { disabled: true, radius: 26 });
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+  noteBox(ctx, 0, E.navY - 22, 72, 44, ""); noteTag(ctx, "「取消」热区 72×44", 4, E.navY + 36);
+});
+add("一、右上角胶囊", "M4", "开一局：填过内容再点「取消」", "地点或备注有字时，点「取消」先确认；没填过直接退出。对话框按钮：左「继续填」，右「不开了」", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  const by = E.H - 76 - E.safeBottom;
+  ctx.save(); ctx.beginPath(); ctx.rect(0, E.contentTop, E.W, by - E.contentTop); ctx.clip();
+  createForm(ctx, E.contentTop + 4, { venue: "Pacific Place · 鼎泰丰包间", venueState: "idle", noteState: "idle" });
+  ctx.restore();
+  nav(ctx, "开一局", "取消");
+  bar(ctx, 76);
+  button(ctx, PAD, by + 12, E.W - PAD * 2, 52, "开这一局", "primary", { radius: 26 });
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+  scrim(ctx);
+  const w = Math.min(E.W - 48, 340), x = (E.W - w) / 2, h = 180, y = (E.H - h) / 2;
+  fillRR(ctx, x, y, w, h, 22, C.card);
+  text(ctx, "不开这一局了？", E.W / 2, y + 40, font(20, "900", true), C.ink, "center");
+  text(ctx, "填的地点和备注不会保存", E.W / 2, y + 74, font(13), C.ink3, "center");
+  const bw = (w - 52) / 2;
+  button(ctx, x + 20, y + 106, bw, 50, "继续填", "soft");
+  button(ctx, x + 32 + bw, y + 106, bw, 50, "不开了", "danger");
+});
+add("一、右上角胶囊", "M5", "详情 · 访客：分享在底部操作栏", "右上角原来的分享挪到底部操作栏第一位，窄按钮 110，主按钮占剩下的。胶囊「···」里的转发也发这一局（同一张卡片）", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  const by = E.H - 76 - E.safeBottom;
+  ctx.save(); ctx.beginPath(); ctx.rect(0, E.contentTop, E.W, by - E.contentTop); ctx.clip();
+  let y = detailTop(ctx, E.contentTop + 4);
+  y = detailNames(ctx, y, ["局头 · 老王", "Lily", "阿杰"]);
+  detailInfo(ctx, y);
+  ctx.restore();
+  nav(ctx, "牌局详情", "back");
+  bar(ctx, 76);
+  button(ctx, PAD, by + 12, 110, 52, "分享", "dark", { icon: icon.share });
+  button(ctx, PAD + 122, by + 12, E.W - PAD * 2 - 122, 52, "报名占座", "primary");
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+});
+add("一、右上角胶囊", "M6", "详情 · 局头：四个操作两行排", "超过两个操作时排成 2×2：第一行「分享 / 退出」，第二行「改时间·地点 / 取消这局」。危险操作永远在右下", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  const by = E.H - 136 - E.safeBottom;
+  ctx.save(); ctx.beginPath(); ctx.rect(0, E.contentTop, E.W, by - E.contentTop); ctx.clip();
+  let y = detailTop(ctx, E.contentTop + 4);
+  y = detailNames(ctx, y, ["局头 · 老王（我）", "Lily", "阿杰"]);
+  detailInfo(ctx, y);
+  ctx.restore();
+  nav(ctx, "牌局详情", "back");
+  bar(ctx, 136);
+  const w = (E.W - PAD * 2 - 12) / 2;
+  button(ctx, PAD, by + 12, w, 52, "分享", "dark", { icon: icon.share, size: 15 });
+  button(ctx, PAD + w + 12, by + 12, w, 52, "已报名 · 退出", "ghost", { size: 15 });
+  button(ctx, PAD, by + 72, w, 52, "改时间 / 地点", "soft", { size: 15 });
+  button(ctx, PAD + w + 12, by + 72, w, 52, "取消这局", "danger", { size: 15 });
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+});
+
+// ── 二、输入 ──
+add("二、原生输入条", "N1", "字段的四种状态", "默认 / 激活 / 激活且快满（显示字数）/ 出错。激活 = 1.5px 红边 + 4px 焦点环（--sh-focus）+ 红色光标；出错的感叹号画路径", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  const fw = E.W - PAD * 2; let y = E.contentTop + 8;
+  const sec = (t) => { text(ctx, t, PAD, y + 12, font(12, "700"), C.ink3); y += 30; };
+  sec("默认"); y += field(ctx, PAD, y, fw, { value: "", placeholder: "比如：Pacific Place · 鼎泰丰包间", state: "idle" }) + 24;
+  sec("激活（键盘弹起，正在输入）"); y += field(ctx, PAD, y, fw, { value: "Pacific Place", placeholder: "", state: "active", max: 40 }) + 24;
+  sec("激活 · 到上限的 80% 起显示字数"); y += field(ctx, PAD, y, fw, { value: "Grand Indonesia West Mall 5F 鼎泰丰旁边茶室", placeholder: "", state: "active", max: 40 }) + 24;
+  sec("多行激活"); y += field(ctx, PAD, y, fw, { value: "新手也欢迎，慢慢打。带了两副新牌，", placeholder: "", state: "active", multiple: true, max: 200 }) + 24;
+  sec("出错（命中敏感词，X1）"); y += field(ctx, PAD, y, fw, { value: "Pacific Place 打牌赢钱", placeholder: "", state: "error", error: "地点里有不能用的词，换个说法" }) + 24;
+  nav(ctx, "字段状态", "back"); statusBar(ctx); capsule(ctx); homeBar(ctx);
+});
+add("二、原生输入条", "N2", "开一局：键盘弹起", "可视底边 = 屏高 − 键盘高 − 输入条 56。激活的字段滚到可视底边上方 16px；底部操作栏和 Tab 收起；画布上的文字和输入条同步", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  const visBottom = E.H - KB - INPUT_BAR;
+  // 先排一遍拿到地点框的位置，再算滚动量
+  const fake = document.createElement("canvas").getContext("2d");
+  const { venueY } = createForm(fake, E.contentTop + 4, { venue: "x", venueState: "active" });
+  const scroll = Math.max(0, venueY + 52 + 16 - visBottom);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, E.contentTop, E.W, visBottom - E.contentTop); ctx.clip();
+  createForm(ctx, E.contentTop + 4 - scroll, { venue: "Pacific Place · 鼎泰丰包间", venueState: "active", noteState: "idle" });
+  ctx.restore();
+  nav(ctx, "开一局", "取消");
+  statusBar(ctx); capsule(ctx);
+  const by = keyboard(ctx, "Pacific Place · 鼎泰丰包间");
+  noteLine(ctx, by - 16, "激活字段底边 ≥ 输入条顶 − 16", 0, E.W);
+  noteTag(ctx, "输入条和键盘是微信原生的，我们不画", E.W / 2, E.H - KB + 250, "center");
+});
+add("二、原生输入条", "N3", "点「下一项」：地点 → 备注", "地点的确认键是「下一项」（confirmType: next），点了直接跳到备注，备注滚到同一位置。点画布空白处收键盘", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  const visBottom = E.H - KB - INPUT_BAR;
+  const fake = document.createElement("canvas").getContext("2d");
+  const r = createForm(fake, E.contentTop + 4, { venue: "x", noteState: "active" });
+  const scroll = Math.max(0, r.y - 14 + 16 - visBottom);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, E.contentTop, E.W, visBottom - E.contentTop); ctx.clip();
+  createForm(ctx, E.contentTop + 4 - scroll, { venue: "Pacific Place · 鼎泰丰包间", venueState: "idle", note: "新手也欢迎，慢慢打", noteState: "active" });
+  ctx.restore();
+  nav(ctx, "开一局", "取消");
+  statusBar(ctx); capsule(ctx);
+  keyboard(ctx, "新手也欢迎，慢慢打");
+});
+add("二、原生输入条", "N4", "弹层里输入：称呼", "弹层底边贴输入条顶边，整体上移；弹层顶边不高于胶囊底 + 8。弹层里只有一个字段时，键盘一弹起就激活", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  let y = detailTop(ctx, E.contentTop + 4);
+  nav(ctx, "牌局详情", "back"); statusBar(ctx); capsule(ctx);
+  scrim(ctx);
+  const by = E.H - KB - INPUT_BAR, h = 300, sy = by - h;
+  sheetBox(ctx, sy, h);
+  let cy = sheetHeader(ctx, sy, "怎么称呼你？", "填一次就好，之后在微信里自动认得出你");
+  cy += field(ctx, 20, cy + 4, E.W - 40, { value: "小李", placeholder: "", state: "active", max: 12 }) + 18;
+  button(ctx, 20, cy, E.W - 40, 50, "就用这个名字", "primary");
+  text(ctx, "我在网页上报过名", E.W / 2, cy + 78, font(14, "600"), C.ink3, "center");
+  text(ctx, "先看看", E.W / 2, cy + 118, font(14, "600"), C.ink3, "center");
+  keyboard(ctx, "小李");
+});
+
+// ── 三、时间 ──
+add("三、时间胶囊行", "T1", "改时间：三行胶囊", "哪天 / 几点 / 几分各一行，单行横滑不折行，右侧 32px 渐隐、伸到屏幕边；打开时选中项滚到可视区左起 1/3。今天已过的钟点画成虚线、不能点", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  detailTop(ctx, E.contentTop + 4);
+  nav(ctx, "牌局详情", "back"); statusBar(ctx); capsule(ctx);
+  scrim(ctx);
+  const h = 452, sy = E.H - h - E.safeBottom;
+  sheetBox(ctx, sy, h + E.safeBottom);
+  let cy = sheetHeader(ctx, sy, "改一下这一局", "改完会通知座位上的人，提醒也会跟着更新") + 6;
+  const hourOn = 10; // 19 点
+  cy = chipRow(ctx, cy, "哪天", DAYS, 0);
+  cy = chipRow(ctx, cy, "几点", HOURS, hourOn, { scroll: scrollFor(ctx, HOURS, hourOn), disabled: (i) => i < 9 });
+  cy = chipRow(ctx, cy, "几分", MINS, 2);
+  text(ctx, "改成 今天 周三 10/14 19:30（原来 20:00）", 20, cy + 8, font(12), C.ink3);
+  cy += 30;
+  text(ctx, "地点", 20, cy + 8, font(13, "700"), C.ink2); cy += 24;
+  cy += field(ctx, 20, cy, E.W - 40, { value: "Pacific Place · 鼎泰丰包间", placeholder: "", state: "idle" }) + 18;
+  button(ctx, 20, cy, E.W - 40, 50, "保存", "primary");
+  text(ctx, "算了", E.W / 2, cy + 76, font(14, "600"), C.ink3, "center");
+  homeBar(ctx);
+});
+add("三、时间胶囊行", "T2", "规格：胶囊行的尺寸", "标签列 48，胶囊高 36、左右内边距 14、间距 8，行距 10；可视区从 x=68 到屏幕右边缘，右侧渐隐 32；滑动后左侧渐隐 20", (ctx) => {
+  ctx.fillStyle = C.card; ctx.fillRect(0, 0, E.W, E.H);
+  let cy = E.contentTop + 30;
+  text(ctx, "改一下这一局", 20, cy, font(20, "900", true), C.ink); cy += 40;
+  const hourOn = 10, sc = scrollFor(ctx, HOURS, hourOn);
+  const r1 = cy; cy = chipRow(ctx, cy, "哪天", DAYS, 0);
+  const r2 = cy; cy = chipRow(ctx, cy, "几点", HOURS, hourOn, { scroll: sc, disabled: (i) => i < 9 });
+  cy = chipRow(ctx, cy, "几分", MINS, 2);
+  noteBox(ctx, 20, r1, ROW_LABEL_W - 6, ROW_H, ""); marker(ctx, 1, 20, r1);
+  noteBox(ctx, 68, r1 - 4, E.W - 68, ROW_H + 8, ""); marker(ctx, 2, E.W - 12, r1 - 4);
+  noteBox(ctx, E.W - 32, r2, 32, ROW_H, ""); marker(ctx, 3, E.W - 32, r2 + ROW_H);
+  noteBox(ctx, 68, r2, 20, ROW_H, ""); marker(ctx, 4, 68, r2 + ROW_H);
+  // 单个胶囊
+  let y = cy + 30;
+  text(ctx, "单个胶囊", 20, y, font(13, "700"), C.ink2); y += 20;
+  const w = chip(ctx, 20, y, "19点", true);
+  line(ctx, 20, y + 46, 20 + w, y + 46, C.note, 1.5); marker(ctx, 5, 20 + w / 2, y + 46);
+  line(ctx, 20 + w + 8, y, 20 + w + 8, y + 36, C.note, 1.5); marker(ctx, 6, 20 + w + 8, y + 18);
+  chip(ctx, 120, y, "20点", false);
+  chip(ctx, 200, y, "16点", false, { disabled: true });
+  marker(ctx, 7, 200, y);
+  legend(ctx, y + 80, [
+    [1, "标签列宽 48：13px / 700 / --ink-2，和胶囊垂直居中"],
+    [2, "单行横滑，不折行；可视区 x=68 到屏幕右边缘（不留右边距）"],
+    [3, "右侧渐隐 32（弹层底色 → 透明）：提示还能往右滑"],
+    [4, "滑过之后左侧渐隐 20"],
+    [5, "宽 = 字宽 + 14×2；间距 8；行距 10"],
+    [6, "高 36，圆角 18；选中 --red 底 + --cream 700 字"],
+    [7, "不可选（今天已过）：虚线框 + --khaki 字，没有热区"],
+  ]);
+  y += 80 + 22 + 7 * 34 + 20;
+  text(ctx, "可选范围：哪天 今天起 8 天；几点 9–23 点；几分 :00/:15/:30/:45", 20, y, font(12), C.ink3);
+});
+add("三、时间胶囊行", "T3", "改时间弹层：编辑地点时", "键盘弹起时三行胶囊收成一行摘要（点它收键盘、展开胶囊）；弹层顶边不高于胶囊底 + 8，放不下时弹层内部滚动，激活字段始终可见", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  detailTop(ctx, E.contentTop + 4);
+  nav(ctx, "牌局详情", "back"); statusBar(ctx); capsule(ctx);
+  scrim(ctx);
+  const by = E.H - KB - INPUT_BAR, h = 300, sy = by - h;
+  sheetBox(ctx, sy, h);
+  let cy = sheetHeader(ctx, sy, "改一下这一局") + 4;
+  // 摘要行
+  fillRR(ctx, 20, cy, E.W - 40, 48, 12, C.paper);
+  text(ctx, "时间", 36, cy + 24, font(13, "700"), C.ink2);
+  text(ctx, "今天 周三 10/14 19:30", 84, cy + 24, font(15, "700"), C.ink);
+  text(ctx, "改", E.W - 48, cy + 24, font(14, "600"), C.red, "right");
+  icon.chevron(ctx, E.W - 38, cy + 24, C.red);
+  cy += 62;
+  text(ctx, "地点", 20, cy + 8, font(13, "700"), C.ink2); cy += 24;
+  cy += field(ctx, 20, cy, E.W - 40, { value: "Pacific Place · 鼎泰丰包间 2 楼", placeholder: "", state: "active", max: 40 }) + 18;
+  button(ctx, 20, cy, E.W - 40, 50, "保存", "primary");
+  keyboard(ctx, "Pacific Place · 鼎泰丰包间 2 楼");
+  noteLine(ctx, E.contentTop, "弹层顶边下限 = 胶囊底 + 8", 0, E.W);
+});
+
+// ── 四、字体 ──
+add("四、字体", "F1", "iOS / 安卓对照", "左：iOS 有宋体；右：安卓没有宋体，衬线退回无衬线。层级只靠字号、字重、颜色，不靠衬线和无衬线的差别——右边仍然成立", (ctx) => {
+  const half = E.W;
+  for (const [k, android] of [[0, false], [1, true]]) {
+    const prev = ANDROID; ANDROID = android;
+    ctx.save(); ctx.translate(k * half, 0);
+    ctx.fillStyle = C.paper; ctx.fillRect(0, 0, half, 620);
+    text(ctx, android ? "安卓（无宋体）" : "iOS", 20, 30, "700 13px -apple-system, \"PingFang SC\", sans-serif", C.note);
+    let y = 58;
+    text(ctx, "随时掼掼蛋", 20, y + 16, font(28, "900", true), C.red); y += 50;
+    text(ctx, "今天 10/14 周三", half / 2, y + 10, font(14, "700"), C.red, "center");
+    text(ctx, "19:30", half / 2, y + 50, font(44, "900", true), C.ink, "center");
+    text(ctx, "雅加达时间 WIB · 经典掼蛋", half / 2, y + 84, font(13), C.ink3, "center"); y += 110;
+    fillRR(ctx, 20, y, half - 40, 220, 24, C.redDeep);
+    text(ctx, "3/4", half / 2, y + 60, font(40, "900", true), C.cream, "center");
+    text(ctx, "对家为搭档", half / 2, y + 92, font(12), "rgba(255,247,236,0.8)", "center");
+    [["老", 1], ["L", 0], ["阿", 0]].forEach(([c, host], i) => { const cx = half / 2 - 60 + i * 60; circle(ctx, cx, y + 160, 24, host ? C.redTint : C.beige); text(ctx, c, cx, y + 161, font(20, "900", true), host ? C.red : C.ink, "center"); });
+    y += 240;
+    text(ctx, "改一下这一局", 20, y + 14, font(20, "900", true), C.ink);
+    text(ctx, "改完会通知座位上的人", 20, y + 42, font(13), C.ink3);
+    y += 70;
+    text(ctx, "具体地点", 20, y, font(14, "700"), C.ink);
+    text(ctx, "Pacific Place · 鼎泰丰包间", 20, y + 28, font(15), C.ink);
+    ctx.restore(); ANDROID = prev;
+  }
+  line(ctx, half, 0, half, 620, C.note, 1, [5, 4]);
+}, "wide", [780, 620]);
+add("四、字体", "F2", "符号：哪些画路径、哪些用 emoji", "颜色表示状态的图标（Tab、花色、返回、勾、叉、警告、分享）一律画路径；emoji 只做装饰，旁边必须有字；其余生僻符号不用", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, 780, 620);
+  const rows = [
+    ["画路径", "颜色要跟着状态变、或字体里不一定有", [
+      ["spade", "♠ 牌局 Tab / 小牌"], ["club", "♣ 学牌 Tab"], ["diamond", "♦ 牌友 Tab"], ["heart", "♥ 我的 Tab / 小牌"],
+      ["back", "‹ 返回"], ["chevron", "› 列表箭头"], ["close", "× 关闭横幅"], ["check", "✓ 已选 / 已开启"], ["alert", "⚠ 出错"], ["share", "⇪ 分享"],
+    ]],
+    ["可以用 emoji", "只做装饰，颜色不表示状态，旁边一定有字", [["e", "💬 发到微信"], ["e", "🕘 改时间横幅"], ["e", "👑 你是局头"], ["e", "📋 复制话术"], ["e", "🖼 保存海报"], ["e", "🀄 学牌插图"]]],
+    ["系统字体都有，直接用", "标点和 CJK 全角符号", [["t", "·  中点"], ["t", "…  省略号"], ["t", "＋  全角加号"], ["t", "「」 引号"], ["t", "→  箭头（只在正文里）"]]],
+    ["不要用", "部分安卓机缺字，画出来是方框", [["t", "☆ ★ ✎ ↻ ☰ ⇪ ⚠ ‹ › 〉 ♤ ♡ ♢ ♧"]]],
+  ];
+  let y = 30;
+  for (const [h, sub, items] of rows) {
+    text(ctx, h, 24, y, font(17, "700"), C.ink); text(ctx, sub, 24 + measure(ctx, h, font(17, "700")) + 12, y + 1, font(12), C.ink3);
+    y += 30;
+    let x = 24;
+    for (const [k, label] of items) {
+      const w = k === "t" && items.length === 1 ? 732 : 174;
+      if (x + w > 760) { x = 24; y += 52; }
+      card(ctx, x, y, w - 8, 42, 12);
+      if (k === "e" || k === "t") text(ctx, label, x + 14, y + 21, font(14), C.ink2);
+      else {
+        if (["spade", "club", "diamond", "heart"].includes(k)) icon[k](ctx, x + 24, y + 21, 20, k === "heart" || k === "diamond" ? C.red : C.ink);
+        else icon[k](ctx, k === "back" ? x + 20 : x + 24, y + 21, C.red);
+        text(ctx, label, x + 44, y + 21, font(13), C.ink2);
+      }
+      x += w;
+    }
+    y += 70;
+  }
+}, "wide", [780, 620]);
+
+// ── 五、转发卡片 ──
+add("五、转发卡片", "C0", "规格：5:4 卡片版式", "逻辑尺寸 500×400，导出 750×600。满版牌桌红，不留纸色边；文字区左右各 48；信息块在 [36, H−118] 里垂直居中；座位和状态签固定在底部，圆心 H−70", (ctx) => {
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 820, 400);
+  shareCard(ctx, CARDS[1].d);
+  const W = 500, H = 400;
+  noteBox(ctx, 48, 36, W - 96, H - 118 - 36, "");
+  noteLine(ctx, H - 70, "", 40, W - 40);
+  const notes = [
+    [62, "日期：22 / 700 / --gold；今天、明天、后天，再加周几和 MM/DD"],
+    [126, "时间：76 / 900 衬线 / --cream（安卓退回无衬线 900）"],
+    [192, "地点：26 / 700 起，最多两行；放不下每次缩 2，最小 20，再放不下第二行末尾省略"],
+    [228, "次要：片区 · 玩法 · 局头，17 / 400，--cream 75%；局头称呼最宽 104，整行最宽 404"],
+    [330, "座位 4 个，r=22，间距 52，从 x=70 起；局头 --red-tint，其余 --beige，空位虚线"],
+    [370, "状态签：差人时 --gold 底 + --red-ink 900 字，24 起缩到 14；已满、已取消改用 16% 奶油底"],
+  ];
+  notes.forEach(([y, s], i) => {
+    marker(ctx, i + 1, W + 14, y);
+    const ls = wrap(ctx, s, 280, "12px -apple-system, \"PingFang SC\", sans-serif");
+    ls.forEach((l, j) => text(ctx, l, W + 30, y + j * 15 - (ls.length - 1) * 7.5, "12px -apple-system, \"PingFang SC\", sans-serif", "#1d3f7a"));
+  });
+  [[1, 250, 72], [2, 250, 126], [3, 400, 200], [4, 380, 238], [5, 70, 330], [6, 400, 330]].forEach(([n, x, y]) => marker(ctx, n, x, y));
+}, "card", [820, 400]);
+for (const c of CARDS) add("五、转发卡片", c.id, c.t, c.note || "", (ctx) => shareCard(ctx, c.d), "card", [500, 400]);
+
+// ════════ 渲染 ════════
+function render() {
+  const root = document.getElementById("groups");
+  root.innerHTML = "";
+  const groups = [...new Set(SCREENS.map((s) => s.group))];
+  for (const g of groups) {
+    const sec = document.createElement("section"); sec.className = "group";
+    sec.innerHTML = `<h2>${g}</h2><div class="row"></div>`;
+    const row = sec.querySelector(".row");
+    for (const s of SCREENS.filter((x) => x.group === g)) {
+      const [w, h] = s.size || [E.W, E.H];
+      const fig = document.createElement("figure"); fig.className = s.kind; fig.id = "shot-" + s.id;
+      const cv = document.createElement("canvas"); cv.width = w * 2; cv.height = h * 2;
+      if (s.kind === "wide") cv.style.height = (600 * h / w) + "px";
+      if (document.body.classList.contains("solo")) { cv.style.width = w + "px"; cv.style.height = h + "px"; }
+      const ctx = cv.getContext("2d"); ctx.scale(2, 2);
+      s.draw(ctx);
+      fig.appendChild(cv);
+      fig.insertAdjacentHTML("beforeend", `<figcaption><b>${s.id}</b>${s.t}<span>${s.note}</span></figcaption>`);
+      fig.onclick = () => { location.hash = s.id; };
+      row.appendChild(fig);
+    }
+    root.appendChild(sec);
+  }
+  const id = location.hash.slice(1);
+  document.querySelectorAll("figure").forEach((f) => f.classList.toggle("on", f.id === "shot-" + id));
+}
+function route() {
+  const id = location.hash.slice(1);
+  document.body.classList.toggle("solo", !!id && SCREENS.some((s) => s.id === id));
+  render();
+}
+document.getElementById("android").onchange = (e) => { ANDROID = e.target.checked; render(); };
+if (new URLSearchParams(location.search).has("android")) { ANDROID = true; document.getElementById("android").checked = true; }
+window.addEventListener("hashchange", route);
+(document.fonts ? document.fonts.ready : Promise.resolve()).then(route);
+</script>
+</body>
+</html>
