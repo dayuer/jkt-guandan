@@ -87,4 +87,17 @@ describe("GameTable", () => {
     expect(initial("")).toBe("?");
     expect(initial("阿明")).toBe("阿");
   });
+
+  // 和服务端海报 internal/share 的 initial 同一张表（#60）。
+  it("跳过开头的标点、符号和空白，拉丁字母转大写", () => {
+    expect(initial("  lily")).toBe("L");
+    expect(initial("「阿杰」")).toBe("阿");
+    expect(initial("★小周")).toBe("小");
+    expect(initial("😀Kevin")).toBe("K");
+    expect(initial("❤️‍🔥王")).toBe("王");
+    expect(initial("...")).toBe("?");
+    expect(initial("😀🎉")).toBe("?");
+    expect(initial("𠮷野")).toBe("𠮷");
+    expect(initial("ßa")).toBe("ß");
+  });
 });

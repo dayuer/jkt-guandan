@@ -52,6 +52,39 @@ afterEach(() => {
     visit("/");
   });
 
+  // #60：从分享链接 /g/X 落地后切回首页，标题要换回应用名，而不是停在那一局。
+  it("路由切换时重设 document.title", async () => {
+    const game = {
+      game: {
+        id: "g1",
+        short_code: "ABC123",
+        starts_at: 1791986400,
+        area: "SCBD",
+        venue: "Pacific Place",
+        kind: "classic",
+        status: "open",
+        version: 1,
+        capacity: 4,
+      },
+      host: { id: "u1", nickname: "老王" },
+      seats: [{ seat_no: 1, user: { id: "u1", nickname: "老王" } }],
+      waitlist: [],
+      missing: 3,
+      me: { role: "none" },
+    };
+    stubFetch((url) => (url.startsWith("/api/games/ABC123") ? respond(200, game) : anonymous(url)));
+    document.title = "掼蛋局 · 服务端注入的标题";
+    visit("/g/ABC123");
+
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+    await vi.waitFor(() => expect(document.title).toMatch(/^掼蛋局 · .* · Pacific Place$/));
+
+    window.history.pushState(null, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await vi.waitFor(() => expect(document.title).toBe("随时掼掼蛋"));
+  });
+
   it("首页把牌局列出来，带上座位圆点和「差 N 人」", async () => {
     stubFetch((url) => {
       if (url.startsWith("/api/games")) {
