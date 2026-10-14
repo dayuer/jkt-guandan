@@ -22,6 +22,9 @@ func Routes(svc *Service) []route.Route {
 		{Method: http.MethodDelete, Pattern: "/api/me/devices/{id}", Access: route.User, Handler: http.HandlerFunc(h.signOutDevice)},
 		// 注销：删掉这个人自己的数据（§14）。访问方式与 GET/POST /api/me 同一个路径。
 		{Method: http.MethodDelete, Pattern: "/api/me", Access: route.User, Handler: http.HandlerFunc(h.deleteMe)},
+		// 绑定 WhatsApp（#116）：号码只给自己看。
+		{Method: http.MethodPut, Pattern: "/api/me/wa", Access: route.User, Handler: http.HandlerFunc(h.putWA)},
+		{Method: http.MethodDelete, Pattern: "/api/me/wa", Access: route.User, Handler: http.HandlerFunc(h.deleteWA)},
 		{Method: http.MethodPost, Pattern: "/api/claim", Access: route.User, Handler: http.HandlerFunc(h.issueClaim)},
 		// 两种身份都能进来：有身份的人凭 token 兑换时会先拿到 409，确认后才切换。
 		// 「凭码兑换只给没有身份的设备用」是业务规则，在 handler 里判。
@@ -91,13 +94,23 @@ func (h *handler) getMe(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, "读取设备列表失败", err)
 		return
 	}
+	phone, err := h.svc.WAPhone(r.Context(), current.User.ID)
+	if err != nil {
+		writeServiceError(w, "读取 WhatsApp 号码失败", err)
+		return
+	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"user": toUserJSON(current.User),
 		// 当前这台设备的 id：前端「不是我」要拿它去调用退出接口（#36）。
 		"device_id": current.Device.ID,
 		"devices":   toDevicesJSON(devices),
-	})
+	}
+	// 绑定的 WhatsApp 号码（#116，E.164）。没绑定就没有这个字段。只在这里给自己看。
+	if phone != "" {
+		body["wa_phone"] = phone
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // signOutDevice 退出另一台设备（§10.3）。只能退自己的。
