@@ -419,7 +419,7 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `public` | 识别身份，访客也能用；被封禁 403 `banned` | `GET /api/games`、`POST /api/me`、`POST /api/agent`、`GET /ws` |
 | `user` | 必须有身份，访客 401 `unauthorized`；被封禁 403 `banned` | 报名、开局、`GET /api/me` |
 
-`GET /ws` 是唯一的例外（`DeferBan`）：中间件只把封禁状态记进 ctx，握手先查 Origin 和连接数，再以 403 拒绝被封禁的身份。「是不是这一局的局头」要看具体是哪一局，属于业务逻辑，在 games 的 service 里判。`cmd/guandan` 的路由表测试把整张表（方法、路径、身份要求、handler）逐条列出；授权矩阵测试按表对每条路由用访客、普通用户、局头、被封禁的用户各打一次。
+`GET /ws` 是唯一的例外（`DeferIdentity`）：中间件不马上识别身份，握手先查 Origin、是否在关闭、每个 IP 的连接数，过了这几关才识别身份、查封禁（同一个 `identity.Service.Resolve`），被封禁的以 403 拒绝。这样连接上限也护住了数据库。「是不是这一局的局头」要看具体是哪一局，属于业务逻辑，在 games 的 service 里判。`cmd/guandan` 的路由表测试把整张表（方法、路径、身份要求、handler）逐条列出；授权矩阵测试按表对每条路由用访客、普通用户、局头、被封禁的用户各打一次。
 
 中间件：
 - 身份：唯一的入口（`httpapi.withIdentity`），按路由表的要求从 `__Host-gd_dev` cookie 解析出用户、查一次封禁，放进 ctx；各包用 `identity.FromContext` 取，不再各自查；

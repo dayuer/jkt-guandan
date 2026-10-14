@@ -80,9 +80,9 @@ func newFixtureWithHub(t *testing.T, dev bool, hub *realtime.Hub) *fixture {
 	// 用 NewServer 的话测试里根本认不出身份。
 	routes := identity.Routes(svc)
 	if hub != nil {
-		// 和 cmd/guandan 的组装一样：/ws 走同一个身份中间件，封禁交给握手处理（DeferBan）。
+		// 和 cmd/guandan 的组装一样：/ws 走同一个身份中间件，过了 Origin 和连接数检查才识别身份（DeferIdentity）。
 		routes = append(routes, route.Route{
-			Method: http.MethodGet, Pattern: "/ws", Access: route.Public, DeferBan: true,
+			Method: http.MethodGet, Pattern: "/ws", Access: route.Public, DeferIdentity: true,
 			Handler: realtime.Handler(realtime.Options{
 				Hub:         hub,
 				AllowOrigin: cfg.AllowsOrigin,
