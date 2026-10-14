@@ -2,24 +2,50 @@ package share
 
 import (
 	"errors"
+	"fmt"
+	"image"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/games"
 )
 
+// Options 组装分享相关的路由。
+type Options struct {
+	Games     *games.Service
+	PublicURL string
+	Clock     clock.Clock
+	// Dist 是前端构建产物（web/dist）。有 index.html 时才挂 GET /g/{code}，否则交给前端兜底。
+	Dist fs.FS
+}
+
 // Register 挂上分享相关的路由。它们是公开的（和 GET /api/games/{code} 能看到的数据一致），不需要身份。
 //
-//	GET /g/{code}/game.ics   日历文件（§5.4）：Safari、Chrome 里「加到日历」
-//	GET /g/{code}/google     302 到 Google Calendar 的新建事件页（方案 §6）
+//	GET /g/{code}              注入了这一局 OG 标签的页面（§5.4）：微信、WhatsApp 的链接预览
+//	GET /g/{code}/og.png       1200×630 的预览图
+//	GET /g/{code}/poster.png   1080×1440 的海报（设计稿 C2），带指向牌局页面的二维码
+//	GET /g/{code}/game.ics     日历文件（§5.4）：Safari、Chrome 里「加到日历」
+//	GET /g/{code}/google       302 到 Google Calendar 的新建事件页（方案 §6）
 //
-// 微信内置浏览器下载不了 .ics，前端在那里不显示这两个按钮，改为引导跳出（方案 §6）。
-func Register(mux *http.ServeMux, svc *games.Service, publicURL string, clk clock.Clock) {
-	if clk == nil {
-		clk = clock.System{}
+// 微信内置浏览器下载不了 .ics，前端在那里不显示日历按钮，改为引导跳出（方案 §6）。
+func Register(mux *http.ServeMux, opts Options) {
+	if opts.Clock == nil {
+		opts.Clock = clock.System{}
 	}
-	h := &handler{svc: svc, publicURL: publicURL, clk: clk}
+	h := &handler{svc: opts.Games, publicURL: opts.PublicURL, clk: opts.Clock, images: newImageCache(256, 2)}
+	if opts.Dist != nil {
+		if page, err := NewPage(opts.Dist); err == nil {
+			h.page = page
+			mux.HandleFunc("GET /g/{code}", h.ogPage)
+		} else {
+			slog.Warn("前端没有构建，/g/{code} 不注入 OG 标签", "err", err)
+		}
+	}
+	mux.HandleFunc("GET /g/{code}/og.png", h.ogImage)
+	mux.HandleFunc("GET /g/{code}/poster.png", h.posterImage)
 	mux.HandleFunc("GET /g/{code}/game.ics", h.ics)
 	mux.HandleFunc("GET /g/{code}/google", h.google)
 }
@@ -28,20 +54,99 @@ type handler struct {
 	svc       *games.Service
 	publicURL string
 	clk       clock.Clock
+	page      *Page
+	images    *imageCache
 }
 
-func (h *handler) event(w http.ResponseWriter, r *http.Request) (Event, bool) {
+// game 读出这一局；不存在 404，出错 503（都已经写好响应）。
+func (h *handler) game(w http.ResponseWriter, r *http.Request) (*games.Detail, bool) {
 	d, err := h.svc.Get(r.Context(), r.PathValue("code"), "")
 	if errors.Is(err, games.ErrNotFound) {
 		http.Error(w, "牌局不存在", http.StatusNotFound)
-		return Event{}, false
+		return nil, false
 	}
 	if err != nil {
 		slog.Error("读取牌局失败", "code", r.PathValue("code"), "err", err)
 		http.Error(w, "暂时无法读取牌局", http.StatusServiceUnavailable)
+		return nil, false
+	}
+	return d, true
+}
+
+func (h *handler) event(w http.ResponseWriter, r *http.Request) (Event, bool) {
+	d, ok := h.game(w, r)
+	if !ok {
 		return Event{}, false
 	}
 	return EventFor(d, h.publicURL), true
+}
+
+// ogPage 返回注入了这一局 OG 标签的页面。牌局不存在（或读取出错）时返回普通的 index.html，
+// 由前端显示「这局不存在」：链接预览拿到的是站点默认的标题。
+func (h *handler) ogPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	d, err := h.svc.Get(r.Context(), r.PathValue("code"), "")
+	if err != nil {
+		if !errors.Is(err, games.ErrNotFound) {
+			slog.Error("读取牌局失败", "code", r.PathValue("code"), "err", err)
+		}
+		_, _ = w.Write(h.page.Index())
+		return
+	}
+	body, err := h.page.Render(OGFor(d, h.publicURL, h.clk.Now()))
+	if err != nil {
+		slog.Error("渲染 OG 页面失败", "code", d.Game.ShortCode, "err", err)
+		body = h.page.Index()
+	}
+	_, _ = w.Write(body)
+}
+
+func (h *handler) ogImage(w http.ResponseWriter, r *http.Request) { h.image(w, r, "og", RenderOG) }
+func (h *handler) posterImage(w http.ResponseWriter, r *http.Request) {
+	h.image(w, r, "poster", RenderPoster)
+}
+
+// image 返回渲染好的图：缓存键是「种类 + 短码 + 版本号 + 座位数」，同键合并、最多 2 个并发渲染。
+// 渲染失败时返回内置的通用 OG 图（§12.5），并记 error 日志。
+func (h *handler) image(w http.ResponseWriter, r *http.Request, kind string, render func(Card) (image.Image, error)) {
+	d, ok := h.game(w, r)
+	if !ok {
+		return
+	}
+	key := fmt.Sprintf("%s|%s|%d|%d", kind, d.Game.ShortCode, d.Game.Version, len(d.Seats))
+	card := CardFor(d, h.publicURL, h.clk.Now())
+	png, err := h.images.get(r.Context(), key, func() ([]byte, error) {
+		img, err := render(card)
+		if err != nil {
+			return nil, err
+		}
+		return EncodePNG(img)
+	})
+	if err != nil {
+		slog.Error("渲染图片失败，返回通用图", "kind", kind, "code", d.Game.ShortCode, "err", err)
+		png = genericOG()
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	_, _ = w.Write(png)
+}
+
+var (
+	genericOnce sync.Once
+	genericPNG  []byte
+)
+
+// genericOG 是兜底的通用 OG 图，进程里只渲染一次。
+func genericOG() []byte {
+	genericOnce.Do(func() {
+		b, err := EncodePNG(RenderGenericOG())
+		if err != nil {
+			panic(err) // 纯色加形状，编码不会失败
+		}
+		genericPNG = b
+	})
+	return genericPNG
 }
 
 func (h *handler) ics(w http.ResponseWriter, r *http.Request) {
