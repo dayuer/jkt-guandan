@@ -19,6 +19,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/agent"
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/config"
+	"github.com/dayuer/jkt-guandan/internal/friends"
 	"github.com/dayuer/jkt-guandan/internal/games"
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/internal/identity"
@@ -71,7 +72,7 @@ func newApp(t *testing.T) *app {
 	opts := httpapi.Options{
 		Config: cfg, Store: st, Clock: clk, Identity: identitySvc,
 		Routes: appRoutes(appDeps{
-			identity: identitySvc, games: gamesSvc, notify: notifySvc,
+			identity: identitySvc, games: gamesSvc, notify: notifySvc, friends: friends.NewService(st, clk),
 			ws: realtime.Handler(realtime.Options{
 				Hub: hub, AllowOrigin: cfg.AllowsOrigin, Identify: realtimeIdentify,
 				Revalidate: func(ctx context.Context, p realtime.Principal) bool {
@@ -97,6 +98,7 @@ func TestRouteTable(t *testing.T) {
 	want := []row{
 		{"GET /healthz", "anonymous", "httpapi.(*Server).healthz"},
 		{"GET /readyz", "anonymous", "httpapi.(*Server).readyz"},
+		{"GET /api/config", "anonymous", "httpapi.(*Server).publicConfig"},
 		{"POST /api/me", "public", "identity.(*handler).createMe"},
 		{"GET /api/me", "user", "identity.(*handler).getMe"},
 		{"DELETE /api/me/devices/{id}", "user", "identity.(*handler).signOutDevice"},
@@ -120,6 +122,9 @@ func TestRouteTable(t *testing.T) {
 		{"GET /api/push/key", "anonymous", "notify.(*handler).key"},
 		{"POST /api/push/subscribe", "user", "notify.(*handler).subscribe"},
 		{"DELETE /api/push/subscribe", "user", "notify.(*handler).unsubscribe"},
+		{"GET /api/friends", "user", "friends.(*handler).list"},
+		{"PUT /api/follows/{user_id}", "user", "friends.(*handler).star"},
+		{"DELETE /api/follows/{user_id}", "user", "friends.(*handler).unstar"},
 		{"POST /api/agent", "public", "agent.(*handler).draft"},
 		{" /", "anonymous", "httpapi.referrerPolicyForClaim.func1"},
 	}

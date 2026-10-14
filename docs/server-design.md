@@ -364,6 +364,7 @@ CREATE INDEX events_name_at ON events(name, at);
 GET  /healthz                         存活检查：进程还在、能处理请求即可
 GET  /readyz                          就绪检查：数据库可写、后台任务的心跳没超时、磁盘剩余空间充足（§12.5）
 GET  /api/push/key                    VAPID 公钥
+GET  /api/config                      前端用的公开配置（09 牌友的群信息，#108）
 POST /api/me                          首次填称呼
 GET  /api/me                          当前身份
 POST /api/claim                       签发 claim token 和认领码
@@ -390,6 +391,28 @@ GET  /ws                              WebSocket（见 §5.5）
 GET  /g/{code} · /g/{code}/og.png · /g/{code}/poster.png · /g/{code}/game.ics
 GET  /*                               内嵌的前端页面（单页应用，未知路径回落到 index.html）
 ```
+
+**09 牌友**（#108，设计稿 F1）。三个接口都要有身份（`route.User`），访客 401，被封禁 403：
+
+- `GET /api/friends`：和我一起坐过同一局的人。
+  ```json
+  {"friends":[
+    {"user":{"id":"01J…","nickname":"阿明"},"together_count":3,"last_together_at":1791986400,"starred":true},
+    {"user":{"id":"01J…","nickname":"Lily"},"together_count":5,"last_together_at":1791900000,"starred":false}
+  ]}
+  ```
+  - 「一起坐过」= 两个人在同一局的 seats 里，并且这一局没有取消（`open`、`full`、`done` 都算），从 seats 实时算，不单独存。
+  - 排序：星标的在前，然后按 `together_count` 从多到少、`last_together_at`（最近一起的那一局的开局时间）从新到旧。最多 200 人。
+  - 不出现：自己、已注销、被封禁、被合并掉的身份。只有这一个列表，不提供按称呼搜索用户的接口（§10.9）。
+  - 没有牌友时是 `{"friends":[]}`。
+- `PUT /api/follows/{user_id}` 星标、`DELETE /api/follows/{user_id}` 取消星标：都是幂等的，成功返回 `204`。只能对 `GET /api/friends` 里会出现的人做；不是牌友（没一起坐过、只在取消的局里同桌、自己、不存在、已注销、被封禁）一律 `404 not_friend`，接口不能用来探测用户 id。星标是单向的，对方看不到。
+- 合并身份（`guandan admin` 的 merge）时，星标两个方向都搬到保留的身份上；原来互相星标的不会变成自己星标自己。注销时删掉这个人的星标和别人对他的星标。
+
+**`GET /api/config`**：前端用的公开配置，不识别身份，`Cache-Control: public, max-age=300`。
+```json
+{"group":{"wechat_id":"jktguandan","whatsapp_group_url":"https://chat.whatsapp.com/AbCdEf"}}
+```
+`group` 是 09 牌友顶部「雅加达掼蛋群」横幅用的，来自 `GUANDAN_GROUP_WECHAT_ID`、`GUANDAN_GROUP_WHATSAPP_URL`；没配置的那一项是空串，两项都空时前端不显示横幅。
 
 **蛋蛋 `POST /api/agent`**（#11，§10.10）：只出草稿，不写库。
 
@@ -451,6 +474,8 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `GUANDAN_BACKUP_KEY` | 空 | 备份加密用的 age 公钥；设置了备份地址时必须提供 |
 | `ANTHROPIC_API_KEY` | 空 | 为空时蛋蛋不可用（`POST /api/agent` 返回 `503 agent_disabled`），前端退回到表单（phase:3） |
 | `GUANDAN_AGENT_MODEL` | `claude-sonnet-5-5` | 蛋蛋用的 Claude 模型 |
+| `GUANDAN_GROUP_WECHAT_ID` | 空 | 09 牌友顶部「雅加达掼蛋群」横幅里的微信号（#108），经 `GET /api/config` 给前端 |
+| `GUANDAN_GROUP_WHATSAPP_URL` | 空 | 同上，WhatsApp 群链接；必须是 https 地址，否则启动时报错 |
 
 ## 8. 打包与部署
 

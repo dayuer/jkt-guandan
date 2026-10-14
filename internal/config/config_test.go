@@ -14,6 +14,7 @@ func clearEnv(t *testing.T) {
 		"GUANDAN_DATA", "GUANDAN_ADDR", "GUANDAN_DOMAIN", "GUANDAN_PUBLIC_URL",
 		"GUANDAN_ADMIN_EMAIL", "GUANDAN_DEV", "GUANDAN_BACKUP_URL",
 		"GUANDAN_BACKUP_KEY", "ANTHROPIC_API_KEY",
+		"GUANDAN_GROUP_WECHAT_ID", "GUANDAN_GROUP_WHATSAPP_URL",
 		"AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
 	} {
 		t.Setenv(k, "")
@@ -225,5 +226,26 @@ func TestTrustedProxies(t *testing.T) {
 	t.Setenv("GUANDAN_TRUSTED_PROXIES", "not-a-cidr")
 	if _, err := config.Load(); err == nil {
 		t.Fatal("不合法的网段应报错")
+	}
+}
+
+// 群信息（#108）：没配就是空；WhatsApp 群链接会原样放进页面的链接里，只接受 https。
+func TestLoadGroupInfo(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("GUANDAN_DEV", "1")
+	if c, err := config.Load(); err != nil || c.GroupWeChatID != "" || c.GroupWhatsAppURL != "" {
+		t.Fatalf("没配置时应为空：%+v %v", c, err)
+	}
+	t.Setenv("GUANDAN_GROUP_WECHAT_ID", " jktguandan ")
+	t.Setenv("GUANDAN_GROUP_WHATSAPP_URL", "https://chat.whatsapp.com/AbCdEf")
+	c, err := config.Load()
+	if err != nil || c.GroupWeChatID != "jktguandan" || c.GroupWhatsAppURL != "https://chat.whatsapp.com/AbCdEf" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	for _, bad := range []string{"javascript:alert(1)", "http://chat.whatsapp.com/x", "chat.whatsapp.com/x", "https://"} {
+		t.Setenv("GUANDAN_GROUP_WHATSAPP_URL", bad)
+		if _, err := config.Load(); err == nil {
+			t.Errorf("GUANDAN_GROUP_WHATSAPP_URL=%q 应当报错", bad)
+		}
 	}
 }

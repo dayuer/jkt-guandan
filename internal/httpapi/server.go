@@ -133,6 +133,18 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// publicConfig 返回前端要的、由部署方配置的公开信息（#108）：09 牌友顶部「雅加达掼蛋群」横幅的
+// 微信号和 WhatsApp 群链接，没配置就是空串，前端据此隐藏横幅。不识别身份，可以缓存一会儿。
+func (s *Server) publicConfig(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"group": map[string]string{
+			"wechat_id":          s.cfg.GroupWeChatID,
+			"whatsapp_group_url": s.cfg.GroupWhatsAppURL,
+		},
+	})
+}
+
 // writeJSON 写出 JSON 响应。
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
