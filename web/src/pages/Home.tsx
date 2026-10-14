@@ -79,7 +79,7 @@ export function Home({ me, onOpen, onCreate, toast }: Props) {
 
   return (
     <>
-      <div class="body">
+      <div class="body has-bar">
         <div class="head">
           <h1>随时掼掼蛋</h1>
           <p class="sub">

@@ -199,6 +199,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   }, [isHost, closed, me?.id, toast]);
 
   if (!detail) {
+    // 还没拿到数据时底部没有操作栏，不用留那一块空白。
     return (
       <div class="body">
         <Nav title="牌局详情" onBack={onBack} />
@@ -212,7 +213,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
 
   return (
     <>
-      <div class="body">
+      <div class="body has-actionbar">
         <Nav title="牌局详情" onBack={onBack} />
 
         {myWait && !closed && (

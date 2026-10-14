@@ -67,10 +67,11 @@ button:disabled {
 #app {
   max-width: 480px;
   margin: 0 auto;
+  /* 100dvh 跟着地址栏、工具条的伸缩走；老浏览器不认识 dvh，前面那行是回退（#53）。 */
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .serif {
@@ -101,8 +102,22 @@ button:disabled {
 
 .body {
   flex: 1;
-  overflow-y: auto;
-  padding-bottom: var(--s4);
+  padding-bottom: calc(var(--s4) + env(safe-area-inset-bottom, 0px));
+}
+
+/* 页面底部有固定条（tab 栏 / 操作栏）时，滚动内容要留出同样的高度，
+   否则最后一张卡片会被压在底下（#53）。 */
+.body.has-bar,
+.body.has-actionbar {
+  padding-bottom: calc(var(--bar-height, 0px) + var(--s4) + env(safe-area-inset-bottom, 0px));
+}
+
+.body.has-bar {
+  --bar-height: 76px; /* .tabbar 的高度 */
+}
+
+.body.has-actionbar {
+  --bar-height: 90px; /* .actionbar：52 的按钮 + 上下内边距 */
 }
 
 .pad {
@@ -161,13 +176,20 @@ button:disabled {
 /* 底部操作栏 */
 /* 用 flex 而不是固定列数：访客只有一个按钮、局头有三个按钮，都不该出现空洞。 */
 .actionbar {
-  flex: none;
+  /* 和 .tabbar 一样固定在底部：不然内容短时它浮在屏幕中间，内容长时被滚走（#53）。 */
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: 480px;
+  margin: 0 auto;
   display: flex;
   flex-wrap: wrap;
   gap: var(--s3);
-  padding: 14px 18px 24px;
+  padding: 14px 18px calc(24px + env(safe-area-inset-bottom, 0px));
   background: var(--card);
   border-top: 1px solid var(--line);
+  z-index: 10;
 }
 
 .actionbar .btn {
@@ -701,7 +723,8 @@ button:disabled {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 96px;
+  /* 96 是给底部固定条留的位置，再加安全区（#53）。 */
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   background: var(--ink);
   color: var(--cream);
@@ -923,13 +946,25 @@ button:disabled {
 
 /* 底部 Tab：中间是「蛋」 */
 .tabbar {
-  flex: none;
+  /* 固定在视口底部，而不是跟在内容后面——内容少时停在屏幕中间、内容多时被滚走，
+     都是线上报过的问题（#53）。 */
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* 宽屏上应用容器是居中的（#app 的 max-width），导航条要和它一样宽、一样居中。 */
+  max-width: 480px;
+  margin: 0 auto;
   height: 76px;
+  padding-top: 8px;
+  /* iPhone 底部那条 home 指示器：不让按钮压在它上面。 */
+  padding-bottom: env(safe-area-inset-bottom, 0px);
   background: var(--white);
   border-top: 1px solid var(--line);
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  padding-top: 8px;
+  /* 高于页面内容（内容没有 z-index），低于遮罩 20 / 弹层 25 / toast 40。 */
+  z-index: 10;
 }
 
 .tab {
