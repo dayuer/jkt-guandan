@@ -7,14 +7,28 @@
 
 const E164 = /^\+[1-9]\d{7,14}$/;
 
-/** 规范成 E.164；认不出来返回 null。 */
+/**
+ * 规范成 E.164；认不出来、或者猜不准是哪个国家，返回 null（页面会让用户加上国家码）。
+ *
+ * 只在没有歧义时补 +62：
+ *   - 带「+」或「00」的：国家码是用户自己写的，原样用；
+ *   - 「0」开头：印尼本地写法（0812…），去掉 0 补 +62；
+ *   - 「62」开头、后面是 8 开头的 9–12 位：印尼号码少写了「+」；
+ *   - 「8」开头的 9–12 位裸号：印尼手机号省了开头的 0（812…）；
+ *   - 「86」开头的 13 位：中国手机号少写了「+」（86 138 1234 5678）。
+ * 其他「86」开头的裸号既可能是 +86 也可能是印尼号，不猜（#125 复审）。
+ */
 export function normalizeWaPhone(input: string): string | null {
-  let s = input.trim().replace(/[\s\-().]/g, "");
-  if (s.startsWith("00")) s = "+" + s.slice(2);
-  else if (s.startsWith("0")) s = "+62" + s.slice(1); // 印尼本地写法
-  else if (s.startsWith("62")) s = "+" + s;
-  else if (s.startsWith("8")) s = "+62" + s; // 只写了「812…」
-  return E164.test(s) ? s : null;
+  const s = input.trim().replace(/[\s\-().]/g, "");
+  let out: string | null = null;
+  if (s.startsWith("+")) out = s;
+  else if (s.startsWith("00")) out = "+" + s.slice(2);
+  else if (!/^\d+$/.test(s)) out = null;
+  else if (s.startsWith("0")) out = "+62" + s.slice(1);
+  else if (/^628\d{8,11}$/.test(s)) out = "+" + s;
+  else if (/^86\d{11}$/.test(s)) out = "+" + s;
+  else if (/^8\d{8,11}$/.test(s) && !s.startsWith("86")) out = "+62" + s;
+  return out && E164.test(out) ? out : null;
 }
 
 /** 页面上显示的脱敏号码：「+62 812****890」。 */

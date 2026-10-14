@@ -26,7 +26,7 @@ export function WaSheet({ current, toast, onChange, onClose }: Props) {
     if (busy) return;
     const phone = normalizeWaPhone(value);
     if (!phone) {
-      setError("号码不对，写成 0812 3456 7890 或 +62 812 3456 7890 这样");
+      setError("认不出这个号码。请带上国家码，比如 +62 812 3456 7890 或 +86 138 1234 5678");
       return;
     }
     setBusy(true);

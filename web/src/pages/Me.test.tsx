@@ -124,7 +124,7 @@ describe("我的 · 绑定 WhatsApp（G2）", () => {
     await act(async () => {});
     await click(container.querySelector("[data-testid=wa-sheet]")!, "绑定");
     await act(async () => {});
-    expect(container.textContent).toContain("号码不对");
+    expect(container.textContent).toContain("请带上国家码");
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
   });
 
