@@ -66,6 +66,7 @@ CREATE TABLE claim_tokens (
   user_id    TEXT NOT NULL REFERENCES users(id),
   expires_at INTEGER NOT NULL,             -- 签发后 10 分钟
   used_at    INTEGER,
+  attempts   INTEGER NOT NULL DEFAULT 0,   -- 已弃用：代码不再读写（#95），留着是为了回滚到旧版本时 INSERT 还能用；以后在计划好的 breaking 发布里再删
   issued_net TEXT                          -- 签发时的客户端网络（IPv4 /24、IPv6 /64），兑换认领码时必须一致（0002_claim_net.sql）
 );
 -- 有效码唯一（0002_claim_net.sql 改为 UNIQUE；作废旧码时写 used_at 把号码让出来）
