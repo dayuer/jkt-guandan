@@ -1,0 +1,133 @@
+package moderate
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestCheckBlocksGamblingAndMoney(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want string // 期望命中的词，空表示不该命中
+	}{
+		// §14 举的例子。
+		{"设计稿的例子", "一把 50 块钱，输了请宵夜", "钱"},
+
+		{"中文赌博", "周末打个小赌", "赌"},
+		{"筹码", "输的人买筹码", "筹码"},
+		{"彩头", "带点彩头好玩", "彩头"},
+		{"下注", "可以下注吗", "下注"},
+
+		{"印尼语", "judi online santai", "judi"},
+		{"马来语", "taruhan kecil aja", "taruhan"},
+		{"英语整词", "small bet ok?", "bet"},
+		{"英语 chips", "bring chips", "chips"},
+
+		// 繁体输入法（雅加达华人里不少）：同一个词换个字形不能就绕过去。
+		{"繁体钱", "一把50塊錢，輸了請宵夜", "钱"},
+		{"繁体赌", "賭博不好", "赌"},
+		{"繁体加空格", "賭 博不好", "赌"},
+		{"繁体筹码", "輸的人買籌碼", "筹码"},
+		{"繁体彩头", "帶點彩頭好玩", "彩头"},
+		{"繁体赢钱", "贏錢請宵夜", "钱"},
+		{"全角拉丁", "ｓｍａｌｌ ｂｅｔ ｏｋ？", "bet"},
+
+		// 绕过写法：加空格、加连字符、加零宽字符。
+		{"中间加空格", "赌 博不好", "赌"},
+		{"中间加连字符", "赌-博不好", "赌"},
+		{"零宽字符", "赌\u200b博不好", "赌"},
+
+		// 正常内容不该命中——误伤的代价比漏掉高。
+		{"正常地点", "Pacific Place · 鼎泰丰包间", ""},
+		{"正常备注", "新手局，随便打打，教规则", ""},
+		{"海鲜餐厅", "Bandar Djakarta 二楼包间", ""},
+		{"better 里没有 bet", "better safe than sorry", ""},
+		{"alphabet 里没有 bet", "alphabet street", ""},
+		{"拉丁词不做子串匹配", "betsy's place", ""},
+		{"放哪儿", "taruh di mana?", ""},
+		// 口径：宁可漏拦不可误拦。这几个词都有人问过要不要加，裁定是不加。
+		{"红包", "打完了发个红包，图个乐", ""},
+		{"押金", "场地要押金，人均大概 200", ""},
+		{"空", "   ", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hit := Check("note", tc.text)
+			if tc.want == "" {
+				if hit != nil {
+					t.Fatalf("%q 不该命中，却命中了 %q", tc.text, hit.Word)
+				}
+				return
+			}
+			if hit == nil {
+				t.Fatalf("%q 应当命中 %q", tc.text, tc.want)
+			}
+			if hit.Word != tc.want {
+				t.Fatalf("命中的词是 %q，期望 %q", hit.Word, tc.want)
+			}
+			if hit.Field != "note" {
+				t.Fatalf("字段名是 %q，期望 note", hit.Field)
+			}
+		})
+	}
+}
+
+// 繁简映射表本身要能被读进来；词表里写繁体也应当照样匹配。
+func TestTraditionalMapIsLoaded(t *testing.T) {
+	if n := TraditionalPairs(); n < 8 {
+		t.Fatalf("繁简映射只读到 %d 条，traditional.txt 八成没读进来", n)
+	}
+	// 繁体写法直接用一次：Check 会 fold，映射表和词表都过一遍。
+	for _, text := range []string{"賭錢", "籌碼", "贏錢", "抽頭"} {
+		if hit := Check("note", text); hit == nil {
+			t.Errorf("%q 应当命中", text)
+		}
+	}
+}
+
+// 词表挡的是明显的字眼，不是金额本身：「一把 200」这种没有敏感词、只写数字的写法
+// 挡不住，也不打算挡（写「人均 200」是正常需求）。这一点在 words.txt 里也写了。
+
+// 前端要靠字段名把提示放到对应的输入框下面（原型 X1）。
+func TestHitCarriesFieldAndUnwraps(t *testing.T) {
+	hit := Check("venue", "钱柜包厢")
+	if hit == nil {
+		t.Fatal("应当命中")
+	}
+	if hit.Field != "venue" {
+		t.Fatalf("字段名是 %q", hit.Field)
+	}
+	if !errors.Is(hit, ErrSensitive) {
+		t.Fatal("errors.Is(err, ErrSensitive) 应当成立")
+	}
+	if !strings.Contains(hit.Error(), "venue") || !strings.Contains(hit.Error(), hit.Word) {
+		t.Fatalf("错误信息里应当有字段名和词：%s", hit.Error())
+	}
+}
+
+// 词表本身要能被读出来，而且没有空行、没有重复——改词表改错了启动就该知道。
+func TestWordListIsSane(t *testing.T) {
+	list := Text()
+	if len(list) < 10 {
+		t.Fatalf("词表只有 %d 个词，八成是没读进来", len(list))
+	}
+	seen := make(map[string]bool, len(list))
+	for _, w := range list {
+		if w == "" {
+			t.Fatal("词表里有空词")
+		}
+		if strings.HasPrefix(w, "#") {
+			t.Fatalf("注释被当成词了：%q", w)
+		}
+		if w != strings.ToLower(w) {
+			t.Fatalf("词表里的词应当是小写：%q", w)
+		}
+		if seen[w] {
+			t.Fatalf("词表里有重复：%q", w)
+		}
+		seen[w] = true
+	}
+}

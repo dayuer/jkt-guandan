@@ -35,6 +35,7 @@ interface Props {
   onCreate: () => void;
   /** 底部「约局」：打开 07 蛋蛋；蛋蛋没配时由 App 改成打开 08 表单。 */
   onAgent?: () => void;
+  onMe: () => void;
   toast: (text: string) => void;
 }
 
@@ -43,7 +44,7 @@ interface Props {
  *
  * 「今天 / 明天 / 周末」由服务端按 Asia/Jakarta 算（§13.2），前端只传筛选条件。
  */
-export function Home({ me, onOpen, onCreate, onAgent, toast }: Props) {
+export function Home({ me, onOpen, onCreate, onAgent, onMe, toast }: Props) {
   const [day, setDay] = useState<Day>("");
   const [area, setArea] = useState("");
   const [games, setGames] = useState<GameSummary[] | null>(null);
@@ -173,7 +174,7 @@ export function Home({ me, onOpen, onCreate, onAgent, toast }: Props) {
         <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
       </div>
 
-      <TabBar onCreate={onAgent ?? onCreate} onTodo={(name) => toast(`「${name}」还在做`)} />
+      <TabBar onCreate={onAgent ?? onCreate} onMe={onMe} onTodo={(name) => toast(`「${name}」还在做`)} />
     </>
   );
 }
@@ -183,7 +184,15 @@ export function Home({ me, onOpen, onCreate, onAgent, toast }: Props) {
  * 服务端没配蛋蛋时直接打开 D4 开局表单。
  * 「学牌」「牌友」「我的」分别在别的 issue 里，先提示一下。
  */
-function TabBar({ onCreate, onTodo }: { onCreate: () => void; onTodo: (name: string) => void }) {
+function TabBar({
+  onCreate,
+  onMe,
+  onTodo,
+}: {
+  onCreate: () => void;
+  onMe: () => void;
+  onTodo: (name: string) => void;
+}) {
   const tabs = [
     { key: "games", label: "牌局", glyph: "♠", on: true },
     { key: "learn", label: "学牌", glyph: "♣", on: false },
@@ -198,7 +207,11 @@ function TabBar({ onCreate, onTodo }: { onCreate: () => void; onTodo: (name: str
           key={t.key}
           class={`tab${t.on ? " on" : ""}${t.egg ? " egg" : ""}`}
           aria-current={t.on ? "page" : undefined}
-          onClick={() => (t.egg ? onCreate() : t.on ? undefined : onTodo(t.label))}
+          onClick={() => {
+            if (t.egg) onCreate();
+            else if (t.key === "me") onMe();
+            else if (!t.on) onTodo(t.label);
+          }}
         >
           <span class="g" aria-hidden="true">
             {t.glyph}

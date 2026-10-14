@@ -8,8 +8,11 @@ function positionFor(seatNo: number) {
   return POSITIONS[(seatNo - 1) % POSITIONS.length];
 }
 
-/** 跳过的字符：空白、控制字符、标点、符号，以及变体选择符和零宽连接符（emoji 的组成部分）。 */
-const SKIP = /^[\s\p{Cc}\p{P}\p{S}\u{FE00}-\u{FE0F}\u{200D}]$/u;
+/**
+ * 跳过的字符：空白、控制字符、格式字符（\p{Cf}：零宽空格、ZWJ、方向标记、emoji 的 tag 字符等）、
+ * 标点、符号，以及变体选择符。从聊天软件复制来的称呼常带零宽字符和方向标记（#66 复审建议）。
+ */
+const SKIP = /^[\s\p{Cc}\p{Cf}\p{P}\p{S}\u{FE00}-\u{FE0F}]$/u;
 
 /**
  * 座位圆点里的字：称呼里第一个不是标点、符号的字，拉丁字母转大写；一个都没有就是「?」。

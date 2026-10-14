@@ -1,123 +1,40 @@
 package identity
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 
+	"github.com/dayuer/jkt-guandan/internal/route"
 	"github.com/dayuer/jkt-guandan/internal/store"
 )
 
-// Role 是授权矩阵里的身份类型（§10.12）。
-type Role string
-
-const (
-	// RoleGuest 是还没有任何身份的访客。
-	RoleGuest Role = "guest"
-	// RoleUser 是有身份的普通用户。
-	RoleUser Role = "user"
-)
-
-// Route 是身份包对外注册的一条路由，连同它的授权声明。
-//
-// Register 和授权矩阵测试用的是同一张表，而且 Register 就按 Permitted 统一做权限检查，
-// 所以「表里写了允许、handler 里忘了检查」这种情况不可能出现（§10.12）。
-type Route struct {
-	Method    string
-	Pattern   string
-	Permitted map[Role]bool
-}
-
-// Routes 是身份包的全部路由。
-var Routes = []Route{
-	{
-		Method:  http.MethodPost,
-		Pattern: "/api/me",
+// Routes 是身份包的全部路由（§6）。httpapi 按这张表注册、统一识别身份和授权（#41）；
+// 授权矩阵测试也遍历它。svc 为 nil 时只能用来列路由，不能处理请求。
+func Routes(svc *Service) []route.Route {
+	h := &handler{svc: svc}
+	return []route.Route{
 		// 访客填称呼就创建身份；已有身份的人再次提交是幂等的。
-		Permitted: map[Role]bool{RoleGuest: true, RoleUser: true},
-	},
-	{
-		Method:    http.MethodGet,
-		Pattern:   "/api/me",
-		Permitted: map[Role]bool{RoleUser: true},
-	},
-	{
-		Method:    http.MethodDelete,
-		Pattern:   "/api/me/devices/{id}",
-		Permitted: map[Role]bool{RoleUser: true},
-	},
-	{
-		Method:    http.MethodPost,
-		Pattern:   "/api/claim",
-		Permitted: map[Role]bool{RoleUser: true},
-	},
-	{
-		Method:  http.MethodPost,
-		Pattern: "/api/claim/redeem",
+		{Method: http.MethodPost, Pattern: "/api/me", Access: route.Public, Handler: http.HandlerFunc(h.createMe)},
+		{Method: http.MethodGet, Pattern: "/api/me", Access: route.User, Handler: http.HandlerFunc(h.getMe)},
+		{Method: http.MethodDelete, Pattern: "/api/me/devices/{id}", Access: route.User, Handler: http.HandlerFunc(h.signOutDevice)},
+		// 注销：删掉这个人自己的数据（§14）。访问方式与 GET/POST /api/me 同一个路径。
+		{Method: http.MethodDelete, Pattern: "/api/me", Access: route.User, Handler: http.HandlerFunc(h.deleteMe)},
+		{Method: http.MethodPost, Pattern: "/api/claim", Access: route.User, Handler: http.HandlerFunc(h.issueClaim)},
 		// 两种身份都能进来：有身份的人凭 token 兑换时会先拿到 409，确认后才切换。
 		// 「凭码兑换只给没有身份的设备用」是业务规则，在 handler 里判。
-		Permitted: map[Role]bool{RoleGuest: true, RoleUser: true},
-	},
+		{Method: http.MethodPost, Pattern: "/api/claim/redeem", Access: route.Public, Handler: http.HandlerFunc(h.redeemClaim)},
+	}
 }
 
 type handler struct{ svc *Service }
 
-// identityKey 把 gate 解析好的身份放进请求上下文，handler 不用再各查一次。
-type identityKey struct{}
-
-// Register 把身份路由挂到主 mux 上。传入的 mux 已经套好中间件，
-// 所以这里不用自己处理 CSRF、限流和日志。
-func Register(mux *http.ServeMux, svc *Service) {
-	h := &handler{svc: svc}
-	for _, rt := range Routes {
-		fn, ok := routeHandlers[rt.Method+" "+rt.Pattern]
-		if !ok {
-			// 表里有、实现没有，属于写代码时漏了，启动就应该炸。
-			panic("identity: 路由表里的路由没有实现: " + rt.Method + " " + rt.Pattern)
-		}
-		mux.HandleFunc(rt.Method+" "+rt.Pattern, h.gate(rt, fn(h)))
-	}
-}
-
-var routeHandlers = map[string]func(*handler) http.HandlerFunc{
-	"POST /api/me":                func(h *handler) http.HandlerFunc { return h.createMe },
-	"GET /api/me":                 func(h *handler) http.HandlerFunc { return h.getMe },
-	"DELETE /api/me/devices/{id}": func(h *handler) http.HandlerFunc { return h.signOutDevice },
-	"POST /api/claim":             func(h *handler) http.HandlerFunc { return h.issueClaim },
-	"POST /api/claim/redeem":      func(h *handler) http.HandlerFunc { return h.redeemClaim },
-}
-
-// gate 是统一的一层：先解析身份，再按路由表决定放不放行，最后把身份放进 ctx。
-func (h *handler) gate(rt Route, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ident := h.current(r)
-		// 被 guandan admin ban 封禁的用户或设备，之后的请求一律 403（§13.6）。
-		if ident != nil {
-			banned, err := h.svc.Banned(r.Context(), ident)
-			if err != nil {
-				writeError(w, http.StatusServiceUnavailable, "unavailable", "暂时无法处理，请稍后再试")
-				return
-			}
-			if banned {
-				writeError(w, http.StatusForbidden, "banned", "这个账号已被停用")
-				return
-			}
-		}
-		if ident == nil && !rt.Permitted[RoleGuest] {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "还没有身份")
-			return
-		}
-		next(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, ident)))
-	}
-}
-
-// requireIdentity 取出 gate 放进 ctx 的身份。声明了只允许有身份用户的路由，这里一定非 nil；
+// requireIdentity 取出中间件放进 ctx 的身份。route.User 的路由这里一定非 nil；
 // 多判一次是为了万一以后有人改了路由表。
 func requireIdentity(w http.ResponseWriter, r *http.Request) (*Identity, bool) {
-	ident, _ := r.Context().Value(identityKey{}).(*Identity)
+	ident := FromContext(r.Context())
 	if ident == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "还没有身份")
 		return nil, false
@@ -125,12 +42,9 @@ func requireIdentity(w http.ResponseWriter, r *http.Request) (*Identity, bool) {
 	return ident, true
 }
 
-// current 从 cookie 解析身份，没有或无效时返回 nil（不算错误）。
-func (h *handler) current(r *http.Request) *Identity { return h.svc.FromRequest(r) }
-
 // createMe 处理「首次填称呼」（§5.2）。
 func (h *handler) createMe(w http.ResponseWriter, r *http.Request) {
-	current, _ := r.Context().Value(identityKey{}).(*Identity)
+	current := FromContext(r.Context())
 
 	var body struct {
 		Nickname string `json:"nickname"`
@@ -211,6 +125,23 @@ func (h *handler) signOutDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// deleteMe 注销：删掉称呼、WhatsApp、设备和推送订阅，历史局里的座位显示成
+// 「已注销牌友」（§14）。注销之后这台设备就没有身份了，所以要把 cookie 清掉。
+func (h *handler) deleteMe(w http.ResponseWriter, r *http.Request) {
+	current, ok := requireIdentity(w, r)
+	if !ok {
+		return
+	}
+
+	if err := h.svc.DeleteMe(r.Context(), current); err != nil {
+		writeServiceError(w, "注销失败", err)
+		return
+	}
+
+	h.svc.Cookies().Clear(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // issueClaim 签发交接令牌和认领码（§5.2 修订）。
 func (h *handler) issueClaim(w http.ResponseWriter, r *http.Request) {
 	current, ok := requireIdentity(w, r)
@@ -241,7 +172,7 @@ func (h *handler) issueClaim(w http.ResponseWriter, r *http.Request) {
 //
 // 只有 POST 会消耗 token。抓链接预览的机器人只发 GET，所以不会把一次性 token 用掉。
 func (h *handler) redeemClaim(w http.ResponseWriter, r *http.Request) {
-	current, _ := r.Context().Value(identityKey{}).(*Identity)
+	current := FromContext(r.Context())
 
 	var body struct {
 		Token string `json:"token"`

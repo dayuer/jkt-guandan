@@ -138,16 +138,24 @@ const gameColumns = `
 	       COALESCE(g.note, ''), g.status, g.version, g.created_at
 	  FROM games g`
 
+// scanner 是 *sql.Row 和 *sql.Rows 共有的部分，让同一个扫描逻辑两处都能用。
+type scanner interface{ Scan(dest ...any) error }
+
 func scanGame(row *sql.Row) (Game, error) {
+	g, err := scanGameFrom(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Game{}, ErrNotFound
+	}
+	return g, err
+}
+
+func scanGameFrom(row scanner) (Game, error) {
 	var (
 		g                   Game
 		startsAt, createdAt int64
 	)
 	err := row.Scan(&g.ID, &g.ShortCode, &g.HostID, &startsAt, &g.Area, &g.Venue,
 		&g.Kind, &g.Note, &g.Status, &g.Version, &createdAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Game{}, ErrNotFound
-	}
 	if err != nil {
 		return Game{}, err
 	}

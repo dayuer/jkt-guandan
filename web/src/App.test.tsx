@@ -169,6 +169,38 @@ afterEach(() => {
     expect(container.textContent).toContain("不是我");
   });
 
+  // 隐私说明不要求登录（§14）：URL 直接打得开。
+  it("/privacy 不登录也能看到隐私说明", async () => {
+    visit("/privacy");
+    stubFetch((url) => {
+      if (url.startsWith("/api/me")) return respond(401, { error: { code: "unauthorized", message: "" } });
+      return anonymous(url);
+    });
+
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.textContent).toContain("我们存了什么"));
+    expect(container.textContent).toContain("180 天");
+    // 没有身份就没有可注销的东西。
+    expect(container.textContent).toContain("没有可以注销的数据");
+  });
+
+  // 底部「我的」不再是「还在做」——G1 里这一轮要放设备管理和隐私（§10.3、§14）。
+  it("点底部「我的」进我的页，能看到两项设置", async () => {
+    stubFetch(anonymous);
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.textContent).toContain("随时掼掼蛋"));
+
+    const meTab = [...container.querySelectorAll(".tabbar button")].find(
+      (b) => b.textContent?.includes("我的"),
+    ) as HTMLButtonElement;
+    meTab.click();
+
+    await vi.waitFor(() => expect(container.textContent).toContain("登录的设备"));
+    expect(container.textContent).toContain("隐私与数据");
+    // 没有身份时给的是「填个称呼」，不是一堆空设置。
+    expect(container.textContent).toContain("还没有身份");
+  });
+
   // 切换不可逆，确认屏要说清楚原身份会从这台设备上退出（#36 第 2 条）。
   it("已有身份时兑换别人的链接：先出确认屏，并说明原身份会退出", async () => {
     visit("/?claim=abc123");

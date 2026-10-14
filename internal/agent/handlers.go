@@ -16,6 +16,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/games"
 	"github.com/dayuer/jkt-guandan/internal/identity"
 	"github.com/dayuer/jkt-guandan/internal/ratelimit"
+	"github.com/dayuer/jkt-guandan/internal/route"
 )
 
 // 限流和期限（§12.3：蛋蛋每个用户每天 30 次）。没有身份也能用（07 页先说话、确认时才要称呼），
@@ -34,16 +35,17 @@ const (
 // Options 组装蛋蛋的路由。
 type Options struct {
 	// Model 为 nil 表示没配 key：POST /api/agent 返回 503 agent_disabled，前端用 08 表单。
-	Model    Model
-	Identity *identity.Service
-	Clock    clock.Clock
+	Model Model
+	Clock clock.Clock
 	// Deadline 为 0 时用 DefaultDeadline（测试里调短）。
 	Deadline time.Duration
 }
 
-// Register 挂上 POST /api/agent。路由单独在这里注册，#41 统一路由表时再并进去。
-func Register(mux *http.ServeMux, opts Options) {
-	mux.HandleFunc("POST /api/agent", newHandler(opts).draft)
+// Routes 是蛋蛋的路由。没有身份也能用（07 页先说话、确认时才要称呼），被封禁的身份由中间件 403（#41）。
+func Routes(opts Options) []route.Route {
+	return []route.Route{
+		{Method: http.MethodPost, Pattern: "/api/agent", Access: route.Public, Handler: http.HandlerFunc(newHandler(opts).draft)},
+	}
 }
 
 func newHandler(opts Options) *handler {
@@ -59,7 +61,7 @@ func newHandler(opts Options) *handler {
 		byIP:     ratelimit.New(PerIPPerDay/(24*60.0), PerIPPerDay, opts.Clock),
 		slots:    make(chan struct{}, MaxConcurrent),
 	}
-	h.device = h.deviceID
+	h.device = deviceID
 	return h
 }
 
@@ -90,15 +92,9 @@ func (h *handler) draft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 先抢并发名额，再扣额度：忙不过来时不该扣用户的次数。额度先按 IP 再按设备：
+	// IP 被拦时不扣设备的次数（设备被拦时会扣掉一次 IP 额度，IP 额度本来就宽）。
 	// 输入合法才扣额度：空着点发送不算一次。
-	if device := h.device(r); device != "" && !h.byDevice.Allow(device) {
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "今天问蛋蛋的次数用完了，直接填表吧")
-		return
-	}
-	if !h.byIP.Allow(clientIP(r)) {
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "问蛋蛋的人太多了，直接填表吧")
-		return
-	}
 	select {
 	case h.slots <- struct{}{}:
 		defer func() { <-h.slots }()
@@ -106,13 +102,21 @@ func (h *handler) draft(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "agent_busy", "蛋蛋忙不过来，直接填表吧")
 		return
 	}
+	if !h.byIP.Allow(clientIP(r)) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "问蛋蛋的人太多了，直接填表吧")
+		return
+	}
+	if device := h.device(r); device != "" && !h.byDevice.Allow(device) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "今天问蛋蛋的次数用完了，直接填表吧")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.opts.Deadline)
 	defer cancel()
 	out := &stream{w: w, cancel: cancel}
 	err := h.opts.Model.Stream(ctx, systemPrompt(h.opts.Clock.Now()), text, out.add)
-	if err == nil && out.tooLong {
-		err = errors.New("模型输出超长")
+	if out.tooLong {
+		err = errTooLong
 	}
 	if err != nil {
 		h.fail(w, r, out, err)
@@ -135,7 +139,10 @@ func (h *handler) draft(w http.ResponseWriter, r *http.Request) {
 func (h *handler) fail(w http.ResponseWriter, r *http.Request, out *stream, err error) {
 	msg := "蛋蛋走神了，直接填表吧"
 	reason := "error"
-	if errors.Is(err, context.DeadlineExceeded) {
+	switch {
+	case errors.Is(err, errTooLong):
+		reason = "too_long"
+	case errors.Is(err, context.DeadlineExceeded):
 		reason = "timeout"
 	}
 	if r.Context().Err() != nil {
@@ -149,20 +156,16 @@ func (h *handler) fail(w http.ResponseWriter, r *http.Request, out *stream, err 
 	out.event("error", map[string]string{"code": "agent_unavailable", "message": msg})
 }
 
-func (h *handler) deviceID(r *http.Request) string {
-	if h.opts.Identity == nil {
-		return ""
+// deviceID 取中间件放进 ctx 的设备 id；没有身份为空。
+func deviceID(r *http.Request) string {
+	if ident := identity.FromContext(r.Context()); ident != nil {
+		return ident.Device.ID
 	}
-	token, ok := h.opts.Identity.Cookies().Read(r)
-	if !ok {
-		return ""
-	}
-	ident, err := h.opts.Identity.Current(r.Context(), token)
-	if err != nil || ident == nil {
-		return ""
-	}
-	return ident.Device.ID
+	return ""
 }
+
+// errTooLong 是模型输出超过 maxOutputBytes：自己 cancel 掉的，日志里和上游出错分开记。
+var errTooLong = errors.New("模型输出超长")
 
 // stream 收模型的输出：分隔符之前的回复边收边推给前端，之后的草稿 JSON 攒着最后解析。
 // 第一次推的时候才写响应头，所以模型一开始就失败时还能回一个普通的 503。

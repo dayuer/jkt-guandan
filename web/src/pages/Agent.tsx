@@ -31,7 +31,17 @@ type Phase =
   | { kind: "shared"; detail: GameDetail };
 
 const MAX_TEXT = 300;
-const GREETING = "晚上好。想打牌跟我说一声，什么时候、在哪儿，我帮你排好，你点确认就行。";
+/** 按雅加达时间问好（#69 复审建议 1：之前写死「晚上好」，上午打开也这么说）。 */
+export function greeting(now: number = Math.floor(Date.now() / 1000)): string {
+  const hour = Number(timeHM(now).slice(0, 2));
+  const hello = hour >= 5 && hour < 11 ? "早上好" : hour >= 11 && hour < 18 ? "下午好" : "晚上好";
+  return `${hello}。想打牌跟我说一声，什么时候、在哪儿，我帮你排好，你点确认就行。`;
+}
+
+/** 服务端的 invalid_input 带着「输入不合法：」前缀，直接给人看太生硬（#69 复审建议 4）。 */
+export function plainInvalid(message: string): string {
+  return message.replace(/^输入不合法(?:[:：]\s*|$)/, "") || "没开成，请再试一次";
+}
 
 /** 「周四晚上打一局？」 */
 function draftTitle(startsAt?: number): string {
@@ -121,7 +131,7 @@ export function Agent({ me, requireIdentity, toast, onBack, onForm, onCreated }:
       setPhase({ kind: "shared", detail });
     } catch (err) {
       setPhase({ kind: "draft", result });
-      setError(err instanceof ApiError && err.code === "invalid_input" ? err.message : "没开成，请再试一次");
+      setError(err instanceof ApiError && err.code === "invalid_input" ? plainInvalid(err.message) : "没开成，请再试一次");
     }
   };
 
@@ -153,7 +163,7 @@ export function Agent({ me, requireIdentity, toast, onBack, onForm, onCreated }:
 
         <div class="chat" aria-live="polite">
           <p class="chat-day">今天 · 雅加达时间</p>
-          <Bubble>{GREETING}</Bubble>
+          <Bubble>{greeting()}</Bubble>
 
           {said && <div class="bubble me">{said}</div>}
 

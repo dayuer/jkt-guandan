@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/store"
+	"github.com/dayuer/jkt-guandan/migrations"
 )
 
 var opsNow = time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
@@ -48,8 +51,10 @@ func TestSnapshotIsConsistentAndVerifiable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("校验快照: %v", err)
 	}
-	if n := len(info.Migrations); n < 2 || info.Migrations[n-1] != "0003_bans.sql" {
-		t.Fatalf("快照里的迁移记录 %v", info.Migrations)
+	// 快照里应当记录到建快照那一刻执行过的迁移，也就是内嵌的全部迁移。
+	// 不写死文件名：以后加迁移这行测试不用跟着改。
+	if want := embeddedMigrations(t); !reflect.DeepEqual(info.Migrations, want) {
+		t.Fatalf("快照里的迁移记录是 %v，期望 %v", info.Migrations, want)
 	}
 	for _, suffix := range []string{"-wal", "-shm"} {
 		if _, err := os.Stat(dst + suffix); err == nil {
@@ -60,6 +65,23 @@ func TestSnapshotIsConsistentAndVerifiable(t *testing.T) {
 	if err := st.Snapshot(context.Background(), dst); err == nil {
 		t.Fatal("快照文件已存在时应报错")
 	}
+}
+
+// embeddedMigrations 按文件名顺序列出打进二进制的迁移。
+func embeddedMigrations(t *testing.T) []string {
+	t.Helper()
+	entries, err := migrations.FS.ReadDir(".")
+	if err != nil {
+		t.Fatalf("读迁移目录: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func TestVerifySnapshotRejectsGarbageAndForeignDB(t *testing.T) {
