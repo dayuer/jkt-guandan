@@ -22,6 +22,7 @@ import (
 	// 把时区数据编进二进制，不依赖镜像里有没有 tzdata（§13.2）。
 	_ "time/tzdata"
 
+	"github.com/dayuer/jkt-guandan/internal/agent"
 	"github.com/dayuer/jkt-guandan/internal/backup"
 	"github.com/dayuer/jkt-guandan/internal/buildinfo"
 	"github.com/dayuer/jkt-guandan/internal/clock"
@@ -189,6 +190,7 @@ func run() error {
 				mux.Handle("GET /ws", wsHandler)
 				share.Register(mux, share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()})
 				notify.Register(mux, notifySvc, identitySvc)
+				agent.Register(mux, agent.Options{Model: agentModel(cfg), Identity: identitySvc, Clock: clk})
 			},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -386,4 +388,13 @@ func vapidSubject(cfg config.Config) string {
 	default:
 		return "mailto:dev@localhost"
 	}
+}
+
+// agentModel 是蛋蛋背后的模型：没配 ANTHROPIC_API_KEY 时为 nil，POST /api/agent 返回 503 agent_disabled。
+func agentModel(cfg config.Config) agent.Model {
+	if cfg.AnthropicKey == "" {
+		slog.Info("没有配置 ANTHROPIC_API_KEY，蛋蛋不可用，前端用开局表单")
+		return nil
+	}
+	return agent.NewClaude(cfg.AnthropicKey, cfg.AgentModel)
 }
