@@ -1,6 +1,6 @@
 // 画布运行时：场景栈、触摸分发（点按 / 拖动）、重绘循环、底部弹层、居中对话框、toast、键盘。
 // 小游戏没有 DOM，所有「按钮」都是每帧登记的矩形热区；onTap 在 touchend 回调里同步执行，
-// 订阅消息、录音授权这类必须由用户点按触发的接口靠这一点。
+// 订阅消息这类必须由用户点按触发的接口靠这一点。
 
 import { C, Ctx, Scroller, ease, ellipsize, fillRR, font, text, wrap } from "./ui";
 
