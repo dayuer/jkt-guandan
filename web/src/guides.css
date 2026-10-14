@@ -1,0 +1,484 @@
+/*
+ * 引导屏 H1–H8（#10，设计稿 12–14）。数值一律取 tokens.css。
+ * 单独一个文件，免得和别的 PR 在 styles.css 里抢同一段。
+ */
+
+/* ── H1 · 跳出微信 / WhatsApp ─────────────────────────────────── */
+
+.jumpout {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  padding: calc(env(safe-area-inset-top) + var(--s8)) var(--s6) calc(env(safe-area-inset-bottom) + var(--s5));
+  /* 两层遮罩叠出设计稿那种更深的底，又不用新造一个颜色。 */
+  background: var(--scrim);
+  box-shadow: inset 0 0 0 100vmax var(--scrim);
+  color: var(--cream);
+  overflow-y: auto;
+}
+
+.jumpout-arrow {
+  align-self: flex-end;
+  width: 96px;
+  height: 112px;
+  margin-right: var(--s2);
+  fill: none;
+  stroke: var(--cream);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.jumpout-steps {
+  list-style: none;
+  margin: var(--s4) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--s4);
+  font: var(--fw-black) var(--fs-h2) / 1.3 var(--font-serif);
+}
+
+.jumpout-steps .n {
+  color: var(--gold);
+  margin-right: var(--s2);
+}
+
+.jumpout-steps small {
+  display: block;
+  margin: var(--s1) 0 0 calc(var(--fs-h2) + var(--s2));
+  font: 400 var(--fs-13) / 1.4 var(--font-sans);
+  color: var(--line);
+}
+
+.jumpout-menu {
+  margin-top: var(--s6);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--s2);
+  padding: var(--s4) var(--s3);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  color: var(--ink-2);
+  font-size: var(--fs-tiny);
+  text-align: center;
+  transform: rotate(-2deg);
+  box-shadow: var(--sh-float);
+}
+
+.jumpout-menu span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.jumpout-menu i {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-12);
+  background: var(--paper);
+  font-style: normal;
+  font-size: var(--fs-h2);
+  color: var(--ink);
+}
+
+.jumpout-menu .hit {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.jumpout-menu .hit i {
+  border: 3px solid var(--gold);
+  box-shadow: 0 0 0 4px var(--red-ring);
+}
+
+.jumpout-foot {
+  margin-top: auto;
+  padding-top: var(--s6);
+  text-align: center;
+  font-size: var(--fs-body);
+}
+
+.jumpout-alt {
+  display: block;
+  width: 100%;
+  margin-top: var(--s3);
+  padding: var(--s2);
+  color: var(--gold);
+  font-size: var(--fs-h3);
+  font-weight: 700;
+}
+
+.jumpout-close {
+  display: block;
+  width: 100%;
+  padding: var(--s2);
+  color: var(--line);
+  font-size: var(--fs-13);
+}
+
+/* ── H2 · iOS 加到主屏幕 ──────────────────────────────────────── */
+
+.homeguide {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  overflow-y: auto;
+  background: var(--paper);
+  padding: calc(env(safe-area-inset-top) + var(--s6)) var(--s4) calc(env(safe-area-inset-bottom) + 72px);
+}
+
+.homeguide h1 {
+  font: var(--fw-black) var(--fs-display) / 1.25 var(--font-serif);
+  margin: 0 var(--s8) var(--s4) var(--s2);
+}
+
+.homeguide-close {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + var(--s3));
+  right: var(--s3);
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-pill);
+  background: var(--beige);
+  color: var(--ink-2);
+  font-size: var(--fs-h2);
+}
+
+.homeguide-step {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-card);
+  padding: var(--s4);
+  margin-bottom: var(--s3);
+}
+
+.homeguide-step h2 {
+  font-size: var(--fs-h3);
+  font-weight: 700;
+  margin-bottom: var(--s3);
+}
+
+.homeguide-step h2 b {
+  font: var(--fw-black) var(--fs-h2) / 1 var(--font-serif);
+  color: var(--red);
+  margin-right: var(--s2);
+}
+
+.mock-bar {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  height: 52px;
+  border-radius: var(--r-12);
+  background: var(--beige);
+  color: var(--ink-2);
+  font-size: var(--fs-h3);
+}
+
+.mock-bar .dim {
+  color: var(--ink-4);
+}
+
+.mock-bar .ring {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-pill);
+  border: 2px solid var(--red);
+  box-shadow: var(--sh-focus);
+  color: var(--ink);
+}
+
+.mock-sheet {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-radius: var(--r-12);
+  background: var(--paper);
+  font-size: var(--fs-15);
+}
+
+.mock-sheet li {
+  display: flex;
+  justify-content: space-between;
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--line-2);
+  color: var(--ink-2);
+}
+
+.mock-sheet li:last-child {
+  border-bottom: 0;
+}
+
+.mock-sheet .hit {
+  font-weight: 700;
+  color: var(--ink);
+  border: 2px solid var(--red);
+  border-radius: var(--r-12);
+  background: var(--card);
+}
+
+.mock-home {
+  display: flex;
+  justify-content: space-around;
+  padding: var(--s4) var(--s2) var(--s3);
+  border-radius: var(--r-12);
+  background: var(--ink-2);
+  color: var(--cream);
+  font-size: var(--fs-tiny);
+}
+
+.mock-home span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.mock-home i {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--r-12);
+  background: var(--line);
+  font-style: normal;
+}
+
+.mock-home .me {
+  font-weight: 700;
+}
+
+.mock-home .me i {
+  background: var(--red);
+  color: var(--cream);
+  font-size: var(--fs-display);
+  box-shadow: 0 0 0 3px var(--ink-2), 0 0 0 5px var(--red);
+}
+
+.claimcard {
+  margin: var(--s4) 0 var(--s2);
+  padding: var(--s4);
+  border-radius: var(--r-lg);
+  background: var(--red);
+  color: var(--cream);
+  text-align: center;
+}
+
+.claimcard p {
+  font-size: var(--fs-body);
+  font-weight: 700;
+}
+
+.claimcard .digits {
+  display: flex;
+  justify-content: center;
+  gap: var(--s2);
+  margin: var(--s3) 0;
+}
+
+.claimcard .digits span {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 56px;
+  border-radius: var(--r-sm);
+  background: var(--cream);
+  color: var(--red);
+  font: var(--fw-black) var(--fs-display) / 1 var(--font-serif);
+  font-variant-numeric: tabular-nums;
+}
+
+.claimcard small {
+  font-size: var(--fs-small);
+  color: var(--red-tint);
+}
+
+.homeguide-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom) + var(--s2));
+  transform: translateX(-50%);
+  color: var(--red);
+  font: var(--fw-black) var(--fs-display) / 1 var(--font-serif);
+  pointer-events: none;
+}
+
+.homeguide-hint .bounce {
+  display: inline-block;
+  animation: guideBounce 900ms var(--ease-out) infinite alternate;
+}
+
+@keyframes guideBounce {
+  from {
+    transform: translateY(-6px);
+  }
+  to {
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .homeguide-hint .bounce {
+    animation: none;
+  }
+}
+
+/* ── H3–H8 · 主屏幕首开 ────────────────────────────────────────── */
+
+.firstrun {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: calc(env(safe-area-inset-top) + 56px) var(--s5) calc(env(safe-area-inset-bottom) + var(--s5));
+  background: var(--paper);
+  text-align: center;
+}
+
+.firstrun h1 {
+  font: var(--fw-black) var(--fs-display) / 1.3 var(--font-serif);
+  margin-top: var(--s4);
+}
+
+.firstrun-icon {
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--r-lg);
+  background: var(--red);
+  color: var(--cream);
+  font-size: var(--fs-onboard);
+  box-shadow: 0 10px 24px var(--red-ring);
+}
+
+.firstrun-card {
+  margin-top: var(--s6);
+  padding: var(--s5);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-card);
+  text-align: left;
+}
+
+.firstrun-card h2 {
+  font: var(--fw-black) var(--fs-h2) / 1.3 var(--font-serif);
+}
+
+.firstrun-card h3 {
+  font-size: var(--fs-h3);
+  font-weight: 700;
+}
+
+.firstrun-card p {
+  margin-top: var(--s1);
+  font-size: var(--fs-13);
+  color: var(--ink-2);
+}
+
+.firstrun-card .row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s3);
+  margin-top: var(--s4);
+}
+
+.firstrun + .textlink,
+.firstrun .textlink {
+  margin-top: var(--s3);
+}
+
+.codecells {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: var(--s2);
+  margin-top: var(--s4);
+}
+
+/* 真正的输入框铺满整排格子、透明；格子只负责显示。 */
+.codecells input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  font-size: var(--fs-h3); /* ≥16px，iOS 才不会聚焦时自动放大页面 */
+}
+
+.codecells span {
+  display: grid;
+  place-items: center;
+  height: 56px;
+  border-radius: var(--r-12);
+  border: 1.5px solid var(--line-2);
+  background: var(--paper);
+  font: var(--fw-black) var(--fs-display) / 1 var(--font-serif);
+  color: var(--ink);
+}
+
+.codecells:focus-within span.cur {
+  border-color: var(--red);
+  box-shadow: var(--sh-focus);
+}
+
+.codecells.error span {
+  border-color: var(--red);
+}
+
+.firstrun-card .codeerror {
+  color: var(--red);
+  margin-top: var(--s2);
+}
+
+.bell {
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 144px;
+  height: 144px;
+  border-radius: var(--r-pill);
+  background: var(--sand);
+}
+
+.bell svg {
+  width: 76px;
+  height: 76px;
+  fill: none;
+  stroke: var(--red);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.bell.solid svg path:first-child {
+  fill: var(--red);
+}
+
+.firstrun-sub {
+  margin: var(--s3) auto 0;
+  max-width: 280px;
+  font-size: var(--fs-body);
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+.firstrun-actions {
+  margin-top: auto;
+  padding-top: var(--s6);
+  display: grid;
+  gap: var(--s1);
+}

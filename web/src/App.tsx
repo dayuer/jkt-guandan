@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, getMe, signOutCurrentDevice, type UserRef } from "./api";
+import { FirstLaunch } from "./components/FirstLaunch";
 import { NicknameSheet } from "./components/NicknameSheet";
+import { shouldWelcome } from "./guide";
 import { clearIdentityMarker, redeemClaimFromURL } from "./identity";
 import { agentDisabled } from "./agent";
 import { Agent, type FormPrefill } from "./pages/Agent";
 import { CreateGame } from "./pages/CreateGame";
 import { Detail } from "./pages/Detail";
 import { Home } from "./pages/Home";
+import { isStandalone } from "./push";
 import { APP_NAME } from "./title";
 
 type Route = { name: "home" } | { name: "detail"; code: string } | { name: "new" } | { name: "agent" };
@@ -39,6 +42,8 @@ export function App() {
   const [sheetOpen, setSheetOpen] = useState(false);
   // 07 蛋蛋退回 08 表单时带过去的草稿；从别处进表单就是空的。
   const [prefill, setPrefill] = useState<FormPrefill | null>(null);
+  // 主屏幕图标第一次打开：先认人、再问提醒（H3–H8）。
+  const [welcome, setWelcome] = useState(() => shouldWelcome(isStandalone()));
 
   // 需要身份时弹层给出结果（resolve）。
   const pending = useRef<((user: UserRef | null) => void) | null>(null);
@@ -168,6 +173,8 @@ export function App() {
 
       {!ready ? (
         <p class="empty-state">正在打开…</p>
+      ) : welcome ? (
+        <FirstLaunch me={me} onIdentity={setMe} onDone={() => setWelcome(false)} />
       ) : route.name === "detail" ? (
         <Detail
           code={route.code}
