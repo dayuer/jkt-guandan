@@ -32,7 +32,7 @@ func setup(t *testing.T) (*httptest.Server, *store.Store, *clock.Fake) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	share.Register(mux, share.Options{Games: games.NewService(st, clk, nil), PublicURL: "https://guandan.synon.ai", Clock: clk})
+	mount(mux, share.Options{Games: games.NewService(st, clk, nil), PublicURL: "https://guandan.synon.ai", Clock: clk})
 	client := httptest.NewServer(mux)
 	t.Cleanup(client.Close)
 	return client, st, clk
@@ -100,5 +100,12 @@ func TestUnknownGame404(t *testing.T) {
 		if resp, _ := get(t, srv, p); resp.StatusCode != http.StatusNotFound {
 			t.Errorf("%s 状态码 %d", p, resp.StatusCode)
 		}
+	}
+}
+
+// mount 把分享路由直接挂到 mux 上（都是 route.Anonymous，不需要身份中间件）。
+func mount(mux *http.ServeMux, opts share.Options) {
+	for _, rt := range share.Routes(opts) {
+		mux.Handle(rt.Key(), rt.Handler)
 	}
 }

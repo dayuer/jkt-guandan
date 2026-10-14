@@ -2,18 +2,35 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, getMe, signOutCurrentDevice, type UserRef } from "./api";
 import { NicknameSheet } from "./components/NicknameSheet";
 import { clearIdentityMarker, redeemClaimFromURL } from "./identity";
+import { agentDisabled } from "./agent";
+import { Agent, type FormPrefill } from "./pages/Agent";
 import { CreateGame } from "./pages/CreateGame";
 import { Detail } from "./pages/Detail";
+import { Devices } from "./pages/Devices";
 import { Home } from "./pages/Home";
-import { APP_NAME } from "./title";
+import { Me } from "./pages/Me";
+import { Privacy } from "./pages/Privacy";
+import { pageTitle } from "./title";
 
-type Route = { name: "home" } | { name: "detail"; code: string } | { name: "new" };
+type Route =
+  | { name: "home" }
+  | { name: "detail"; code: string }
+  | { name: "new" }
+  | { name: "agent" }
+  | { name: "me" }
+  | { name: "devices" }
+  | { name: "privacy" };
 
 function parseRoute(): Route {
   const path = window.location.pathname;
   const match = /^\/g\/([0-9A-Za-z]+)\/?$/.exec(path);
   if (match) return { name: "detail", code: match[1] };
   if (path === "/new") return { name: "new" };
+  if (path === "/agent") return { name: "agent" };
+  if (path === "/me") return { name: "me" };
+  if (path === "/me/devices") return { name: "devices" };
+  // 隐私说明不要求登录：还没有填称呼的人也应当能看到（§14）。
+  if (path === "/privacy") return { name: "privacy" };
   return { name: "home" };
 }
 
@@ -34,6 +51,8 @@ export function App() {
   const [claim, setClaim] = useState<Claim>({ kind: "idle" });
   const [toastText, setToastText] = useState("");
   const [sheetOpen, setSheetOpen] = useState(false);
+  // 07 蛋蛋退回 08 表单时带过去的草稿；从别处进表单就是空的。
+  const [prefill, setPrefill] = useState<FormPrefill | null>(null);
 
   // 需要身份时弹层给出结果（resolve）。
   const pending = useRef<((user: UserRef | null) => void) | null>(null);
@@ -46,7 +65,7 @@ export function App() {
   // 标题（#60）：从分享链接落地时服务端注入的是这一局的标题，SPA 内跳回别的页面要换回应用名。
   // 详情页的标题由 Detail 拿到数据后自己设。
   useEffect(() => {
-    if (route.name !== "detail") document.title = APP_NAME;
+    if (route.name !== "detail") document.title = pageTitle(route.name);
   }, [route]);
 
   useEffect(() => {
@@ -178,13 +197,70 @@ export function App() {
           toast={toast}
           onBack={() => navigate("/")}
           onCreated={(code) => navigate(`/g/${code}`)}
+          prefill={prefill}
+        />
+      ) : route.name === "agent" ? (
+        <Agent
+          me={me}
+          requireIdentity={requireIdentity}
+          toast={toast}
+          onBack={() => navigate("/")}
+          onForm={(p) => {
+            setPrefill(p);
+            // 替换而不是压栈：从表单返回不该又回到一个已经失败的对话。
+            window.history.replaceState(null, "", "/new");
+            setRoute(parseRoute());
+          }}
+          // 同样替换：开局成功后在详情页点返回，不该回到一个已经用完的对话（#69 复审建议 3）。
+          onCreated={(code) => {
+            window.history.replaceState(null, "", `/g/${code}`);
+            setRoute(parseRoute());
+          }}
+        />
+      ) : route.name === "me" ? (
+        <Me
+          me={me}
+          requireIdentity={requireIdentity}
+          onDevices={() => navigate("/me/devices")}
+          onPrivacy={() => navigate("/privacy")}
+        />
+      ) : route.name === "devices" ? (
+        <Devices
+          me={me}
+          toast={toast}
+          onBack={() => navigate("/me")}
+          onSignedOut={() => {
+            clearIdentityMarker();
+            setMe(null);
+            navigate("/me");
+          }}
+        />
+      ) : route.name === "privacy" ? (
+        <Privacy
+          hasIdentity={!!me}
+          toast={toast}
+          onBack={() => navigate(me ? "/me" : "/")}
+          onDeleted={() => {
+            clearIdentityMarker();
+            setMe(null);
+            navigate("/");
+          }}
         />
       ) : (
         <Home
           me={me}
           toast={toast}
           onOpen={(code) => navigate(`/g/${code}`)}
-          onCreate={() => navigate("/new")}
+          onCreate={() => {
+            setPrefill(null);
+            navigate("/new");
+          }}
+          // 服务端没配蛋蛋（503 agent_disabled）时，「约局」直接打开表单。
+          onAgent={() => {
+            setPrefill(null);
+            navigate(agentDisabled() ? "/new" : "/agent");
+          }}
+          onMe={() => navigate("/me")}
         />
       )}
 

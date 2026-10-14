@@ -121,9 +121,21 @@ describe("分享面板（04 / C1）", () => {
     expect(copy.disabled).toBe(false);
   });
 
-  it("「取消」关掉面板", () => {
+  it("「取消」是整行的 soft 按钮，点了关掉面板", () => {
     const { container, getClosed } = setup();
-    (container.querySelector(".textlink") as HTMLButtonElement).click();
+    const cancel = [...container.querySelectorAll("button")].find((b) => b.textContent === "取消") as HTMLButtonElement;
+    expect(cancel.classList.contains("btn")).toBe(true);
+    expect(cancel.classList.contains("soft")).toBe(true);
+    cancel.click();
     expect(getClosed()).toBe(1);
+  });
+
+  // #59：对齐 C1。
+  it("按 C1：没有标题，WhatsApp 是品牌绿底，话术框里的「复制」是主按钮", () => {
+    const { container } = setup();
+    expect(container.querySelector(".sheet.share h3")).toBeNull();
+    expect(container.querySelector("[data-testid=share-sheet]")?.getAttribute("aria-label")).toBe("分享这一局");
+    expect(container.querySelector(".outlet .ico.wa svg")).not.toBeNull();
+    expect(container.querySelector(".script button")?.classList.contains("primary")).toBe(true);
   });
 });

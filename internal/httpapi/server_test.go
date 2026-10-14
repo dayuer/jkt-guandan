@@ -20,6 +20,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/internal/metrics"
 	"github.com/dayuer/jkt-guandan/internal/realtime"
+	"github.com/dayuer/jkt-guandan/internal/route"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
 	"github.com/dayuer/jkt-guandan/web"
@@ -33,7 +34,7 @@ type fixture struct {
 }
 
 // newFixture 起一个真实的 HTTP 服务，数据库用 t.TempDir() 下的真文件。
-func newFixture(t *testing.T, cfg config.Config, routes func(*http.ServeMux)) *fixture {
+func newFixture(t *testing.T, cfg config.Config, routes func(*routeRecorder)) *fixture {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -51,11 +52,11 @@ func newFixture(t *testing.T, cfg config.Config, routes func(*http.ServeMux)) *f
 	cfg.DataDir = dir
 
 	srv := httptest.NewServer(httpapi.New(httpapi.Options{
-		Config:         cfg,
-		Store:          st,
-		Group:          group,
-		Clock:          clk,
-		RegisterRoutes: routes,
+		Config: cfg,
+		Store:  st,
+		Group:  group,
+		Clock:  clk,
+		Routes: record(routes),
 	}))
 	t.Cleanup(srv.Close)
 
@@ -223,7 +224,7 @@ func TestCSRFRejectsForeignOrigin(t *testing.T) {
 
 func TestCSRFAllowsSameOriginJSON(t *testing.T) {
 	seen := false
-	f := newFixture(t, config.Config{PublicURL: "https://guandan.id"}, func(mux *http.ServeMux) {
+	f := newFixture(t, config.Config{PublicURL: "https://guandan.id"}, func(mux *routeRecorder) {
 		mux.HandleFunc("POST /api/ping", func(w http.ResponseWriter, r *http.Request) {
 			seen = true
 			w.WriteHeader(http.StatusNoContent)
@@ -249,7 +250,7 @@ func TestCSRFAllowsSameOriginJSON(t *testing.T) {
 
 // 单个请求 panic 要变成 500，不能把进程带走（§12.2）。
 func TestPanicRecovery(t *testing.T) {
-	f := newFixture(t, config.Config{}, func(mux *http.ServeMux) {
+	f := newFixture(t, config.Config{}, func(mux *routeRecorder) {
 		mux.HandleFunc("GET /boom", func(http.ResponseWriter, *http.Request) {
 			panic("炸了")
 		})
@@ -275,7 +276,7 @@ func TestPanicRecovery(t *testing.T) {
 // 请求体超过 64 KB 时 handler 读 body 会失败（§12.2）。
 func TestRequestBodyLimit(t *testing.T) {
 	var readErr error
-	f := newFixture(t, config.Config{PublicURL: "https://guandan.id"}, func(mux *http.ServeMux) {
+	f := newFixture(t, config.Config{PublicURL: "https://guandan.id"}, func(mux *routeRecorder) {
 		mux.HandleFunc("POST /api/echo", func(w http.ResponseWriter, r *http.Request) {
 			_, readErr = io.ReadAll(r.Body)
 			w.WriteHeader(http.StatusOK)
@@ -345,7 +346,7 @@ func TestProbesBypassConcurrencyLimit(t *testing.T) {
 		defer cancel()
 		_ = hub.Shutdown(ctx)
 	})
-	f := newFixture(t, config.Config{}, func(mux *http.ServeMux) {
+	f := newFixture(t, config.Config{}, func(mux *routeRecorder) {
 		mux.HandleFunc("GET /api/slow", func(w http.ResponseWriter, r *http.Request) {
 			entered.Done()
 			<-release
@@ -411,7 +412,7 @@ func TestProbesBypassConcurrencyLimit(t *testing.T) {
 // 经过中间件之后，ResponseWriter 仍然能 Hijack 和 Flush（#18 的 WebSocket 升级要用；
 // PR #25 复审第 6 条）。这里真的接管连接，手写一个 101 响应。
 func TestMiddlewareKeepsHijackerAndFlusher(t *testing.T) {
-	f := newFixture(t, config.Config{}, func(mux *http.ServeMux) {
+	f := newFixture(t, config.Config{}, func(mux *routeRecorder) {
 		mux.HandleFunc("GET /api/flush", func(w http.ResponseWriter, r *http.Request) {
 			if _, ok := w.(http.Flusher); !ok {
 				t.Error("ResponseWriter 应实现 http.Flusher")
@@ -498,7 +499,7 @@ func TestBuildHeaderAndRequestMetrics(t *testing.T) {
 // 经过中间件后，下游 handler 看到的 RemoteAddr 是真实客户端：只有对端是可信代理时才采用转发头。
 func TestClientIPFromTrustedProxyOnly(t *testing.T) {
 	seen := make(chan string, 1)
-	routes := func(mux *http.ServeMux) {
+	routes := func(mux *routeRecorder) {
 		mux.HandleFunc("GET /api/whoami", func(w http.ResponseWriter, r *http.Request) {
 			seen <- r.RemoteAddr
 			w.WriteHeader(http.StatusNoContent)
@@ -528,4 +529,28 @@ func TestClientIPFromTrustedProxyOnly(t *testing.T) {
 	if got := get(newFixture(t, config.Config{}, routes)); !strings.HasPrefix(got, "127.0.0.1:") {
 		t.Fatalf("不可信时应保持对端地址，实际 %q", got)
 	}
+}
+
+// routeRecorder 让测试照旧写 mux.HandleFunc("GET /x", …)，收集成路由表的条目（都不识别身份）。
+type routeRecorder struct{ routes []route.Route }
+
+func (r *routeRecorder) Handle(pattern string, h http.Handler) {
+	method, path, ok := strings.Cut(pattern, " ")
+	if !ok {
+		method, path = "", pattern
+	}
+	r.routes = append(r.routes, route.Route{Method: method, Pattern: path, Access: route.Anonymous, Handler: h})
+}
+
+func (r *routeRecorder) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	r.Handle(pattern, http.HandlerFunc(h))
+}
+
+func record(register func(*routeRecorder)) []route.Route {
+	if register == nil {
+		return nil
+	}
+	var r routeRecorder
+	register(&r)
+	return r.routes
 }

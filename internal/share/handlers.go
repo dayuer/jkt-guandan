@@ -12,6 +12,7 @@ import (
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/games"
+	"github.com/dayuer/jkt-guandan/internal/route"
 )
 
 // Options 组装分享相关的路由。
@@ -23,7 +24,8 @@ type Options struct {
 	Dist fs.FS
 }
 
-// Register 挂上分享相关的路由。它们是公开的（和 GET /api/games/{code} 能看到的数据一致），不需要身份。
+// Routes 是分享相关的路由。它们是公开的（和 GET /api/games/{code} 能看到的数据一致），不识别身份：
+// 链接预览的抓取器没有 cookie，图片也不该因为谁来看而不同。
 //
 //	GET /g/{code}              注入了这一局 OG 标签的页面（§5.4）：微信、WhatsApp 的链接预览
 //	GET /g/{code}/og.png       1200×630 的预览图
@@ -31,24 +33,28 @@ type Options struct {
 //	GET /g/{code}/game.ics     日历文件（§5.4）：Safari、Chrome 里「加到日历」
 //	GET /g/{code}/google       302 到 Google Calendar 的新建事件页（方案 §6）
 //
+// 前端构建产物（Dist）里有 index.html 时才有 GET /g/{code}，否则交给前端兜底。
 // 微信内置浏览器下载不了 .ics，前端在那里不显示日历按钮，改为引导跳出（方案 §6）。
-func Register(mux *http.ServeMux, opts Options) {
+func Routes(opts Options) []route.Route {
 	if opts.Clock == nil {
 		opts.Clock = clock.System{}
 	}
 	h := &handler{svc: opts.Games, publicURL: opts.PublicURL, clk: opts.Clock, images: newImageCache(256, 2)}
+	var routes []route.Route
 	if opts.Dist != nil {
 		if page, err := NewPage(opts.Dist); err == nil {
 			h.page = page
-			mux.HandleFunc("GET /g/{code}", h.ogPage)
+			routes = append(routes, route.Route{Method: http.MethodGet, Pattern: "/g/{code}", Access: route.Anonymous, Handler: http.HandlerFunc(h.ogPage)})
 		} else {
 			slog.Warn("前端没有构建，/g/{code} 不注入 OG 标签", "err", err)
 		}
 	}
-	mux.HandleFunc("GET /g/{code}/og.png", h.ogImage)
-	mux.HandleFunc("GET /g/{code}/poster.png", h.posterImage)
-	mux.HandleFunc("GET /g/{code}/game.ics", h.ics)
-	mux.HandleFunc("GET /g/{code}/google", h.google)
+	return append(routes,
+		route.Route{Method: http.MethodGet, Pattern: "/g/{code}/og.png", Access: route.Anonymous, Handler: http.HandlerFunc(h.ogImage)},
+		route.Route{Method: http.MethodGet, Pattern: "/g/{code}/poster.png", Access: route.Anonymous, Handler: http.HandlerFunc(h.posterImage)},
+		route.Route{Method: http.MethodGet, Pattern: "/g/{code}/game.ics", Access: route.Anonymous, Handler: http.HandlerFunc(h.ics)},
+		route.Route{Method: http.MethodGet, Pattern: "/g/{code}/google", Access: route.Anonymous, Handler: http.HandlerFunc(h.google)},
+	)
 }
 
 type handler struct {

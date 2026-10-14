@@ -20,6 +20,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/internal/identity"
 	"github.com/dayuer/jkt-guandan/internal/realtime"
+	"github.com/dayuer/jkt-guandan/internal/route"
 	"github.com/dayuer/jkt-guandan/internal/store"
 )
 
@@ -77,26 +78,30 @@ func newFixtureWithHub(t *testing.T, dev bool, hub *realtime.Hub) *fixture {
 	// 必须用 TLS：生产环境的 cookie 名带 __Host- 前缀、带 Secure，
 	// 而 cookie jar 不会把 Secure cookie 发回普通 http 的地址，
 	// 用 NewServer 的话测试里根本认不出身份。
+	routes := identity.Routes(svc)
+	if hub != nil {
+		// 和 cmd/guandan 的组装一样：/ws 走同一个身份中间件，封禁交给握手处理（DeferBan）。
+		routes = append(routes, route.Route{
+			Method: http.MethodGet, Pattern: "/ws", Access: route.Public, DeferBan: true,
+			Handler: realtime.Handler(realtime.Options{
+				Hub:         hub,
+				AllowOrigin: cfg.AllowsOrigin,
+				Identify: func(r *http.Request) (realtime.Principal, error) {
+					userID, deviceID, err := identity.ForRealtime(r)
+					return realtime.Principal{UserID: userID, DeviceID: deviceID}, err
+				},
+				Revalidate: func(ctx context.Context, p realtime.Principal) bool {
+					return svc.StillValid(ctx, p.UserID, p.DeviceID)
+				},
+			}),
+		})
+	}
 	srv := httptest.NewTLSServer(httpapi.New(httpapi.Options{
-		Config: cfg,
-		Store:  st,
-		Clock:  clk,
-		RegisterRoutes: func(mux *http.ServeMux) {
-			identity.Register(mux, svc)
-			if hub != nil {
-				mux.Handle("GET /ws", realtime.Handler(realtime.Options{
-					Hub:         hub,
-					AllowOrigin: cfg.AllowsOrigin,
-					Identify: func(r *http.Request) (realtime.Principal, error) {
-						userID, deviceID, err := svc.ForRealtime(r)
-						return realtime.Principal{UserID: userID, DeviceID: deviceID}, err
-					},
-					Revalidate: func(ctx context.Context, p realtime.Principal) bool {
-						return svc.StillValid(ctx, p.UserID, p.DeviceID)
-					},
-				}))
-			}
-		},
+		Config:   cfg,
+		Store:    st,
+		Clock:    clk,
+		Identity: svc,
+		Routes:   routes,
 	}))
 	t.Cleanup(srv.Close)
 
@@ -918,20 +923,20 @@ func TestSignOutUnknownDevice(t *testing.T) {
 // 每个路由都用两种身份各打一次。没在路由表里声明授权的路由，这里根本不会出现，
 // 所以新增接口时不可能漏掉声明。
 func TestAuthorizationMatrix(t *testing.T) {
-	for _, rt := range identity.Routes {
+	for _, rt := range identity.Routes(nil) { // 只列路由，不处理请求
 		rt := rt
-		for _, role := range []identity.Role{identity.RoleGuest, identity.RoleUser} {
+		for _, role := range []string{"guest", "user"} {
 			role := role
-			t.Run(rt.Method+" "+rt.Pattern+" as "+string(role), func(t *testing.T) {
+			t.Run(rt.Method+" "+rt.Pattern+" as "+role, func(t *testing.T) {
 				f := newFixture(t, false)
 
 				client := f.http
-				if role == identity.RoleUser {
+				if role == "user" {
 					f.createIdentity(client, "老王")
 				}
 
-				status := f.probe(rt, role)
-				permitted := rt.Permitted[role]
+				status := f.probe(rt)
+				permitted := role == "user" || rt.Access.AllowsGuest()
 
 				switch {
 				case permitted && (status == http.StatusUnauthorized || status == http.StatusForbidden):
@@ -945,7 +950,7 @@ func TestAuthorizationMatrix(t *testing.T) {
 }
 
 // probe 用一个能跑通的请求去打这条路由，只看授权结果，不看业务结果。
-func (f *fixture) probe(rt identity.Route, _ identity.Role) int {
+func (f *fixture) probe(rt route.Route) int {
 	f.t.Helper()
 
 	path := strings.ReplaceAll(rt.Pattern, "{id}", "nonexistent")

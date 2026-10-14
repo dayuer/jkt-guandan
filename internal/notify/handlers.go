@@ -7,25 +7,27 @@ import (
 	"net/http"
 
 	"github.com/dayuer/jkt-guandan/internal/identity"
+	"github.com/dayuer/jkt-guandan/internal/route"
 )
 
-// Register 挂上推送相关的路由（§6）：
+// Routes 是推送相关的路由（§6）。httpapi 按这张表注册、统一识别身份和授权（#41）：
 //
-//	GET    /api/push/key        VAPID 公钥（公开）
+//	GET    /api/push/key        VAPID 公钥（公开，不识别身份）
 //	POST   /api/push/subscribe  保存订阅（要有身份）
 //	DELETE /api/push/subscribe  取消订阅（要有身份）
 //
-// 前面的中间件已经做了 CSRF（JSON + 本站 Origin）、请求体上限和按 IP 的客户端识别。
-func Register(mux *http.ServeMux, svc *Service, ident *identity.Service) {
-	h := &handler{svc: svc, ident: ident}
-	mux.HandleFunc("GET /api/push/key", h.key)
-	mux.HandleFunc("POST /api/push/subscribe", h.subscribe)
-	mux.HandleFunc("DELETE /api/push/subscribe", h.unsubscribe)
+// svc 为 nil 时只能用来列路由，不能处理请求。
+func Routes(svc *Service) []route.Route {
+	h := &handler{svc: svc}
+	return []route.Route{
+		{Method: http.MethodGet, Pattern: "/api/push/key", Access: route.Anonymous, Handler: http.HandlerFunc(h.key)},
+		{Method: http.MethodPost, Pattern: "/api/push/subscribe", Access: route.User, Handler: http.HandlerFunc(h.subscribe)},
+		{Method: http.MethodDelete, Pattern: "/api/push/subscribe", Access: route.User, Handler: http.HandlerFunc(h.unsubscribe)},
+	}
 }
 
 type handler struct {
-	svc   *Service
-	ident *identity.Service
+	svc *Service
 }
 
 func (h *handler) key(w http.ResponseWriter, _ *http.Request) {
@@ -34,20 +36,11 @@ func (h *handler) key(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"key": h.svc.PublicKey()})
 }
 
-// who 认出当前用户；没有身份 401，被封禁 403。
+// who 取出中间件放进 ctx 的身份（没有身份 401、被封禁 403 已经在中间件里处理了）。
 func (h *handler) who(w http.ResponseWriter, r *http.Request) (*identity.Identity, bool) {
-	ident := h.ident.FromRequest(r)
+	ident := identity.FromContext(r.Context())
 	if ident == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "还没有身份")
-		return nil, false
-	}
-	banned, err := h.ident.Banned(r.Context(), ident)
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "unavailable", "暂时无法处理，请稍后再试")
-		return nil, false
-	}
-	if banned {
-		writeError(w, http.StatusForbidden, "banned", "这个账号已被停用")
 		return nil, false
 	}
 	return ident, true

@@ -18,7 +18,7 @@ import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
 import { dayLabel, kindLabel, timeHM } from "../format";
 import { gameTitle } from "../title";
-import { OfflineDot, useRealtime } from "../useRealtime";
+import { OfflineDot, useRealtime, useRealtimeStatus } from "../useRealtime";
 import { useRetrying } from "../useRetrying";
 
 interface Props {
@@ -53,7 +53,17 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   const [editOpen, setEditOpen] = useState(false);
   const [kickTarget, setKickTarget] = useState<Seat | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
+  // 编辑弹层里的就地错误（敏感词，§14）：弹层盖住了页面的错误行，得在弹层里面说。
+  const [editError, setEditError] = useState<{ field: string; message: string } | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  /** 这一局现在有几台设备在看（含自己，#46 / 原型 R1）。 */
+  const [viewers, setViewers] = useState(0);
+  // 连接断了（重连中或降级成轮询）就不再有 presence，人数会停在旧值：清零，胶囊跟着藏起来。
+  // 重连后服务端会给新订阅发一次 presence，人数自己回来（#71 复审建议）。
+  const realtimeStatus = useRealtimeStatus();
+  useEffect(() => {
+    if (realtimeStatus !== "online") setViewers(0);
+  }, [realtimeStatus]);
   /** 「加入日历」弹层：手动点开的，或刚报上名时自动弹的（#6）。 */
   const [calendar, setCalendar] = useState<"manual" | "joined" | null>(null);
   const retrying = useRetrying();
@@ -80,6 +90,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   // 不然会停在上一个局的分享面板上。
   useEffect(() => {
     setShareOpen(false);
+    setViewers(0);
   }, [code]);
 
   // 这一局的实时（#49）：座位有人坐上、有人退出、局头改了时间……服务端都发到 game:{code} 上，
@@ -89,6 +100,10 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
     topics: [`game:${code}`],
     poll: true,
     onEvent: () => void load(),
+    // 「👀 N 人正在看」：只认这一局的主题，从别的局跳过来时不会串。
+    onPresence: (topic, n) => {
+      if (topic === `game:${code}`) setViewers(n);
+    },
     refresh: () => void load(),
   });
 
@@ -164,6 +179,9 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         // K4：同一个字段被两个人改了，摆出对比让局头决定。
         setConflict({ patch, baseline, latest, diffs: describeConflict(patch, baseline, latest) });
         setEditOpen(false);
+      } else if (err instanceof ApiError && err.code === "sensitive_word") {
+        // 内容不能收：弹层不关，就在那个字段下面说，用户写好的东西不动（原型 X1）。
+        setEditError({ field: err.field, message: err.message });
       } else if (err instanceof ApiError && err.code === "not_host") {
         // K6：编辑期间局头被转给了别人。丢掉本地的修改，重新加载。
         toast("你已经不是局头了");
@@ -281,6 +299,12 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
               候补 {w.position} · {w.user.nickname}
             </span>
           ))}
+          {/* 原型 R1：和名字同一排的普通胶囊。人数含自己，只有自己在看时不显示。 */}
+          {viewers > 1 && !closed && realtimeStatus === "online" && (
+            <span class="chip" data-testid="viewers">
+              👀 {viewers} 人正在看
+            </span>
+          )}
         </div>
 
         <div class="info">
@@ -315,7 +339,13 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       </div>
 
       {editOpen && isHost && (
-        <EditSheet detail={detail} onClose={() => setEditOpen(false)} onSubmit={(patch) => void submitEdit(patch, detail)} />
+        <EditSheet
+          detail={detail}
+          error={editError}
+          onClearError={() => setEditError(null)}
+          onClose={() => setEditOpen(false)}
+          onSubmit={(patch) => void submitEdit(patch, detail)}
+        />
       )}
 
       {kickTarget && (
@@ -381,7 +411,13 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
           </button>
         )}
         {isHost && !closed && (
-          <button class="btn soft" onClick={() => setEditOpen(true)}>
+          <button
+            class="btn soft"
+            onClick={() => {
+              setEditError(null);
+              setEditOpen(true);
+            }}
+          >
             改时间 / 地点
           </button>
         )}
@@ -502,10 +538,15 @@ function Sheet({
 /** 局头改时间 / 地点。 */
 function EditSheet({
   detail,
+  error,
+  onClearError,
   onClose,
   onSubmit,
 }: {
   detail: GameDetail;
+  /** 服务端拒绝了内容（敏感词）：在哪一项下面说、说什么（原型 X1）。 */
+  error: { field: string; message: string } | null;
+  onClearError: () => void;
   onClose: () => void;
   onSubmit: (patch: GamePatch) => void;
 }) {
@@ -543,7 +584,19 @@ function EditSheet({
           <label class="sr-only" for="venue">
             地点
           </label>
-          <input id="venue" value={venue} onInput={(e) => setVenue((e.target as HTMLInputElement).value)} placeholder="地点" />
+          <input
+            id="venue"
+            class={error?.field === "venue" ? "err" : ""}
+            value={venue}
+            onInput={(e) => {
+              onClearError();
+              setVenue((e.target as HTMLInputElement).value);
+            }}
+            placeholder="地点"
+          />
+          {error?.field === "venue" && <p class="errmsg">⚠ {error.message}</p>}
+          {/* 这个弹层只有时间和地点；万一是别处的问题，也别把话吞掉。 */}
+          {error && error.field !== "venue" && <p class="errmsg">⚠ {error.message}</p>}
           <button class="btn primary" type="submit">
             保存
           </button>
