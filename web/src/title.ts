@@ -10,6 +10,25 @@ import type { GameDetail } from "./api";
 
 export const APP_NAME = "随时掼掼蛋";
 
+/**
+ * 静态页面的标题（#60、#51 新增的三个页面）。
+ * 详情页的标题由 Detail 拿到数据后自己设（和服务端 OG 一个格式）。
+ */
+export function pageTitle(route: string): string {
+  switch (route) {
+    case "me":
+      return `我的 · ${APP_NAME}`;
+    case "devices":
+      return `登录的设备 · ${APP_NAME}`;
+    case "privacy":
+      return `隐私与数据 · ${APP_NAME}`;
+    case "new":
+      return `开一局 · ${APP_NAME}`;
+    default:
+      return APP_NAME;
+  }
+}
+
 const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 const relative: Record<number, string> = { 0: "今天 ", 1: "明天 ", 2: "后天 " };
 
