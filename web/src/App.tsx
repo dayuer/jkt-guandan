@@ -2,17 +2,20 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, getMe, signOutCurrentDevice, type UserRef } from "./api";
 import { NicknameSheet } from "./components/NicknameSheet";
 import { clearIdentityMarker, redeemClaimFromURL } from "./identity";
+import { agentDisabled } from "./agent";
+import { Agent, type FormPrefill } from "./pages/Agent";
 import { CreateGame } from "./pages/CreateGame";
 import { Detail } from "./pages/Detail";
 import { Home } from "./pages/Home";
 
-type Route = { name: "home" } | { name: "detail"; code: string } | { name: "new" };
+type Route = { name: "home" } | { name: "detail"; code: string } | { name: "new" } | { name: "agent" };
 
 function parseRoute(): Route {
   const path = window.location.pathname;
   const match = /^\/g\/([0-9A-Za-z]+)\/?$/.exec(path);
   if (match) return { name: "detail", code: match[1] };
   if (path === "/new") return { name: "new" };
+  if (path === "/agent") return { name: "agent" };
   return { name: "home" };
 }
 
@@ -33,6 +36,8 @@ export function App() {
   const [claim, setClaim] = useState<Claim>({ kind: "idle" });
   const [toastText, setToastText] = useState("");
   const [sheetOpen, setSheetOpen] = useState(false);
+  // 07 蛋蛋退回 08 表单时带过去的草稿；从别处进表单就是空的。
+  const [prefill, setPrefill] = useState<FormPrefill | null>(null);
 
   // 需要身份时弹层给出结果（resolve）。
   const pending = useRef<((user: UserRef | null) => void) | null>(null);
@@ -171,13 +176,36 @@ export function App() {
           toast={toast}
           onBack={() => navigate("/")}
           onCreated={(code) => navigate(`/g/${code}`)}
+          prefill={prefill}
+        />
+      ) : route.name === "agent" ? (
+        <Agent
+          me={me}
+          requireIdentity={requireIdentity}
+          toast={toast}
+          onBack={() => navigate("/")}
+          onForm={(p) => {
+            setPrefill(p);
+            // 替换而不是压栈：从表单返回不该又回到一个已经失败的对话。
+            window.history.replaceState(null, "", "/new");
+            setRoute(parseRoute());
+          }}
+          onCreated={(code) => navigate(`/g/${code}`)}
         />
       ) : (
         <Home
           me={me}
           toast={toast}
           onOpen={(code) => navigate(`/g/${code}`)}
-          onCreate={() => navigate("/new")}
+          onCreate={() => {
+            setPrefill(null);
+            navigate("/new");
+          }}
+          // 服务端没配蛋蛋（503 agent_disabled）时，「约局」直接打开表单。
+          onAgent={() => {
+            setPrefill(null);
+            navigate(agentDisabled() ? "/new" : "/agent");
+          }}
         />
       )}
 

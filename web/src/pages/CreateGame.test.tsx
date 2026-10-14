@@ -96,3 +96,35 @@ describe("开局表单的幂等键（§11.4）", () => {
     expect(keys[1]).not.toBe(keys[0]);
   });
 });
+
+describe("从 07 蛋蛋退回来（#11）", () => {
+  it("用草稿预填，并提示用户刚才说的话和缺什么", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const startsAt = 1791980000;
+    render(
+      <CreateGame
+        me={{ id: "u1", nickname: "老王" }}
+        requireIdentity={async () => null}
+        toast={() => {}}
+        onBack={() => {}}
+        onCreated={() => {}}
+        prefill={{
+          draft: { starts_at: startsAt, area: "PIK", kind: "teaching", note: "新手欢迎" },
+          problem: "还没说在哪儿打",
+          said: "周四晚上 PIK 带新手",
+        }}
+      />,
+      container,
+    );
+
+    expect(container.querySelector(".prefill-note")?.textContent).toContain("周四晚上 PIK 带新手");
+    expect(container.querySelector(".prefill-note .problem")?.textContent).toBe("还没说在哪儿打");
+    expect((container.querySelector("#area") as HTMLSelectElement).value).toBe("PIK");
+    expect((container.querySelector("#note") as HTMLTextAreaElement).value).toBe("新手欢迎");
+    const on = [...container.querySelectorAll(".choices button.on")].map((b) => b.textContent);
+    expect(on).toContain("带新手");
+    // 蛋蛋给的时间不在三个常用时间里，加成第一个选项并选中。
+    expect(container.querySelector(".choices button")?.classList.contains("on")).toBe(true);
+  });
+});
