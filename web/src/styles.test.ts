@@ -129,3 +129,32 @@ describe("styles.css 的完整性", () => {
     expect(usages).toBeGreaterThan(0);
   });
 });
+
+describe("视口高度（#130 第 2 条）", () => {
+  it("body 的最小高度用 100dvh：安卓 Chrome 的 100vh 比可视区域高，短列表也能滚出一截", () => {
+    const body = rules.find((r) => r.selector === "body" && /min-height/.test(r.body));
+    expect(body?.body).toMatch(/min-height:\s*100dvh/);
+  });
+
+  it("viewport 声明 interactive-widget=resizes-content：键盘弹出时贴底的弹层跟着上移", () => {
+    const html = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
+    expect(html).toMatch(/name="viewport"[^>]*interactive-widget=resizes-content/);
+  });
+});
+
+describe("输入框字号（P0 键盘问题）", () => {
+  const SMALL = /var\(--fs-(15|body|13|small|tiny)\)|1[0-5]px/;
+
+  it("所有输入框默认至少 16px（--fs-h3）：iOS 小于 16px 会在聚焦时放大页面", () => {
+    const base = rules.find((r) => /^input,\s*textarea,\s*select$/.test(r.selector));
+    expect(base?.body).toMatch(/font-size:\s*var\(--fs-h3\)/);
+  });
+
+  it("没有哪条规则把输入框的字号改回 16px 以下", () => {
+    const offenders = rules.filter(
+      (r) => /\b(input|textarea|select)\b/.test(r.selector) && /font-size:\s*[^;]+/.test(r.body) &&
+        SMALL.test(/font-size:\s*([^;]+)/.exec(r.body)![1]),
+    );
+    expect(offenders.map((r) => r.selector)).toEqual([]);
+  });
+});

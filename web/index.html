@@ -2,7 +2,9 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- interactive-widget=resizes-content：安卓 Chrome 108 起键盘默认只缩可视视口，
+         贴底的弹层（称呼、绑定 WhatsApp）会被键盘和自动填充条盖住；让键盘把布局视口也缩上去（#130）。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <!-- 页面底色 --paper；manifest 的 theme_color 必须同值，不然安卓 standalone 的状态栏颜色随入口变（#63 审查建议 4，pwa.test.ts 盯着）。 -->
     <meta name="theme-color" content="#F6EFE4" />
     <meta name="format-detection" content="telephone=no" />

@@ -1,4 +1,5 @@
 import { useState } from "preact/hooks";
+import { tapFocusHandlers } from "../tapFocus";
 import { ApiError, createMe } from "../api";
 import { markHasIdentity } from "../identity";
 
@@ -17,6 +18,8 @@ export function NicknameSheet({ onDone, onCancel }: Props) {
   const [nickname, setNickname] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // 安卓 WebView：焦点不是点出来的时候，点一下也不弹键盘；先 blur 再让原生聚焦来一遍（P0）。
+  const [tap] = useState(() => tapFocusHandlers());
 
   const submit = async (e: Event) => {
     e.preventDefault();
@@ -46,10 +49,26 @@ export function NicknameSheet({ onDone, onCancel }: Props) {
           <input
             value={nickname}
             onInput={(e) => setNickname((e.target as HTMLInputElement).value)}
+            {...tap}
+            onKeyDown={(e) => {
+              // 输入法还在拼字时的回车是「上屏」，不是提交；拼完再按回车才提交（#130 第 3 条）。
+              if (e.key === "Enter" && !e.isComposing) {
+                e.preventDefault();
+                (e.currentTarget as HTMLInputElement).form?.requestSubmit();
+              }
+            }}
             placeholder="比如：老王"
             maxLength={12}
-            autoFocus
+            // 不要 autoFocus（P0）：弹层是点完按钮后异步挂上的，这时的程序化 focus 已经不在用户手势里。
+            // iOS Safari、微信的 WKWebView、安卓 XWeb 会把焦点给它（红框）却不弹键盘；
+            // 有的 WebView 里再点一下已经有焦点的输入框也不弹，用户就卡住了。让用户自己点。
             aria-label="称呼"
+            name="nickname"
+            autoComplete="nickname"
+            inputMode="text"
+            autoCapitalize="off"
+            spellcheck={false}
+            enterKeyHint="done"
           />
           {error && <p class="error">{error}</p>}
           <button class="btn primary" type="submit" disabled={busy || nickname.trim() === ""}>
