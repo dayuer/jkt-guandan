@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
@@ -61,6 +62,9 @@ type WxExchanger interface {
 func (s *Service) SetWx(appID string, ex WxExchanger) {
 	s.wxAppID, s.wx = appID, ex
 }
+
+// SetContentGuard 接上微信内容安全检测（#146）：小游戏新建身份时的称呼先送微信查。nil 时不查。
+func (s *Service) SetContentGuard(g *secheck.Guard) { s.sec = g }
 
 // AllowWxLogin 检查这个 IP 现在能不能调小游戏登录（每 IP 每分钟 20 次）：每次都要调一次微信接口，
 // 微信那边对 code2Session 也有频率限制，不能让一个人把它用光。
@@ -266,6 +270,13 @@ func (s *Service) WxLogin(ctx context.Context, code, nickname string, allowCreat
 	sess, err := s.exchangeWx(ctx, code)
 	if err != nil {
 		return WxLoginResult{}, err
+	}
+	// 称呼送微信内容安全检测（#146，场景 1 资料）。也在写事务之前：网络请求不占写连接。
+	// 小游戏只在拿到 need_nickname 之后才带称呼，所以带了称呼基本就是要新建身份；认回老用户时称呼用不上，查了也无妨。
+	if clean != "" {
+		if err := s.sec.CheckOpenID(ctx, sess.OpenID, secheck.SceneProfile, secheck.Field{Name: "nickname", Text: clean}); err != nil {
+			return WxLoginResult{}, err
+		}
 	}
 
 	deviceToken := newToken(DeviceTokenBytes)

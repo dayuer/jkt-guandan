@@ -16,6 +16,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/dayuer/jkt-guandan/server/internal/identity"
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
@@ -648,4 +649,23 @@ func TestCode2SessionClient(t *testing.T) {
 	if _, err := c.Exchange(context.Background(), "busy"); !errors.Is(err, identity.ErrWxUnavailable) {
 		t.Fatalf("-1 应是暂时不可用：%v", err)
 	}
+}
+
+// #146：小游戏新建身份时的称呼送微信内容安全检测（场景 1）。risky 时 422 sensitive_word + field，不建用户。
+func TestWxLoginNicknameContentCheck(t *testing.T) {
+	f, wx := newWxFixture(t)
+	f.svc.SetContentGuard(&secheck.Guard{Checker: secheck.DevChecker{}, AppID: testAppID, Store: f.st})
+
+	wx.add("c1", "open-1", "")
+	r := f.mini(http.MethodPost, "/api/wx/login", map[string]string{"code": "c1", "nickname": "老王" + secheck.DevRiskyWord}, nil)
+	e, _ := r.body["error"].(map[string]any)
+	if r.status != http.StatusUnprocessableEntity || e["code"] != "sensitive_word" || e["field"] != "nickname" {
+		t.Fatalf("应 422 sensitive_word field=nickname：%d %s", r.status, r.raw)
+	}
+	if n := f.countRows(`SELECT COUNT(*) FROM users`); n != 0 {
+		t.Fatalf("被拦时不该建用户：%d", n)
+	}
+
+	wx.add("c2", "open-1", "")
+	f.wxLogin("c2", "老王")
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/identity"
 	"github.com/dayuer/jkt-guandan/server/internal/moderate"
 	"github.com/dayuer/jkt-guandan/server/internal/route"
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
@@ -392,6 +393,13 @@ func writeGameError(w http.ResponseWriter, err error) {
 				"message": "请勿涉及金钱：这里只约纯娱乐局",
 				"field":   hit.Field,
 			},
+		})
+	case errors.Is(err, secheck.ErrUnsafe):
+		// 微信内容安全检测判为 risky（#146）：同样是 422 sensitive_word + field，前端不用区分来源。
+		var unsafe *secheck.UnsafeError
+		errors.As(err, &unsafe)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": map[string]any{"code": "sensitive_word", "message": secheck.Message, "field": unsafe.Field},
 		})
 	case errors.Is(err, ErrQuota):
 		writeError(w, http.StatusConflict, "quota_exceeded", err.Error())

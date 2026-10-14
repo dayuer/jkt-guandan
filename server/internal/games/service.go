@@ -14,6 +14,7 @@ import (
 
 	"github.com/dayuer/jkt-guandan/server/internal/clock"
 	"github.com/dayuer/jkt-guandan/server/internal/ratelimit"
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
@@ -45,7 +46,13 @@ type Service struct {
 
 	// 报名/退出：每用户每分钟 30 次（§12.3）。
 	joinLimiter *ratelimit.Limiter
+
+	// 内容安全检测（#146）：小游戏用户写的地点、备注先送微信查。nil 时不查。
+	sec *secheck.Guard
 }
+
+// SetContentGuard 接上微信内容安全检测（#146）。
+func (s *Service) SetContentGuard(g *secheck.Guard) { s.sec = g }
 
 // NewService 建牌局服务。pub 为 nil 时用 NopPublisher（#18 的 Hub 还没合进来）。
 func NewService(st *store.Store, clk clock.Clock, pub Publisher) *Service {
@@ -266,6 +273,11 @@ func (s *Service) attachSeats(ctx context.Context, items []Summary) error {
 func (s *Service) Create(ctx context.Context, hostID string, in CreateInput, idemKey string) (*Detail, error) {
 	now := s.clk.Now()
 	if err := in.Normalize(now); err != nil {
+		return nil, err
+	}
+	// 本地的长度和词表都过了才送微信（场景 3 论坛），在写事务之外。
+	if err := s.sec.CheckUser(ctx, hostID, secheck.SceneForum,
+		secheck.Field{Name: "venue", Text: in.Venue}, secheck.Field{Name: "note", Text: in.Note}); err != nil {
 		return nil, err
 	}
 
@@ -874,6 +886,9 @@ func (s *Service) Update(ctx context.Context, code, hostID string, patch Patch, 
 	if err := patch.Normalize(now); err != nil {
 		return nil, err
 	}
+	if err := s.checkPatchContent(ctx, code, hostID, patch); err != nil {
+		return nil, err
+	}
 
 	var detail *Detail
 	err := s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
@@ -1170,4 +1185,25 @@ func nullIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// checkPatchContent 把改局里的地点、备注送微信内容安全检测（#146）。先用读连接确认是局头：
+// 别人对任意一局发 PATCH 不该触发微信调用。是不是局头、版本号对不对，写事务里还会再判一次。
+func (s *Service) checkPatchContent(ctx context.Context, code, hostID string, p Patch) error {
+	if s.sec == nil || (p.Venue == nil && p.Note == nil) {
+		return nil
+	}
+	var host string
+	err := s.st.Read().QueryRowContext(ctx, `SELECT host_id FROM games WHERE short_code = ?`, code).Scan(&host)
+	if err != nil || host != hostID {
+		return nil // 交给写事务报 ErrNotFound / ErrNotHost
+	}
+	var fields []secheck.Field
+	if p.Venue != nil {
+		fields = append(fields, secheck.Field{Name: "venue", Text: *p.Venue})
+	}
+	if p.Note != nil {
+		fields = append(fields, secheck.Field{Name: "note", Text: *p.Note})
+	}
+	return s.sec.CheckUser(ctx, hostID, secheck.SceneForum, fields...)
 }
