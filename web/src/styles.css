@@ -661,6 +661,10 @@ button:disabled {
 
 .sheet.share {
   text-align: center;
+  /* 海报 360 高 + 出口 + 话术框，在小屏（375×667、甚至 375×560）上会超过一屏。
+     让面板自己滚，而不是把标题和「取消」切掉。 */
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
 }
 
 .poster-frame {
@@ -739,9 +743,10 @@ button:disabled {
 }
 
 /* WhatsApp 用它自己的绿，别用我们的红。 */
+/* WhatsApp 用它自己的品牌绿，图标反白——令牌里有 --whatsapp，别写死颜色。 */
 .outlet .ico.wa {
-  background: #e6f4ea;
-  color: #128c7e;
+  background: var(--whatsapp);
+  color: var(--white);
 }
 
 /* 话术预览：左文右按钮，像设计稿里那样一眼能看出复制的是什么。 */
