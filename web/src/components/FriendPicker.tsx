@@ -11,6 +11,8 @@ interface Props {
   /** 确认按钮上的字，比如「邀请 2 位」或「就这些」。 */
   confirmLabel: (n: number) => string;
   busy?: boolean;
+  /** 已经在这一局里的人（详情页传座位和候补）：标出来，不能选，邀请了也会被服务端跳过。 */
+  inGame?: Map<string, string>;
   /** 08 表单里可以一个都不选（等于清空）；详情页里至少选一个。 */
   allowNone?: boolean;
   onConfirm: (picked: Friend[]) => void;
@@ -21,7 +23,7 @@ interface Props {
  * 「邀请谁」（#115）：从牌友里多选。只列一起打过局的人（GET /api/friends），没有搜索。
  * 08 开局表单和详情页（局头视角）共用。
  */
-export function FriendPicker({ selected = [], confirmLabel, busy, allowNone, onConfirm, onClose }: Props) {
+export function FriendPicker({ selected = [], inGame, confirmLabel, busy, allowNone, onConfirm, onClose }: Props) {
   const [friends, setFriends] = useState<Friend[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(() => new Set(selected));
@@ -65,12 +67,14 @@ export function FriendPicker({ selected = [], confirmLabel, busy, allowNone, onC
           <div class="pick-list">
             {friends.map((f) => {
               const on = picked.has(f.user.id);
+              const already = inGame?.get(f.user.id);
               return (
                 <button
                   key={f.user.id}
-                  class={`pick${on ? " on" : ""}`}
+                  class={`pick${on ? " on" : ""}${already ? " in" : ""}`}
                   role="checkbox"
                   aria-checked={on}
+                  disabled={!!already}
                   onClick={() => toggle(f.user.id)}
                 >
                   <span class="avatar" aria-hidden="true">
@@ -78,7 +82,7 @@ export function FriendPicker({ selected = [], confirmLabel, busy, allowNone, onC
                   </span>
                   <span class="tx">
                     {f.user.nickname}
-                    <small>一起打过 {f.together_count} 局</small>
+                    <small>{already ?? `一起打过 ${f.together_count} 局`}</small>
                   </span>
                   <span class="check" aria-hidden="true">
                     {on ? "✓" : ""}

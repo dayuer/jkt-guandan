@@ -1948,6 +1948,11 @@ a.btn {
   font-weight: 900;
 }
 
+/* 已经在局里的牌友：灰掉，不能选。 */
+.pick.in {
+  opacity: 0.5;
+}
+
 .pick.on .check {
   background: var(--red);
   border-color: var(--red);

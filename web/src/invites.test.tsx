@@ -194,6 +194,29 @@ describe("详情页：局头邀请牌友", () => {
     await vi.waitFor(() => expect(container.querySelector("[data-testid=friend-picker]")).toBeNull());
   });
 
+  it("已经在局里的牌友标出来，不能选", async () => {
+    const d = game({
+      seats: [
+        { seat_no: 1, user: { id: "u1", nickname: "老王" } },
+        { seat_no: 2, user: { id: "u2", nickname: "Lily" } },
+      ],
+      waitlist: [{ position: 1, user: { id: "u3", nickname: "阿杰" } }],
+      missing: 2,
+    });
+    const { container } = setup(d);
+    await vi.waitFor(() => expect(byText(container, "邀请牌友")).toBeTruthy());
+    byText(container, "邀请牌友")!.click();
+    await vi.waitFor(() => expect(container.querySelectorAll(".pick").length).toBe(3));
+    const row = (n: string) => [...container.querySelectorAll(".pick")].find((b) => b.textContent?.includes(n)) as HTMLButtonElement;
+    expect(row("Lily").disabled).toBe(true);
+    expect(row("Lily").textContent).toContain("已在座位上");
+    expect(row("阿杰").textContent).toContain("候补第 1 位");
+    expect(row("Kevin").disabled).toBe(false);
+    row("Lily").click();
+    await tick();
+    expect(row("Lily").getAttribute("aria-checked")).toBe("false");
+  });
+
   it("not_friend：整次失败，面板留着，提示刷新", async () => {
     const { container, toasts } = setup(game(), undefined, respond(404, { error: { code: "not_friend", message: "" } }));
     await vi.waitFor(() => expect(byText(container, "邀请牌友")).toBeTruthy());

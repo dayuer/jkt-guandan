@@ -375,6 +375,12 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       {inviteOpen && (
         <FriendPicker
           busy={inviting}
+          inGame={
+            new Map([
+              ...seats.map((x) => [x.user.id, "已在座位上"] as const),
+              ...waitlist.map((w) => [w.user.id, `候补第 ${w.position} 位`] as const),
+            ])
+          }
           confirmLabel={(n) => (n > 0 ? `邀请 ${n} 位` : "选几位牌友")}
           onConfirm={async (picked) => {
             setInviting(true);
