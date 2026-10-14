@@ -21,3 +21,7 @@ app/h5/playwright-report/
 
 # go build ./server/cmd/... 在仓库根目录留下的二进制
 /guandan
+
+# 小游戏：开发者工具的个人配置和预览二维码
+app/minigame/project.private.config.json
+app/minigame/.preview-qr.png

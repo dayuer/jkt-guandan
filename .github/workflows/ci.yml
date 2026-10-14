@@ -24,7 +24,9 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-          cache-dependency-path: app/h5/package-lock.json
+          cache-dependency-path: |
+            app/h5/package-lock.json
+            app/minigame/package-lock.json
 
       - name: go vet
         run: go vet ./...
@@ -52,6 +54,10 @@ jobs:
 
       - name: 前端依赖审计
         run: cd app/h5 && npm audit --omit=dev
+
+      # 小游戏（#85）：复用 app/h5/src 的纯逻辑，H5 那边改了接口类型这里会先报出来。
+      - name: 小游戏类型检查、测试、打包
+        run: cd app/minigame && npm ci && npm run typecheck && npm test && npm run build
 
       - name: docker build
         run: docker build --build-arg BUILD=${{ github.sha }} -t guandan:ci .
