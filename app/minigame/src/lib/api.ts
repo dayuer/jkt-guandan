@@ -236,6 +236,28 @@ export async function listFriends(): Promise<Friend[]> {
 export const setStar = (userID: string, starred: boolean) =>
   request<void>(starred ? "PUT" : "DELETE", `/api/follows/${enc(userID)}`);
 
+/** 订阅消息模板 ID（#137），按用途：full 成局 / 有人退出，remind 开局前 1 小时 / 改时间。只有服务端配置了的。 */
+export interface WxSubscribeTemplates {
+  full?: string;
+  remind?: string;
+}
+export interface PublicConfig {
+  group: GroupInfo;
+  wx_subscribe: WxSubscribeTemplates;
+}
+export async function getPublicConfig(): Promise<PublicConfig> {
+  const body = await request<{ group?: Partial<GroupInfo>; wx_subscribe?: Record<string, unknown> }>("GET", "/api/config");
+  const wx = body?.wx_subscribe ?? {};
+  const pick = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  return {
+    group: { wechat_id: body?.group?.wechat_id ?? "", whatsapp_group_url: body?.group?.whatsapp_group_url ?? "" },
+    wx_subscribe: { full: pick(wx.full), remind: pick(wx.remind) },
+  };
+}
+/** 上报 wx.requestSubscribeMessage 里同意了的模板，服务端给每个模板记一次可发次数。 */
+export const reportWxSubscribe = (accepted: string[]) =>
+  request<{ added: number }>("POST", "/api/wx/subscribe", { body: { accepted } });
+
 export async function getGroupInfo(): Promise<GroupInfo> {
   const body = await request<{ group?: Partial<GroupInfo> }>("GET", "/api/config");
   return { wechat_id: body?.group?.wechat_id ?? "", whatsapp_group_url: body?.group?.whatsapp_group_url ?? "" };

@@ -191,6 +191,14 @@ CREATE TABLE user_links (
   PRIMARY KEY (provider, subject),
   UNIQUE (provider, user_id)               -- 一个用户在同一个 provider 下只有一条
 );
+-- 小游戏订阅消息的剩余次数（0007，#137，§5.3「订阅消息通道」）。openid 不存这里，发送时从 user_links 取
+CREATE TABLE wx_subscribe_quota (
+  user_id     TEXT NOT NULL REFERENCES users(id),
+  template_id TEXT NOT NULL,
+  remaining   INTEGER NOT NULL DEFAULT 0 CHECK (remaining >= 0),  -- 同意一次 +1（最多 50），发出一次 -1
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (user_id, template_id)
+);
 ```
 
 连接设置和并发规则见 §11。
@@ -304,6 +312,30 @@ CREATE TABLE user_links (
 - **重复送达**：进程在「已发送」和「写回结果」之间崩溃，重启后同一条提醒会再发一次，这是至少送达一次的代价。为了不让用户看到两条通知，Web Push 请求带上 `Topic: <dedupe_key 的哈希>`，通知设置 `tag = dedupe_key`，同一条提醒在设备上只会显示一次。
 - VAPID 密钥：首次启动时生成并写进 `kv` 表，公钥通过 `GET /api/push/key` 下发。**密钥一旦更换，所有已有订阅都会失效**，所以必须包含在备份里（§13.3）。
 
+**订阅消息通道 `wx_subscribe`（#137）**
+
+小游戏里收不到 Web Push，提醒改走微信订阅消息（`subscribeMessage.send`），由同一个 worker 在同一轮里发。
+
+- **开关**：配了 `GUANDAN_WX_APPID` / `GUANDAN_WX_SECRET`，并且至少配了一个模板（`GUANDAN_WX_TMPL_FULL`、`GUANDAN_WX_TMPL_REMIND`，§7）才开；否则整个通道关闭，提醒只走 Web Push。开发模式没配 AppID 时，配了模板也开，但发送只记日志（和小游戏登录的 `dev:<openid>` 一样，给开发者工具连本机用）。
+- **走哪些提醒**：
+  | 模板 | 提醒类型 |
+  |---|---|
+  | `GUANDAN_WX_TMPL_FULL`（牌局状态） | `full`、`seat_left` |
+  | `GUANDAN_WX_TMPL_REMIND`（开局提醒） | `t_minus_1h`、`rescheduled` |
+
+  其他提醒类型没有模板，不走订阅消息。模板里填三个字段：事项（`message()` 生成的标题，最多 20 个字）、时间（`2026年10月14日 19:30`，雅加达时间）、地点；字段名按 `…_KEYS` 配置。点开消息回到小游戏这一局（`page = ?g=<短码>`）。
+- **收件人**：按 `(appid, openid)` 发，openid 从 `user_links` 的 `wx_openid:<appid>` 取。没有这条关联（H5 用户）就不发。openid 和 access_token 都不进日志，失败只记 errcode。
+- **一次性订阅的次数**：小游戏在用户点「报名占座」的那次点按里同步调 `wx.requestSubscribeMessage`（没身份时改在称呼层「就用这个名字」那次点按里），同意了的模板经 `POST /api/wx/subscribe {accepted:[模板 ID]}` 上报（`user` 鉴权，最多 10 个，不是本站配置的模板 ID 忽略，返回 `200 {"added":N}`；通道没开 `503 wx_disabled`）。每个模板次数 + 1，最多攒 50 次；发出一次 - 1，为 0 时不发。
+- **access_token**：调 `cgi-bin/stable_token`，缓存到过期前 5 分钟再换（不用 `cgi-bin/token`：它每次调用都让旧 token 失效，和其他共用 AppID 的服务互相踢）。发送返回 40001 / 42001 / 40014 时作废缓存，下一次带 `force_refresh` 重新拿。
+- **去重（和 Web Push 的选择）**：一条 outbox 提醒**只走一个通道**。用户有 Web Push 订阅就只走 Web Push（不限次数，设备上还能按 tag 去重），不动订阅消息的次数；没有 Web Push 订阅、且这类提醒有模板时才走订阅消息。同一个人在 H5 开了推送、又在小游戏里同意了订阅，每条提醒也只收到一次。
+- **至多送达一次**：订阅消息没有 Topic / tag 这种设备端去重，崩溃后重发用户就会看到两条，还多用一次次数。所以这一路**先预占再发**：一个短的写事务里扣 1 次并把提醒标成已发送（`sent_at`，`last_error = '订阅消息发送中'`），然后在事务外发送，再在写回事务里按结果处理。进程在预占和写回之间崩溃，这条提醒不再发——宁可漏一条，不发两条。
+- **发送结果**：
+  - `errcode 0`：成功；
+  - 网络错误、`-1`（系统繁忙）、`45009`（限频）、access_token 无效：退回次数、清掉 `sent_at`，和 Web Push 一样按指数退避重试，8 次后放弃；
+  - `43101`（用户没有订阅，以微信为准）：这个模板的次数清零，放弃这条；
+  - 其他错误（模板参数不对、openid 无效……）：退回次数，放弃这条。
+- **注销**：`DELETE /api/me` 和 `guandan admin user delete` 都删掉这个人的 `wx_subscribe_quota`（§14）。
+
 ### 5.4 分享
 
 - `GET /g/{code}`：读出 `index.html` 模板，把这一局的 `og:title`、`og:description`、`og:image` 写进去再返回。微信和 WhatsApp 的链接抓取器不执行 JS，只有这样才能拿到每局各自的预览卡片。
@@ -407,6 +439,7 @@ POST /api/client-errors               前端错误上报（#117）
 DELETE /api/me                        注销并删除个人数据（§14）
 POST /api/push/subscribe              保存推送订阅（phase:2）
 DELETE /api/push/subscribe            取消订阅
+POST /api/wx/subscribe                小游戏上报同意了的订阅消息模板 {accepted:[模板 ID]}（#137，§5.3）
 POST /api/agent                       蛋蛋（phase:3）：只返回草稿，不写库
 GET  /ws                              WebSocket（见 §5.5）
 GET  /g/{code} · /g/{code}/og.png · /g/{code}/poster.png · /g/{code}/game.ics
@@ -461,9 +494,11 @@ GET  /*                               内嵌的前端页面（单页应用，未
 
 **`GET /api/config`**：前端用的公开配置，不识别身份，`Cache-Control: public, max-age=300`。
 ```json
-{"group":{"wechat_id":"jktguandan","whatsapp_group_url":"https://chat.whatsapp.com/AbCdEf"}}
+{"group":{"wechat_id":"jktguandan","whatsapp_group_url":"https://chat.whatsapp.com/AbCdEf"},
+ "wx_subscribe":{"full":"<模板 ID>","remind":"<模板 ID>"}}
 ```
 `group` 是 09 牌友顶部「雅加达掼蛋群」横幅用的，来自 `GUANDAN_GROUP_WECHAT_ID`、`GUANDAN_GROUP_WHATSAPP_URL`；没配置的那一项是空串，两项都空时前端不显示横幅。
+`wx_subscribe` 是小游戏订阅消息的模板 ID（#137），只给配置了的；订阅消息通道没开时是 `{}`，小游戏据此不问订阅。
 
 **埋点 `POST /api/events` 与前端错误 `POST /api/client-errors`**（#117）：都是 `public`，没有身份也能用（落地页、详情页在报名前就要埋点）；被封禁的身份 403。
 
@@ -542,6 +577,10 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `GUANDAN_GROUP_WHATSAPP_URL` | 空 | 同上，WhatsApp 群链接；必须是 https 地址，否则启动时报错 |
 | `GUANDAN_WX_APPID` | 空 | 小游戏 AppID，`POST /api/wx/login` 调 `code2Session` 用（#84）。和下一项要么都设、要么都不设；都不设时小游戏登录返回 `503 wx_disabled`，开发模式下改为接受 `dev:<openid>` |
 | `GUANDAN_WX_SECRET` | 空 | 小游戏 AppSecret，只放环境变量，不写日志 |
+| `GUANDAN_WX_TMPL_FULL` | 空 | 订阅消息「牌局状态」模板 ID（#137）：成局（`full`）、有人退出（`seat_left`）。没配时这两类提醒不走订阅消息 |
+| `GUANDAN_WX_TMPL_FULL_KEYS` | `thing1,time2,thing3` | 上面那个模板里「事项、时间、地点」三个字段的名字，按小游戏后台模板详情填 |
+| `GUANDAN_WX_TMPL_REMIND` | 空 | 订阅消息「开局提醒」模板 ID（#137）：开局前 1 小时（`t_minus_1h`）、改时间（`rescheduled`） |
+| `GUANDAN_WX_TMPL_REMIND_KEYS` | `thing1,time2,thing3` | 同上，开局提醒模板的三个字段名 |
 
 ## 8. 打包与部署
 
@@ -943,7 +982,7 @@ guandan restore <快照>                    从备份恢复（§13.3）
 - **个人数据保护法（UU PDP，2024 年 10 月起全面执行）**：
   - 采集的个人数据只有称呼、可选的 WhatsApp 号码、设备信息、埋点数据，以及小游戏用户的微信标识（openid / unionid，只用来识别同一个人，#84），不额外收集其他信息；
   - 提供隐私说明页面 `/privacy`，写明收集什么、用来做什么、保存多久、怎样删除；
-  - `DELETE /api/me` 用于注销：删除称呼、WhatsApp 号码、设备、推送订阅和微信关联（`user_links`）；座位记录改成「已注销牌友」，这样历史局的人数统计不会出错；
+  - `DELETE /api/me` 用于注销：删除称呼、WhatsApp 号码、设备、推送订阅、微信关联（`user_links`）和订阅消息次数（`wx_subscribe_quota`）；座位记录改成「已注销牌友」，这样历史局的人数统计不会出错；
   - 保留期限：设备 180 天未活跃就删除（§13.1）；埋点数据 1 年后删除；备份 30 天。
 - **赌博监管**：页面上已经写明「不涉及金钱输赢」。服务端对牌局备注和地点做敏感词过滤（赌、钱、筹码、judi、taruhan……），命中就拒绝提交，并提示「请勿涉及金钱」。词表放在仓库里，可以随时更新。
 - **域名**：`.id` 域名通常需要印尼身份证或本地公司才能注册，所以建议主域名用 `.com` 之类的通用后缀（见 #12）。

@@ -61,6 +61,44 @@ type Config struct {
 	// 开发模式下改为接受 dev:<openid> 形式的假 code。Secret 只放环境变量，不写日志。
 	WxAppID  string
 	WxSecret string
+	// WxTmplFull、WxTmplRemind 是小游戏订阅消息的两个模板（#137，§5.3「订阅消息通道」），读
+	// GUANDAN_WX_TMPL_FULL / GUANDAN_WX_TMPL_REMIND（模板 ID）和 …_KEYS（模板里「事项、时间、地点」
+	// 三个字段的名字，逗号分隔，默认 thing1,time2,thing3）。没配 AppID / Secret 时整个通道关闭；
+	// 某个模板没配时，它对应的提醒不走订阅消息。
+	WxTmplFull   WxTemplate
+	WxTmplRemind WxTemplate
+}
+
+// WxTemplate 是一个订阅消息模板：ID 和三个字段名（事项、时间、地点，顺序固定）。
+type WxTemplate struct {
+	ID   string
+	Keys [3]string
+}
+
+// 订阅消息模板的用途，也是 GET /api/config 里 wx_subscribe 的键。
+const (
+	WxTmplFull   = "full"   // 牌局状态：成局、有人退出（full、seat_left）
+	WxTmplRemind = "remind" // 开局提醒：开局前 1 小时、改时间（t_minus_1h、rescheduled）
+)
+
+// DefaultWxTmplKeys 是模板字段名的默认值：微信公共模板库里常见的「事项 / 时间 / 地点」排法。
+const DefaultWxTmplKeys = "thing1,time2,thing3"
+
+// WxSubscribeTemplates 是配置了的订阅消息模板，按用途（WxTmplFull、WxTmplRemind）索引。
+// 没配 AppID / Secret 时为空：没有 access_token 发不出去，整个通道关闭。开发模式例外：
+// 和小游戏登录接受 dev:<openid> 一样，配了模板就开，发送只记日志（小游戏开发者工具连本机用）。
+func (c Config) WxSubscribeTemplates() map[string]WxTemplate {
+	out := map[string]WxTemplate{}
+	if !c.WxEnabled() && !c.Dev {
+		return out
+	}
+	if c.WxTmplFull.ID != "" {
+		out[WxTmplFull] = c.WxTmplFull
+	}
+	if c.WxTmplRemind.ID != "" {
+		out[WxTmplRemind] = c.WxTmplRemind
+	}
+	return out
 }
 
 // WxEnabled 说明是否配置了真实的小游戏 AppID 和 AppSecret。
@@ -210,12 +248,54 @@ func Load() (Config, error) {
 	if (c.WxAppID == "") != (c.WxSecret == "") {
 		return Config{}, fmt.Errorf("GUANDAN_WX_APPID 和 GUANDAN_WX_SECRET 要么都设置，要么都不设置")
 	}
+	if c.WxTmplFull, err = wxTemplate("GUANDAN_WX_TMPL_FULL"); err != nil {
+		return Config{}, err
+	}
+	if c.WxTmplRemind, err = wxTemplate("GUANDAN_WX_TMPL_REMIND"); err != nil {
+		return Config{}, err
+	}
 
 	if !dev && len(c.Domains()) > 0 && c.AdminEmail == "" {
 		return Config{}, fmt.Errorf("启用自动签发证书（GUANDAN_DOMAIN）时必须设置 GUANDAN_ADMIN_EMAIL")
 	}
 
 	return c, nil
+}
+
+// wxTemplate 读一个订阅消息模板：<name> 是模板 ID，<name>_KEYS 是三个字段名。
+// 两者都会原样放进发给微信的 JSON，只接受字母、数字、下划线和短横线。
+func wxTemplate(name string) (WxTemplate, error) {
+	t := WxTemplate{ID: strings.TrimSpace(os.Getenv(name))}
+	if t.ID == "" {
+		return t, nil
+	}
+	if !wxToken(t.ID, 128) {
+		return t, fmt.Errorf("%s=%q 不像订阅消息模板 ID", name, t.ID)
+	}
+	keys := strings.Split(env(name+"_KEYS", DefaultWxTmplKeys), ",")
+	if len(keys) != 3 {
+		return t, fmt.Errorf("%s_KEYS 要写三个字段名（事项、时间、地点），逗号分隔，比如 %s", name, DefaultWxTmplKeys)
+	}
+	for i, k := range keys {
+		k = strings.TrimSpace(k)
+		if !wxToken(k, 32) {
+			return t, fmt.Errorf("%s_KEYS 第 %d 个字段名 %q 不合法", name, i+1, k)
+		}
+		t.Keys[i] = k
+	}
+	return t, nil
+}
+
+func wxToken(s string, max int) bool {
+	if s == "" || len(s) > max {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func env(key, fallback string) string {

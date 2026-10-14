@@ -17,6 +17,7 @@ import { acknowledge, fromDetail, observe, type Notice, type NoticeKind } from "
 import { rescheduleText } from "./home";
 import type { Nav } from "./nav";
 import { addToCalendar, friendPicker, joinedSheet, promotedSheet, requireIdentity, shareSheet } from "./sheets";
+import { askSubscribe, remindOn, reportAccepted } from "../lib/subscribe";
 
 const POS = ["top", "right", "bottom", "left"] as const;
 
@@ -141,10 +142,15 @@ export class Detail implements Scene {
   }
 
   private async onJoin() {
-    if (!currentUser()) {
-      const u = await requireIdentity(this.app);
+    // 订阅消息只能在点按里同步问（#137）：有身份就在这一下问；没身份这一下用来弹称呼层，改在「就用这个名字」那一下问。
+    let subscribed: Promise<string[]> | null = null;
+    if (currentUser()) subscribed = askSubscribe();
+    else {
+      const u = await requireIdentity(this.app, { onSubmitTap: () => { subscribed ??= askSubscribe(); } });
       if (!u) return;
     }
+    // 同意了的模板不管报名成没成都报上去：次数跟着人走，下次报名的提醒也用得上。
+    const accepted = (subscribed ?? Promise.resolve<string[]>([])).then((ids) => { void reportAccepted(ids); return ids; });
     track("join_click", { game: this.code });
     let seated = false;
     const ok = await this.run(async () => {
@@ -156,7 +162,8 @@ export class Detail implements Scene {
     if (ok && seated && this.detail) {
       wx.vibrateShort?.({ type: "light" });
       this.joinedOpen = true;
-      joinedSheet(this.app, this.detail, () => addToCalendar(this.app, this.detail!));
+      const reminded = remindOn(await accepted);
+      joinedSheet(this.app, this.detail!, () => addToCalendar(this.app, this.detail!), reminded);
       // 弹层关掉之后再允许弹补位
       setTimeout(() => { this.joinedOpen = false; }, 600);
     }

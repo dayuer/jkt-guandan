@@ -168,6 +168,8 @@ func run() error {
 	}
 	// 发送 worker 每 15 秒一轮；心跳周期报 2 分钟：一轮最多 100 条、每条 10 秒超时、8 个并发，
 	// 慢的时候一轮要一两分钟，按 15 秒算会被 /readyz 误判为卡死。
+	// §5.3 订阅消息（#137）：配了 AppID / Secret 和至少一个模板才开。
+	setupWxSubscribe(notifySvc, cfg, clk)
 	group.Go(bgCtx, "push", 2*time.Minute, notify.NewWorker(notifySvc, notifySvc.NewSender(), clk).Task)
 
 	// §12.4 第 1 步：开始关闭后 /readyz 立刻返回 503。
@@ -361,6 +363,25 @@ func setupWx(svc *identity.Service, cfg config.Config) {
 	default:
 		slog.Info("没有配置 GUANDAN_WX_APPID / GUANDAN_WX_SECRET，小游戏登录关闭")
 	}
+}
+
+// setupWxSubscribe 接上小游戏订阅消息通道（#137）。没配 AppID / Secret 或模板时关闭，提醒只走 Web Push。
+func setupWxSubscribe(svc *notify.Service, cfg config.Config, clk clock.Clock) {
+	ch := notify.NewWxChannel(cfg, clk)
+	if ch == nil {
+		if cfg.WxTmplFull.ID != "" || cfg.WxTmplRemind.ID != "" {
+			slog.Warn("配了订阅消息模板但没配 GUANDAN_WX_APPID / GUANDAN_WX_SECRET，订阅消息关闭")
+		} else {
+			slog.Info("没有配置订阅消息模板，订阅消息关闭")
+		}
+		return
+	}
+	svc.SetWx(ch)
+	if !cfg.WxEnabled() {
+		slog.Info("开发模式：订阅消息已开启，发送只记日志", "templates", len(ch.Templates))
+		return
+	}
+	slog.Info("订阅消息已开启", "templates", len(ch.Templates))
 }
 
 // setupLogging 见 §7：开发模式用文本日志，生产用 JSON 到 stdout。

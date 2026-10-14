@@ -15,6 +15,7 @@ import (
 //	GET    /api/push/key        VAPID 公钥（公开，不识别身份）
 //	POST   /api/push/subscribe  保存订阅（要有身份）
 //	DELETE /api/push/subscribe  取消订阅（要有身份）
+//	POST   /api/wx/subscribe    小游戏上报同意了的订阅消息模板（要有身份，#137）
 //
 // svc 为 nil 时只能用来列路由，不能处理请求。
 func Routes(svc *Service) []route.Route {
@@ -23,6 +24,7 @@ func Routes(svc *Service) []route.Route {
 		{Method: http.MethodGet, Pattern: "/api/push/key", Access: route.Anonymous, Handler: http.HandlerFunc(h.key)},
 		{Method: http.MethodPost, Pattern: "/api/push/subscribe", Access: route.User, Handler: http.HandlerFunc(h.subscribe)},
 		{Method: http.MethodDelete, Pattern: "/api/push/subscribe", Access: route.User, Handler: http.HandlerFunc(h.unsubscribe)},
+		{Method: http.MethodPost, Pattern: "/api/wx/subscribe", Access: route.User, Handler: http.HandlerFunc(h.wxSubscribe)},
 	}
 }
 
@@ -89,6 +91,32 @@ func (h *handler) unsubscribe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "暂时无法处理，请稍后再试")
 	default:
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// wxSubscribe 记下 wx.requestSubscribeMessage 里用户同意了的模板：{"accepted":["<模板 ID>", …]}。
+// 每个模板次数 + 1；不是本站配置的模板 ID 忽略。返回 {"added": 记下的模板数}。
+func (h *handler) wxSubscribe(w http.ResponseWriter, r *http.Request) {
+	ident, ok := h.who(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Accepted []string `json:"accepted"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil || len(body.Accepted) > 10 {
+		writeError(w, http.StatusBadRequest, "bad_request", "需要 accepted：同意了的模板 ID 列表")
+		return
+	}
+	n, err := h.svc.AddWxQuota(r.Context(), ident.User.ID, body.Accepted)
+	switch {
+	case errors.Is(err, ErrWxDisabled):
+		writeError(w, http.StatusServiceUnavailable, "wx_disabled", "订阅消息未开启")
+	case err != nil:
+		slog.Error("记录订阅消息次数失败", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "暂时无法保存，请稍后再试")
+	default:
+		writeJSON(w, http.StatusOK, map[string]int{"added": n})
 	}
 }
 
