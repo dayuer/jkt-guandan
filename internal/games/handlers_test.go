@@ -452,3 +452,140 @@ func TestPatchAcceptsQuotedIfMatch(t *testing.T) {
 		t.Fatalf("带引号的 If-Match 应当被接受，实际 %d %s", r.status, r.raw)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 内容过滤（§14）
+// ---------------------------------------------------------------------------
+
+// 备注或地点命中敏感词时，开局要被 422 拒绝，并且告诉前端是哪个字段——
+// 前端据此把提示放到对应的输入框下面、不清空用户写好的内容（原型 X1）。
+func TestCreateRejectsSensitiveWords(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "局头")
+
+	cases := []struct {
+		name    string
+		venue   string
+		note    string
+		wantFld string
+	}{
+		{"备注里写钱（设计稿的例子）", "Pacific Place", "一把 50 块钱，输了请宵夜", "note"},
+		{"备注里说赌", "Pacific Place", "小赌怡情", "note"},
+		{"地点里带敏感词", "钱柜包厢", "", "venue"},
+		{"印尼语", "Pacific Place", "judi santai", "note"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{
+				"starts_at": f.clk.Now().Add(2 * time.Hour).Unix(),
+				"area":      "SCBD",
+				"venue":     tc.venue,
+				"kind":      "classic",
+			}
+			if tc.note != "" {
+				body["note"] = tc.note
+			}
+			r := f.do(f.http, http.MethodPost, "/api/games", body, nil)
+			if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" {
+				t.Fatalf("应当 422 sensitive_word，实际 %d %s", r.status, r.raw)
+			}
+			e, _ := r.body["error"].(map[string]any)
+			if got, _ := e["field"].(string); got != tc.wantFld {
+				t.Fatalf("field = %q，期望 %q（响应 %s）", got, tc.wantFld, r.raw)
+			}
+			// 提示文案要说清楚怎么办，而不是只报错。
+			if msg, _ := e["message"].(string); !strings.Contains(msg, "请勿涉及金钱") {
+				t.Fatalf("提示文案不对：%q", msg)
+			}
+		})
+	}
+
+	// 被拒之后不该留下局。
+	r := f.do(f.http, http.MethodGet, "/api/games", nil, nil)
+	if games, _ := r.body["games"].([]any); len(games) != 0 {
+		t.Fatalf("被拒的局不该建出来，列表里有 %d 个", len(games))
+	}
+}
+
+// 正常内容照样能开——误伤的代价比漏掉高。
+func TestCreateAcceptsNormalContent(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "局头")
+
+	for _, body := range []map[string]any{
+		{"starts_at": f.clk.Now().Add(2 * time.Hour).Unix(), "area": "SCBD",
+			"venue": "Pacific Place · 鼎泰丰包间", "kind": "classic", "note": "新手局，随便打打，教规则"},
+		{"starts_at": f.clk.Now().Add(2 * time.Hour).Unix(), "area": "PIK",
+			"venue": "Bandar Djakarta 二楼", "kind": "classic"},
+		{"starts_at": f.clk.Now().Add(2 * time.Hour).Unix(), "area": "Kemang",
+			"venue": "Coffee Bean", "kind": "teaching", "note": "人均 200 左右，各付各的"},
+	} {
+		r := f.do(f.http, http.MethodPost, "/api/games", body, nil)
+		if r.status != http.StatusOK {
+			t.Fatalf("正常内容被拒了：%d %s（%v）", r.status, r.raw, body)
+		}
+	}
+}
+
+// 「改」不能绕过「开」那一关。
+func TestPatchRejectsSensitiveWords(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "局头")
+	code := f.createGame(f.http, map[string]string{"Idempotency-Key": "sensitive-1"})
+
+	r := f.do(f.http, http.MethodPatch, "/api/games/"+code,
+		map[string]string{"note": "赢钱请宵夜"}, map[string]string{"If-Match": "1"})
+	if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" {
+		t.Fatalf("改备注应当 422 sensitive_word，实际 %d %s", r.status, r.raw)
+	}
+
+	r = f.do(f.http, http.MethodPatch, "/api/games/"+code,
+		map[string]string{"venue": "筹码酒吧"}, map[string]string{"If-Match": "1"})
+	if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" {
+		t.Fatalf("改地点应当 422 sensitive_word，实际 %d %s", r.status, r.raw)
+	}
+
+	// 被拒之后这一局没有被改动（版本号还是 1）。
+	if v := f.do(f.http, http.MethodGet, "/api/games/"+code, nil, nil).gameField("version"); v != float64(1) {
+		t.Fatalf("被拒的修改不该改到牌局，version = %v", v)
+	}
+
+	// 正常修改照旧。
+	r = f.do(f.http, http.MethodPatch, "/api/games/"+code,
+		map[string]string{"note": "各付各的，纯娱乐"}, map[string]string{"If-Match": "1"})
+	if r.status != http.StatusOK {
+		t.Fatalf("正常修改应当成功，实际 %d %s", r.status, r.raw)
+	}
+}
+
+// 词表后来才加的词，不该卡住局头改时间（只检查这次要改的字段）。
+func TestPatchWithSensitiveOldNoteCanStillChangeTime(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "局头")
+	code := f.createGame(f.http, map[string]string{"Idempotency-Key": "sensitive-2"})
+
+	// 直接写库，绕开接口，模拟「词表是后来才加的词」。
+	var changed int64
+	if err := f.st.Write(context.Background(), func(ctx context.Context, tx *store.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE games SET note = '筹码局' WHERE short_code = ?`, code)
+		if err != nil {
+			return err
+		}
+		changed, err = res.RowsAffected()
+		return err
+	}); err != nil {
+		t.Fatalf("写库: %v", err)
+	}
+	if changed != 1 {
+		t.Fatalf("没写进去，影响了 %d 行", changed)
+	}
+
+	newStart := f.clk.Now().Add(5 * time.Hour).Unix()
+	r := f.do(f.http, http.MethodPatch, "/api/games/"+code,
+		map[string]any{"starts_at": newStart}, map[string]string{"If-Match": "1"})
+	if r.status != http.StatusOK {
+		t.Fatalf("只改时间应当成功，实际 %d %s", r.status, r.raw)
+	}
+}

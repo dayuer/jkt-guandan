@@ -192,6 +192,24 @@ a.btn {
   padding: var(--s2);
 }
 
+/* 列表行里的文字按钮（设备行的「退出」）：紧凑一点，别把整行撑满。 */
+.list .li .textlink {
+  display: inline-block;
+  width: auto;
+  padding: 4px 2px;
+  color: var(--red);
+  font-size: var(--fs-13);
+  font-weight: 700;
+}
+
+/* 空状态里的文字按钮（首页的「开一局 ›」）。 */
+.link {
+  display: inline;
+  color: var(--red);
+  font-size: var(--fs-body);
+  font-weight: 700;
+}
+
 /* 底部操作栏 */
 /* 用 flex 而不是固定列数：访客只有一个按钮、局头有三个按钮，都不该出现空洞。 */
 .actionbar {
@@ -864,9 +882,125 @@ a.btn {
   font-size: var(--fs-13);
 }
 
+
+/* 命中敏感词的那个输入框（原型 X1）：边框和底色变红，提示就在它下面，
+   用户已经写好的内容一个字都不动。 */
+.field input.err,
+.field textarea.err {
+  border-color: var(--red);
+  background: var(--red-tint);
+}
+
+.errmsg {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--red);
+  font-size: var(--fs-small);
+}
+
+/* ── 设置 / 设备 / 隐私的列表（原型 G4、G5）────────────────────── */
+
+.list {
+  margin: 0 18px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.list .li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line-2);
+  text-align: left;
+}
+
+.list .li:last-child {
+  border-bottom: 0;
+}
+
+/* 可以点进去的那几行：整行都是按钮，右边挂一个 ›。 */
+.list .li.tap:active {
+  background: var(--paper);
+}
+
+.list .li .tx {
+  flex: 1;
+  font-size: var(--fs-15);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.list .li .tx small {
+  display: block;
+  margin-top: 2px;
+  font-weight: 400;
+  color: var(--ink-3);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+}
+
+.chev {
+  color: var(--ink-3);
+  font-size: 18px;
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--red-tint);
+  color: var(--red);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.dev-ico {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--paper);
+  font-size: 18px;
+}
+
+.here {
+  color: var(--green);
+  font-size: var(--fs-tiny);
+  font-weight: 700;
+}
+
+.small-title {
+  padding: 18px 18px 8px;
+  color: var(--ink-3);
+  font-size: var(--fs-13);
+  font-weight: 700;
+}
+
+/* 确认弹窗里的两颗按钮（原型 G5 的「不注销 / 注销」）。 */
+.dialog .two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.dialog .two .btn {
+  height: 46px;
+  font-size: var(--fs-15);
+}
+
 /* 页面级的空状态文字。刻意不叫 `.empty`：座位那边已经有一个 `.disc.empty`，
    同名会让「页面的空状态」和「空座位」互相串样式（#55）。 */
 .empty-state {
+
   text-align: center;
   color: var(--ink-3);
   font-size: var(--fs-body);

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/dayuer/jkt-guandan/internal/moderate"
 )
 
 // 输入校验的长度和范围（§12.2）。
@@ -59,6 +61,12 @@ func (in *CreateInput) Normalize(now time.Time) error {
 	}
 	if n := len([]rune(in.Note)); n > NoteMax {
 		return fmt.Errorf("%w：备注不能超过 %d 个字符", ErrInvalidInput, NoteMax)
+	}
+
+	// 备注和地点不能涉及金钱或赌博（§14）。放在长度检查之后：先说「太长了」
+	// 比先说「别写钱」更贴切。
+	if err := checkContent(in.Venue, in.Note); err != nil {
+		return err
 	}
 
 	if in.StartsAt.IsZero() {
@@ -120,6 +128,30 @@ func (p *Patch) Normalize(now time.Time) error {
 	}
 	if p.StartsAt == nil && p.Venue == nil && p.Area == nil && p.Kind == nil && p.Note == nil {
 		return fmt.Errorf("%w：没有要修改的内容", ErrInvalidInput)
+	}
+	// 只检查这次要改的字段：旧值里万一有词表后来才加的词，不该卡住局头改时间。
+	if p.Venue != nil {
+		if hit := moderate.Check("venue", *p.Venue); hit != nil {
+			return hit
+		}
+	}
+	if p.Note != nil {
+		if hit := moderate.Check("note", *p.Note); hit != nil {
+			return hit
+		}
+	}
+	return nil
+}
+
+// checkContent 检查要写进牌局的自由文本有没有敏感词（§14）。
+//
+// 开局和改牌局都要过这一关：不能因为「改」绕过「开」时的过滤。
+func checkContent(venue, note string) error {
+	if hit := moderate.Check("venue", venue); hit != nil {
+		return hit
+	}
+	if hit := moderate.Check("note", note); hit != nil {
+		return hit
 	}
 	return nil
 }

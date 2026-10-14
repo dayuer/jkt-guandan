@@ -32,6 +32,15 @@ export class ApiError extends Error {
   get isClosed(): boolean {
     return this.status === 409 && this.code === "game_closed";
   }
+
+  /**
+   * 内容是敏感词时，服务端告诉我们命中的是哪个字段（venue / note），
+   * 用来把提示放到对应的输入框下面（原型 X1）。其他错误返回空串。
+   */
+  get field(): string {
+    const field = this.body?.error?.field;
+    return typeof field === "string" ? field : "";
+  }
 }
 
 interface RequestOptions {
@@ -301,6 +310,28 @@ export function signOutDevice(deviceID: string): Promise<void> {
 export async function signOutCurrentDevice(): Promise<void> {
   const me = await getMe();
   await signOutDevice(me.device_id);
+}
+
+
+/**
+ * 注销：删掉称呼、WhatsApp、设备和推送订阅；已经结束的局里座位显示成「已注销牌友」
+ * （§14）。注销之后这台设备就没有身份了，服务端会把 cookie 清掉。
+ */
+export function deleteMe(): Promise<void> {
+  return request<void>("DELETE", "/api/me");
+}
+
+/**
+ * 退出除当前这台以外的所有设备（§10.3 的 G4：「退出其他设备」）。
+ * 返回退掉了几台。一台一台退：接口本来就是按设备来的，而且失败时能停在中途。
+ */
+export async function signOutOtherDevices(): Promise<number> {
+  const me = await getMe();
+  const others = me.devices.filter((d) => d.id !== me.device_id);
+  for (const device of others) {
+    await signOutDevice(device.id);
+  }
+  return others.length;
 }
 
 /** VAPID 公钥（base64url）。服务端返回的是 `{"key": "..."}`（#48）。 */

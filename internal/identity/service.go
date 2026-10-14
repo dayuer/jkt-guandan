@@ -78,6 +78,8 @@ type Service struct {
 	cookies CookiePolicy
 	pub     Publisher // 可以为 nil：不发实时事件
 
+	games GameCleaner // 可以为 nil：注销时不清牌局侧的数据（§14）
+
 	createLimiter *ratelimit.Limiter // POST /api/me：每 IP 每小时 20 次（§12.3）
 	issueLimiter  *ratelimit.Limiter // POST /api/claim：每用户每小时 5 次（§5.2 修订）
 	codeLimiter   *ratelimit.Limiter // 凭码兑换：每 IP 每分钟 10 次（§12.3）

@@ -6,10 +6,20 @@ import { agentDisabled } from "./agent";
 import { Agent, type FormPrefill } from "./pages/Agent";
 import { CreateGame } from "./pages/CreateGame";
 import { Detail } from "./pages/Detail";
+import { Devices } from "./pages/Devices";
 import { Home } from "./pages/Home";
-import { APP_NAME } from "./title";
+import { Me } from "./pages/Me";
+import { Privacy } from "./pages/Privacy";
+import { pageTitle } from "./title";
 
-type Route = { name: "home" } | { name: "detail"; code: string } | { name: "new" } | { name: "agent" };
+type Route =
+  | { name: "home" }
+  | { name: "detail"; code: string }
+  | { name: "new" }
+  | { name: "agent" }
+  | { name: "me" }
+  | { name: "devices" }
+  | { name: "privacy" };
 
 function parseRoute(): Route {
   const path = window.location.pathname;
@@ -17,6 +27,10 @@ function parseRoute(): Route {
   if (match) return { name: "detail", code: match[1] };
   if (path === "/new") return { name: "new" };
   if (path === "/agent") return { name: "agent" };
+  if (path === "/me") return { name: "me" };
+  if (path === "/me/devices") return { name: "devices" };
+  // 隐私说明不要求登录：还没有填称呼的人也应当能看到（§14）。
+  if (path === "/privacy") return { name: "privacy" };
   return { name: "home" };
 }
 
@@ -51,7 +65,7 @@ export function App() {
   // 标题（#60）：从分享链接落地时服务端注入的是这一局的标题，SPA 内跳回别的页面要换回应用名。
   // 详情页的标题由 Detail 拿到数据后自己设。
   useEffect(() => {
-    if (route.name !== "detail") document.title = APP_NAME;
+    if (route.name !== "detail") document.title = pageTitle(route.name);
   }, [route]);
 
   useEffect(() => {
@@ -199,6 +213,35 @@ export function App() {
           }}
           onCreated={(code) => navigate(`/g/${code}`)}
         />
+      ) : route.name === "me" ? (
+        <Me
+          me={me}
+          requireIdentity={requireIdentity}
+          onDevices={() => navigate("/me/devices")}
+          onPrivacy={() => navigate("/privacy")}
+        />
+      ) : route.name === "devices" ? (
+        <Devices
+          me={me}
+          toast={toast}
+          onBack={() => navigate("/me")}
+          onSignedOut={() => {
+            clearIdentityMarker();
+            setMe(null);
+            navigate("/me");
+          }}
+        />
+      ) : route.name === "privacy" ? (
+        <Privacy
+          hasIdentity={!!me}
+          toast={toast}
+          onBack={() => navigate(me ? "/me" : "/")}
+          onDeleted={() => {
+            clearIdentityMarker();
+            setMe(null);
+            navigate("/");
+          }}
+        />
       ) : (
         <Home
           me={me}
@@ -213,6 +256,7 @@ export function App() {
             setPrefill(null);
             navigate(agentDisabled() ? "/new" : "/agent");
           }}
+          onMe={() => navigate("/me")}
         />
       )}
 

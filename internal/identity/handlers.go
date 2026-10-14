@@ -20,6 +20,8 @@ func Routes(svc *Service) []route.Route {
 		{Method: http.MethodPost, Pattern: "/api/me", Access: route.Public, Handler: http.HandlerFunc(h.createMe)},
 		{Method: http.MethodGet, Pattern: "/api/me", Access: route.User, Handler: http.HandlerFunc(h.getMe)},
 		{Method: http.MethodDelete, Pattern: "/api/me/devices/{id}", Access: route.User, Handler: http.HandlerFunc(h.signOutDevice)},
+		// 注销：删掉这个人自己的数据（§14）。访问方式与 GET/POST /api/me 同一个路径。
+		{Method: http.MethodDelete, Pattern: "/api/me", Access: route.User, Handler: http.HandlerFunc(h.deleteMe)},
 		{Method: http.MethodPost, Pattern: "/api/claim", Access: route.User, Handler: http.HandlerFunc(h.issueClaim)},
 		// 两种身份都能进来：有身份的人凭 token 兑换时会先拿到 409，确认后才切换。
 		// 「凭码兑换只给没有身份的设备用」是业务规则，在 handler 里判。
@@ -120,6 +122,23 @@ func (h *handler) signOutDevice(w http.ResponseWriter, r *http.Request) {
 	if deviceID == current.Device.ID {
 		h.svc.Cookies().Clear(w)
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteMe 注销：删掉称呼、WhatsApp、设备和推送订阅，历史局里的座位显示成
+// 「已注销牌友」（§14）。注销之后这台设备就没有身份了，所以要把 cookie 清掉。
+func (h *handler) deleteMe(w http.ResponseWriter, r *http.Request) {
+	current, ok := requireIdentity(w, r)
+	if !ok {
+		return
+	}
+
+	if err := h.svc.DeleteMe(r.Context(), current); err != nil {
+		writeServiceError(w, "注销失败", err)
+		return
+	}
+
+	h.svc.Cookies().Clear(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 

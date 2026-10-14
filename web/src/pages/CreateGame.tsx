@@ -54,6 +54,8 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated, pref
   const [note, setNote] = useState(draft.note ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // 命中敏感词时是哪个字段（§14）：提示要放在对应的输入框下面，而不是笼统地报一句错。
+  const [badField, setBadField] = useState("");
   const retrying = useRetrying();
 
   // 幂等键代表「这一次提交」（§11.4）。放进状态，只有表单内容变了才换新的：
@@ -75,6 +77,7 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated, pref
 
     setBusy(true);
     setError("");
+    setBadField("");
     try {
       const detail = await createGame(
         { starts_at: startsAt, area, venue: venue.trim(), kind, note: note.trim() || undefined },
@@ -84,19 +87,32 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated, pref
       onCreated(detail.game.short_code);
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(
-          err.code === "quota_exceeded"
-            ? err.message
-            : err.code === "invalid_input"
+        // 敏感词：就地提示在出问题的那个输入框下面，已经写好的内容一个字都不动（原型 X1）。
+        if (err.code === "sensitive_word") {
+          setBadField(err.field);
+          setError(err.message);
+        } else {
+          setError(
+            err.code === "quota_exceeded"
               ? err.message
-              : "没开成，请再试一次",
-        );
+              : err.code === "invalid_input"
+                ? err.message
+                : "没开成，请再试一次",
+          );
+        }
       } else {
         setError("没开成，请再试一次");
       }
     } finally {
       setBusy(false);
     }
+  };
+
+  /** 用户开始改那个字段了，就把提示收起来。 */
+  const clearBad = (field: string) => {
+    if (badField !== field) return;
+    setBadField("");
+    setError("");
   };
 
   return (
@@ -149,11 +165,16 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated, pref
             <label for="venue">具体地点</label>
             <input
               id="venue"
+              class={badField === "venue" ? "err" : ""}
               value={venue}
               maxLength={40}
               placeholder="比如：Pacific Place · 鼎泰丰包间"
-              onInput={(e) => setVenue((e.target as HTMLInputElement).value)}
+              onInput={(e) => {
+                clearBad("venue");
+                setVenue((e.target as HTMLInputElement).value);
+              }}
             />
+            {badField === "venue" && <p class="errmsg">⚠ {error}</p>}
           </div>
 
           <div class="field">
@@ -171,15 +192,20 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated, pref
             <label for="note">备注（可不填）</label>
             <textarea
               id="note"
+              class={badField === "note" ? "err" : ""}
               value={note}
               maxLength={200}
               placeholder="比如：新手也欢迎，慢慢打"
-              onInput={(e) => setNote((e.target as HTMLTextAreaElement).value)}
+              onInput={(e) => {
+                clearBad("note");
+                setNote((e.target as HTMLTextAreaElement).value);
+              }}
             />
+            {badField === "note" && <p class="errmsg">⚠ {error}</p>}
           </div>
 
           <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>
-          {error && <p class="error">{error}</p>}
+          {error && !badField && <p class="error">{error}</p>}
         </form>
       </div>
 

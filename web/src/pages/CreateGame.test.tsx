@@ -97,6 +97,87 @@ describe("开局表单的幂等键（§11.4）", () => {
   });
 });
 
+describe("敏感词（§14、原型 X1）", () => {
+  /** 接口固定返回 422 sensitive_word，字段由用例指定。 */
+  function setupSensitive(field: string) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        respond(422, {
+          error: { code: "sensitive_word", message: "请勿涉及金钱：这里只约纯娱乐局", field },
+        }),
+      ),
+    );
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    render(
+      <CreateGame
+        me={{ id: "u1", nickname: "老王" }}
+        requireIdentity={async () => null}
+        toast={() => {}}
+        onBack={() => {}}
+        onCreated={() => {}}
+      />,
+      container,
+    );
+    return container;
+  }
+
+  function type(container: HTMLElement, id: string, value: string) {
+    const el = container.querySelector(`#${id}`) as HTMLInputElement | HTMLTextAreaElement;
+    el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  it("备注命中时，提示在备注下面，而且不清空已经写好的内容", async () => {
+    const container = setupSensitive("note");
+    type(container, "venue", "Pacific Place");
+    type(container, "note", "一把 50 块钱，输了请宵夜");
+    await vi.waitFor(() => expect((container.querySelector(".actionbar .btn") as HTMLButtonElement).disabled).toBe(false));
+
+    clickSubmit(container);
+    await vi.waitFor(() => expect(container.querySelector(".errmsg")).not.toBeNull());
+
+    expect(container.querySelector(".errmsg")?.textContent).toContain("请勿涉及金钱");
+    // 提示挂在备注那个字段上：备注变红，地点没变。
+    const note = container.querySelector("#note") as HTMLTextAreaElement;
+    const venue = container.querySelector("#venue") as HTMLInputElement;
+    expect(note.className).toContain("err");
+    expect(venue.className).not.toContain("err");
+    // 用户写的内容还在，改一改就能重新提交。
+    expect(note.value).toBe("一把 50 块钱，输了请宵夜");
+    // 提示只说一遍：上面那个笼统的错误行不该同时出现。
+    expect(container.querySelectorAll(".error").length).toBe(0);
+  });
+
+  it("地点命中时，提示在地点下面", async () => {
+    const container = setupSensitive("venue");
+    type(container, "venue", "筹码酒吧");
+    await vi.waitFor(() => expect((container.querySelector(".actionbar .btn") as HTMLButtonElement).disabled).toBe(false));
+
+    clickSubmit(container);
+    await vi.waitFor(() => expect(container.querySelector(".errmsg")).not.toBeNull());
+
+    expect((container.querySelector("#venue") as HTMLInputElement).className).toContain("err");
+    expect((container.querySelector("#note") as HTMLTextAreaElement).className).not.toContain("err");
+  });
+
+  it("用户开始改那个字段，提示就收起来", async () => {
+    const container = setupSensitive("note");
+    type(container, "venue", "Pacific Place");
+    type(container, "note", "小赌怡情");
+    await vi.waitFor(() => expect((container.querySelector(".actionbar .btn") as HTMLButtonElement).disabled).toBe(false));
+
+    clickSubmit(container);
+    await vi.waitFor(() => expect(container.querySelector(".errmsg")).not.toBeNull());
+
+    type(container, "note", "新手局，随便打打");
+    await vi.waitFor(() => expect(container.querySelector(".errmsg")).toBeNull());
+    expect((container.querySelector("#note") as HTMLTextAreaElement).className).not.toContain("err");
+  });
+});
+
 describe("从 07 蛋蛋退回来（#11）", () => {
   it("用草稿预填，并提示用户刚才说的话和缺什么", () => {
     const container = document.createElement("div");

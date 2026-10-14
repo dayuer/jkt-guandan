@@ -151,6 +151,8 @@ func run() error {
 		Build: buildinfo.Get(),
 	})
 	gamesSvc := games.NewService(st, clk, gamesPublisher{hub})
+	// 注销（§14）要同时清身份侧和牌局侧的数据，两边在各自的包里，这里接起来。
+	identitySvc.SetGameCleaner(gamesSvc)
 
 	// §5.3 Web Push：VAPID 密钥第一次启动时生成，存在 kv 表里（跟着备份走）。
 	notifyCtx, cancelNotify := context.WithTimeout(context.Background(), 10*time.Second)
