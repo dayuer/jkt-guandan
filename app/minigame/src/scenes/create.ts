@@ -2,9 +2,9 @@
 // 文字输入走 wx.showKeyboard：点字段 → 底部原生输入条，画布上同步显示。
 
 import type { App, Scene } from "../core/app";
-import { C, Ctx, Scroller, font, text } from "../core/ui";
+import { C, Ctx, Scroller, circle, fillRR, font, text } from "../core/ui";
 import { PAD, button, chip, chipsWrap, disclaimer, errorLine, field, nav } from "../core/widgets";
-import { ApiError, createGame, inviteError, inviteFriends, inviteSummary, newIdempotencyKey, subscribeRetry, type Friend } from "../lib/api";
+import { ApiError, request, createGame, inviteError, inviteFriends, inviteSummary, newIdempotencyKey, subscribeRetry, type Friend } from "../lib/api";
 import { currentUser } from "../lib/session";
 import { wibAt, weekday } from "../lib/fmt";
 import { AREAS } from "./home";
@@ -37,10 +37,20 @@ export class Create implements Scene {
   private scroll = new Scroller();
   private unretry: (() => void) | null = null;
   private fieldY: Record<string, number> = {};
+  // 按住说话（#122 的入口位置）：开发版显示；正式版等服务端 /api/config 的 features.voice 打开
+  private voice = __DEV__;
+  private rec: { t0: number; cancel: boolean } | null = null;
+  private lastRec: { cancel: boolean } | null = null;
+  private recorder: any = null;
 
   constructor(private app: App, private nav: Nav) {}
 
-  onEnter() { this.unretry = subscribeRetry((v) => { this.retrying = v; this.app.redraw(); }); }
+  onEnter() {
+    this.unretry = subscribeRetry((v) => { this.retrying = v; this.app.redraw(); });
+    request<{ features?: { voice?: boolean } }>("GET", "/api/config")
+      .then((c) => { if (c?.features?.voice) { this.voice = true; this.app.redraw(); } })
+      .catch(() => {});
+  }
   onLeave() { this.unretry?.(); if (this.app.editing) wx.hideKeyboard({}); }
 
   /** 内容改了就换一个幂等键：同一份内容重试不会开两局，改过的内容是新的一局（§11.4）。 */
@@ -49,7 +59,7 @@ export class Create implements Scene {
   scrollerAt(_x: number, y: number) {
     return y > this.app.contentTop && y < this.app.H - BAR_H - this.app.safeBottom ? { s: this.scroll, axis: "y" as const } : null;
   }
-  step() { return this.scroll.step(); }
+  step() { return this.scroll.step() || !!this.rec; }
 
   draw(ctx: Ctx) {
     const a = this.app, W = a.W, fw = W - PAD * 2;
@@ -66,6 +76,7 @@ export class Create implements Scene {
       if (hint) text(ctx, hint, W - PAD, y + 20, font(12), C.ink4, "right");
       y += 36;
     };
+    if (this.voice) y = this.drawVoice(ctx, y);
     label("什么时候");
     y = chipsWrap(a, ctx, "time", PAD, y, fw, this.times.map((t) => t.label), (i) => this.times[i].unix === this.startsAt, (i) => { this.startsAt = this.times[i].unix; this.changed(); }) + 14;
     label("哪个片区");
@@ -106,6 +117,7 @@ export class Create implements Scene {
     this.scroll.setMax(y + this.scroll.pos - bottom);
 
     nav(a, ctx, "开一局", () => this.nav.back());
+    if (this.rec) this.drawRecording(ctx);
     if (!a.kbHeight) {
       const by = a.H - BAR_H - a.safeBottom;
       ctx.fillStyle = C.card; ctx.fillRect(0, by, W, BAR_H + a.safeBottom);
@@ -166,5 +178,67 @@ export class Create implements Scene {
     } finally {
       this.busy = false; this.app.redraw();
     }
+  }
+
+  // ── 按住说话：录音 → 上滑取消 → 松手结束（上传和识别在 #122）──
+
+  private drawVoice(ctx: Ctx, y: number): number {
+    const a = this.app, x = PAD, w = a.W - PAD * 2, h = 64, on = !!this.rec;
+    fillRR(ctx, x, y, w, h, 18, on ? C.redDeep : C.redTint);
+    circle(ctx, x + 34, y + h / 2, 18, on ? C.red : C.card);
+    text(ctx, "🎙", x + 34, y + h / 2 + 1, font(17), C.red, "center");
+    text(ctx, on ? "松手结束，上滑取消" : "按住说话，蛋蛋帮你填", x + 64, y + 24, font(15, "700"), on ? C.cream : C.red);
+    text(ctx, "例：「周四晚上七点半 PIK，还差三个」", x + 64, y + 45, font(12), on ? "rgba(255,247,236,0.8)" : C.ink3);
+    a.hit("voice", x, y, w, h, null); // 按住的逻辑在 onTouchStart / onTouchEnd
+    return y + h + 12;
+  }
+
+  onTouchStart(_x: number, _y: number, hit: { id: string } | null) {
+    if (hit && hit.id === "voice") { this.startRec(); return true; }
+    return false;
+  }
+  onTouchMove(_x: number, y: number, t: { y0: number }) {
+    if (this.rec) this.rec.cancel = t.y0 - y > 60;
+  }
+  onTouchEnd() {
+    if (this.rec) this.stopRec();
+  }
+
+  private startRec() {
+    const a = this.app;
+    if (!this.recorder) {
+      this.recorder = wx.getRecorderManager();
+      this.recorder.onStop((res: any) => {
+        if (this.lastRec?.cancel) { a.toast("已取消"); return; }
+        if ((res.duration || 0) < 600) { a.toast("说得太短了，再按住说一次"); return; }
+        // #122：wx.uploadFile → POST /api/voice → 文字交给 /api/agent 出草稿。服务端还没有，先提示手动填
+        a.toast(`录到 ${((res.duration || 0) / 1000).toFixed(1)} 秒。语音开局还没上线，先手动填表`, 2600);
+      });
+      this.recorder.onError((e: any) => { this.rec = null; a.toast("录音没成功：" + (e?.errMsg || "")); });
+    }
+    this.rec = { t0: Date.now(), cancel: false };
+    this.recorder.start({ duration: 15000, sampleRate: 16000, numberOfChannels: 1, encodeBitRate: 48000, format: "mp3" });
+    wx.vibrateShort?.({ type: "medium" });
+  }
+
+  private stopRec() {
+    this.lastRec = this.rec;
+    this.rec = null;
+    this.recorder?.stop();
+    this.app.redraw();
+  }
+
+  private drawRecording(ctx: Ctx) {
+    const a = this.app, W = a.W, cy = a.H * 0.45, r = this.rec!;
+    ctx.fillStyle = "rgba(28,20,17,0.45)";
+    ctx.fillRect(0, 0, W, a.H);
+    const t = (Date.now() - r.t0) / 1000;
+    fillRR(ctx, W / 2 - 110, cy - 90, 220, 180, 22, r.cancel ? C.ink2 : C.card);
+    for (let i = 0; i < 9; i++) {
+      const hg = 10 + 26 * Math.abs(Math.sin(t * 6 + i * 0.9));
+      fillRR(ctx, W / 2 - 64 + i * 15, cy - 30 - hg / 2, 8, hg, 4, r.cancel ? C.khaki : C.red);
+    }
+    text(ctx, `${Math.max(0, 15 - t).toFixed(0)} 秒`, W / 2, cy + 22, font(22, "900", true), r.cancel ? C.cream : C.ink, "center");
+    text(ctx, r.cancel ? "松手取消" : "上滑取消", W / 2, cy + 56, font(13), r.cancel ? C.cream : C.ink3, "center");
   }
 }
