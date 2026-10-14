@@ -368,3 +368,31 @@ test("底部「牌友」能进 F1，标题对，约 TA 面板能打开", async (
     await expect(sheet).toHaveCount(0);
   }
 });
+
+test("学牌：首页 Tab 能进学牌列表，规则速览能渲染、答题后进度 +1（#106）", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".tabbar button", { hasText: "学牌" }).click();
+  await expect(page).toHaveURL(/\/learn$/);
+  await expect(page).toHaveTitle("学牌 · 随时掼掼蛋");
+  await expect(page.locator(".tabbar .tab.on")).toContainText("学牌");
+  await expect(page.locator(".lesson")).toHaveCount(3);
+
+  await page.locator(".lesson", { hasText: "规则速览" }).click();
+  await expect(page).toHaveURL(/\/learn\/overview$/);
+  await expect(page.locator(".lesson-head h1")).toHaveText("规则速览");
+  await expect(page.locator(".rule")).not.toHaveCount(0);
+
+  // 正文没有被底部操作栏压住：最后一个练习选项可以滚到操作栏之上。
+  const lastOpt = page.locator(".quiz .opts button").last();
+  await lastOpt.scrollIntoViewIfNeeded();
+  const optBottom = await lastOpt.evaluate((el) => el.getBoundingClientRect().bottom);
+  const barTop = await page.locator(".actionbar").evaluate((el) => el.getBoundingClientRect().top);
+  expect(optBottom).toBeLessThanOrEqual(barTop);
+
+  await page.locator(".quiz .opts button", { hasText: "红桃 7" }).click();
+  await expect(page.locator(".actionbar .btn")).toContainText("下一课");
+
+  await page.locator(".nav .ico[aria-label=返回]").click();
+  await expect(page).toHaveURL(/\/learn$/);
+  await expect(page.locator("[data-testid=learn-progress]")).toContainText("已学 1 / 9 课");
+});
