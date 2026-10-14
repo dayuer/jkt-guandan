@@ -12,6 +12,8 @@ type ctxKey struct{}
 type requestIdentity struct {
 	ident  *Identity
 	banned bool
+	// lazy 不为 nil 时身份还没识别（route.DeferIdentity），用到时再调用它。
+	lazy func() (*Identity, bool, error)
 }
 
 // NewContext 把解析好的身份（nil 表示访客）和封禁状态放进 ctx。只由身份中间件调用。
@@ -19,17 +21,15 @@ func NewContext(ctx context.Context, ident *Identity, banned bool) context.Conte
 	return context.WithValue(ctx, ctxKey{}, requestIdentity{ident: ident, banned: banned})
 }
 
+// NewLazyContext 放一个「需要时再识别」的入口（route.DeferIdentity 的路由用）。只由身份中间件调用。
+func NewLazyContext(ctx context.Context, resolve func() (*Identity, bool, error)) context.Context {
+	return context.WithValue(ctx, ctxKey{}, requestIdentity{lazy: resolve})
+}
+
 // FromContext 取出当前请求的身份；访客、或者路由不识别身份（route.Anonymous）时返回 nil。
 func FromContext(ctx context.Context) *Identity {
 	v, _ := ctx.Value(ctxKey{}).(requestIdentity)
 	return v.ident
-}
-
-// BannedFromContext 说明当前身份是否被封禁。只有 route.DeferBan 的路由（GET /ws）需要看它，
-// 其余路由里被封禁的身份已经被中间件 403 挡掉了。
-func BannedFromContext(ctx context.Context) bool {
-	v, _ := ctx.Value(ctxKey{}).(requestIdentity)
-	return v.banned
 }
 
 // UserID 返回当前用户 id；访客返回空串。
@@ -50,13 +50,20 @@ func (s *Service) Resolve(r *http.Request) (ident *Identity, banned bool, err er
 	return ident, banned, err
 }
 
-// ForRealtime 是 WebSocket 握手时的身份（§5.5）：从中间件放进 ctx 的身份里取。没有身份返回空字符串；
-// 被封禁返回 ErrBanned，握手随之 403。和心跳时的 StillValid 是同一套规则。
+// ForRealtime 是 WebSocket 握手时的身份（§5.5）。GET /ws 是 route.DeferIdentity：握手过了 Origin 和
+// 连接数检查之后才调用它，这时才识别身份、查封禁。没有身份返回空字符串；被封禁返回 ErrBanned，
+// 查库出错返回那个错误，握手都随之 403。和心跳时的 StillValid 是同一套规则。
 func ForRealtime(r *http.Request) (userID, deviceID string, err error) {
-	if BannedFromContext(r.Context()) {
+	v, _ := r.Context().Value(ctxKey{}).(requestIdentity)
+	ident, banned := v.ident, v.banned
+	if v.lazy != nil {
+		if ident, banned, err = v.lazy(); err != nil {
+			return "", "", err
+		}
+	}
+	if banned {
 		return "", "", ErrBanned
 	}
-	ident := FromContext(r.Context())
 	if ident == nil {
 		return "", "", nil
 	}

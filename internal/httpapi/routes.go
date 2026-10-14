@@ -52,11 +52,18 @@ func mount(mux *http.ServeMux, ident *identity.Service, routes []route.Route) {
 // 把身份放进 ctx。各业务包用 identity.FromContext 取，不再各自查。
 //
 //   - Anonymous：不读 cookie，原样交给 handler；
-//   - 被封禁的身份：403 banned（DeferBan 的路由除外，只记进 ctx）；
+//   - DeferIdentity：不马上识别，ctx 里放一个入口，由 handler 在需要时调用（同一个 Resolve）；
+//   - 被封禁的身份：403 banned；
 //   - User 路由没有身份：401 unauthorized。
 func withIdentity(ident *identity.Service, rt route.Route) http.Handler {
 	if rt.Access == route.Anonymous {
 		return rt.Handler
+	}
+	if rt.DeferIdentity {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := identity.NewLazyContext(r.Context(), func() (*identity.Identity, bool, error) { return ident.Resolve(r) })
+			rt.Handler.ServeHTTP(w, r.WithContext(ctx))
+		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		who, banned, err := ident.Resolve(r)
@@ -65,7 +72,7 @@ func withIdentity(ident *identity.Service, rt route.Route) http.Handler {
 			writeError(w, http.StatusServiceUnavailable, "unavailable", "暂时无法处理，请稍后再试")
 			return
 		}
-		if banned && !rt.DeferBan {
+		if banned {
 			writeError(w, http.StatusForbidden, "banned", "这个账号已被停用")
 			return
 		}

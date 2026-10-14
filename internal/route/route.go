@@ -40,10 +40,11 @@ type Route struct {
 	Method  string
 	Pattern string // ServeMux 的路径模式，比如 /api/games/{code}
 	Access  Access
-	// DeferBan 为真时，中间件只把「是否被封禁」记进 ctx，不直接拒绝，由 handler 决定什么时候拒绝。
-	// 只有 GET /ws 用：它要先查 Origin 和连接数，再拒绝被封禁的身份（握手 403）。
-	DeferBan bool
-	Handler  http.Handler
+	// DeferIdentity 为真时，中间件不马上识别身份，只在 ctx 里放一个「需要时再识别」的入口，
+	// 由 handler 决定什么时候识别、什么时候拒绝被封禁的身份。只有 GET /ws 用：它要先查 Origin、
+	// 是否在关闭、每个 IP 的连接数，过了这几关才查库（识别身份、查封禁），连接上限也就护住了数据库。
+	DeferIdentity bool
+	Handler       http.Handler
 }
 
 // Key 是 ServeMux 用的「方法 路径」。
