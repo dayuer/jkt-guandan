@@ -211,7 +211,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
     return (
       <div class="body">
         <Nav title="牌局详情" onBack={onBack} />
-        {error ? <p class="error">{error}</p> : <p class="empty">正在打开…</p>}
+        {error ? <p class="error">{error}</p> : <p class="empty-state">正在打开…</p>}
       </div>
     );
   }

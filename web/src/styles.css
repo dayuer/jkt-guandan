@@ -335,6 +335,9 @@ button:disabled {
 .disc.empty {
   background: transparent;
   border: 2.5px dashed var(--khaki);
+  /* 座位是 64×64 的圆。显式写 0：曾经因为有个同名的页面空状态带 padding，
+     空座位被撑成了 64×100 的椭圆（#55）。 */
+  padding: 0;
 }
 
 .disc .crown {
@@ -843,7 +846,9 @@ button:disabled {
   font-size: var(--fs-13);
 }
 
-.empty {
+/* 页面级的空状态文字。刻意不叫 `.empty`：座位那边已经有一个 `.disc.empty`，
+   同名会让「页面的空状态」和「空座位」互相串样式（#55）。 */
+.empty-state {
   text-align: center;
   color: var(--ink-3);
   font-size: var(--fs-body);

@@ -76,16 +76,56 @@ describe("styles.css 的完整性", () => {
     expect(broken).toEqual([]);
   });
 
-  // 这两条是 #56 的直接症状：空座位的虚线框跑到了所有空状态文字上。
+  // 这几条是 #55 / #56 的直接症状：空座位的样式跑到了页面空状态文字上，反过来
+  // 页面空状态的内边距又把空座位撑成了椭圆。
   it("空座位的虚线框只属于 .disc.empty", () => {
     const dashed = rules.filter((r) => /2\.5px dashed var\(--khaki\)/.test(r.body));
     expect(dashed.map((r) => r.selector)).toEqual([".disc.empty"]);
   });
 
-  it("空状态文字（.empty）不带边框、不带背景", () => {
-    const empty = rules.find((r) => r.selector === ".empty");
+  it("空座位是 64×64 的圆：.disc.empty 显式重置 padding（#55）", () => {
+    const disc = rules.find((r) => r.selector === ".disc.empty");
+    expect(disc).toBeDefined();
+    expect(disc!.body).toMatch(/padding:\s*0/);
+  });
+
+  it("页面空状态叫 .empty-state，不带边框、不带背景", () => {
+    const empty = rules.find((r) => r.selector === ".empty-state");
     expect(empty).toBeDefined();
     expect(empty!.body).not.toMatch(/border/);
     expect(empty!.body).not.toMatch(/background/);
+  });
+
+  it("没有任何样式规则再用裸 .empty 当选择器（只允许 .disc.empty）", () => {
+    // 裸 `.empty` 是这次撞名的根源：谁再写一条，就又和空座位绑在一起了。
+    const bare = rules.filter((r) => /(^|[\s,>+~])\.empty($|[\s,:{])/.test(r.selector));
+    expect(bare.map((r) => r.selector)).toEqual([]);
+  });
+
+  it("页面里用的是 .empty-state，没有残留旧类名", () => {
+    // 改名的半成品比不改更糟：样式在 .empty-state 上，页面还写着 .empty。
+    const files = [
+      "src/App.tsx",
+      "src/pages/Home.tsx",
+      "src/pages/Detail.tsx",
+      "src/pages/CreateGame.tsx",
+      "src/pages/Privacy.tsx",
+      "src/pages/Me.tsx",
+      "src/pages/Devices.tsx",
+    ];
+    const leftover: string[] = [];
+    let usages = 0;
+    for (const file of files) {
+      let text: string;
+      try {
+        text = readFileSync(resolve(process.cwd(), file), "utf8");
+      } catch {
+        continue;
+      }
+      if (/class="empty"/.test(text)) leftover.push(file);
+      usages += (text.match(/class="empty-state"/g) ?? []).length;
+    }
+    expect(leftover).toEqual([]);
+    expect(usages).toBeGreaterThan(0);
   });
 });
