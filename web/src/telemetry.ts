@@ -42,6 +42,10 @@ export function detectEnv(userAgent: string = navigator.userAgent, win: Window =
 const MAX_BATCH = 20;
 const FLUSH_MS = 5000;
 const MAX_ERRORS = 3;
+/** 被限流（429）后安静地歇这么久再发。 */
+const BACKOFF_MS = 60_000;
+/** 歇着的时候最多攒这么多条，再多就丢最早的：埋点不值得占内存。 */
+const MAX_QUEUE = 60;
 
 interface Queued {
   name: EventName;
@@ -51,6 +55,7 @@ interface Queued {
 let queue: Queued[] = [];
 let timer: ReturnType<typeof setTimeout> | null = null;
 let env: Env | null = null;
+let pausedUntil = 0;
 
 function currentEnv(): Env {
   if (!env) {
@@ -66,6 +71,7 @@ function currentEnv(): Env {
 /** 记一条埋点。 */
 export function track(name: EventName, props?: EventProps): void {
   queue.push(props ? { name, props } : { name });
+  if (queue.length > MAX_QUEUE) queue = queue.slice(-MAX_QUEUE);
   if (queue.length >= MAX_BATCH) {
     flush();
     return;
@@ -79,6 +85,13 @@ export function flush(unloading = false): void {
     clearTimeout(timer);
     timer = null;
   }
+  // 刚被限流：页面还在就等歇够了再发；页面要走了就算了，不硬发。
+  const wait = pausedUntil - Date.now();
+  if (wait > 0) {
+    if (unloading) queue = [];
+    else if (queue.length > 0) timer = setTimeout(() => flush(), wait);
+    return;
+  }
   while (queue.length > 0) {
     const batch = queue.slice(0, MAX_BATCH);
     queue = queue.slice(MAX_BATCH);
@@ -87,6 +100,9 @@ export function flush(unloading = false): void {
 }
 
 function send(url: string, body: string, unloading: boolean): void {
+  const onResponse = (resp: Response) => {
+    if (resp.status === 429) pausedUntil = Date.now() + BACKOFF_MS;
+  };
   const init: RequestInit = {
     method: "POST",
     // CSRF 中间件要求会改数据的请求带 JSON 头（§6）。
@@ -95,7 +111,7 @@ function send(url: string, body: string, unloading: boolean): void {
     keepalive: unloading,
   };
   try {
-    void fetch(url, init).catch(() => {});
+    void fetch(url, init).then(onResponse, () => {});
   } catch {
     // 老内核不认 keepalive 时 fetch 会同步抛错：页面要走了，交给 sendBeacon。
     if (unloading && typeof navigator.sendBeacon === "function") {
@@ -153,6 +169,7 @@ export function resetTelemetry(): void {
   timer = null;
   queue = [];
   env = null;
+  pausedUntil = 0;
   errorsSent = 0;
   seen.clear();
 }

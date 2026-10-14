@@ -97,6 +97,43 @@ describe("track / flush", () => {
     await vi.runAllTimersAsync();
   });
 
+  it("被限流（429）后歇 60 秒再发，期间攒着的不丢（最多 60 条）", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return new Response("{}", { status: calls.length === 1 ? 429 : 200 });
+      }),
+    );
+    track("detail_view");
+    flush();
+    await vi.advanceTimersByTimeAsync(0); // 让 429 的响应回来
+
+    for (let i = 0; i < 70; i++) track("share_open");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(calls).toHaveLength(1); // 还在歇
+
+    await vi.advanceTimersByTimeAsync(31_000);
+    const sent = calls.slice(1).map((c) => JSON.parse(String(c.init.body)).events.length);
+    expect(sent.reduce((a, b) => a + b, 0)).toBe(60);
+  });
+
+  it("歇着的时候页面要走了：直接丢掉，不硬发", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return new Response("{}", { status: 429 });
+      }),
+    );
+    track("detail_view");
+    flush();
+    await vi.advanceTimersByTimeAsync(0);
+    track("join_click");
+    flush(true);
+    expect(calls).toHaveLength(1);
+  });
+
   it("空队列不发", () => {
     flush(true);
     expect(calls).toHaveLength(0);
