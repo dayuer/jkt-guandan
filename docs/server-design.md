@@ -264,8 +264,8 @@ CREATE TABLE user_links (
 
   按这些限制估算：6 位码共 10⁶ 种，全站每 10 分钟最多大约 200 次失败尝试，而且攻击者必须和受害者在同一个网段，远程撞库几乎不可能成功。
 - **小游戏身份**（#84）。小游戏没有 cookie，凭证走 `Authorization: Bearer`（§10.3 的唯一例外）。两个接口都是 `route.Anonymous`（不读 cookie、不写 cookie），只认微信 code：
-  - `POST /api/wx/login {code, nickname?}`：服务端调 `code2Session` 换出 openid（绑了开放平台时还有 unionid），先按 `wx_unionid`、再按 `wx_openid:<appid>` 在 `user_links` 里找。找到：给这个人新挂一台 `ua = wx-minigame` 的设备，补写缺的关联（以前没有 unionid、这次有了）；没找到且没给称呼：`200 {"need_nickname":true}`；给了称呼（规则同 `POST /api/me`，也占用同一个每 IP 创建配额）：新建用户、设备和关联。成功返回 `200 {"user":{"id","nickname","created_at"},"device_token","device_id"}`。每 IP 每分钟 20 次。被封禁的用户 `403 banned`。
-  - `POST /api/wx/link {code, wx_code, confirm?}`：B2 兜底路径，H5 用 `POST /api/claim` 签发的 6 位认领码在小游戏里输入。防护和上面的凭码兑换完全一样（同网段、每 IP 每分钟 10 次且与 `/api/claim/redeem` 共用、全站失败预算、失败一律 `400 claim_invalid`）。这个微信已经关联了别人且没带 `confirm`：`409 claim_conflict` + `other_nickname`（认领码主人的称呼），码不消耗；确认时要重新 `wx.login` 拿新的 `wx_code`。成功后把 openid / unionid 关联都挂到认领码主人身上（原来关联的用户其他数据不动），新挂一台小游戏设备，返回同 `/api/wx/login`，并发 `claim.redeemed`。
+  - `POST /api/wx/login {code, nickname?}`：服务端调 `code2Session` 换出 openid（绑了开放平台时还有 unionid），先按 `wx_unionid`、再按 `wx_openid:<appid>` 在 `user_links` 里找。找到：给这个人新挂一台 `ua = wx-minigame` 的设备，补写缺的关联（以前没有 unionid、这次有了）；没找到且没给称呼：`200 {"need_nickname":true}`；给了称呼（规则同 `POST /api/me`，也占用同一个每 IP 创建配额）：新建用户、设备和关联。成功返回 `200 {"user":{"id","nickname","created_at"},"device_token","device_id"}`。每 IP 每分钟 20 次。被封禁的用户、或者名下有被封的小游戏设备的用户 `403 banned`，不新建设备（§13.6，#145）。
+  - `POST /api/wx/link {code, wx_code, confirm?}`：B2 兜底路径，H5 用 `POST /api/claim` 签发的 6 位认领码在小游戏里输入。防护和上面的凭码兑换完全一样（同网段、每 IP 每分钟 10 次且与 `/api/claim/redeem` 共用、全站失败预算、失败一律 `400 claim_invalid`）。这个微信已经关联了别人且没带 `confirm`：`409 claim_conflict` + `other_nickname`（认领码主人的称呼），码不消耗；确认时要重新 `wx.login` 拿新的 `wx_code`。成功后把 openid / unionid 关联都挂到认领码主人身上（原来关联的用户其他数据不动），新挂一台小游戏设备，返回同 `/api/wx/login`，并发 `claim.redeemed`。认领码主人、或这个微信原来关联的人被封禁或有被封的小游戏设备时 `403 banned`，码不消耗、关联不动（§13.6）。
   - 错误码：`503 wx_disabled`（没配 `GUANDAN_WX_APPID` / `GUANDAN_WX_SECRET`）、`400 wx_code_invalid`、`503 wx_unavailable`（微信接口失败）、`400 nickname_invalid`、`429 rate_limited`。开发模式且没配 AppID 时，接受 `dev:<任意>` 形式的 code，`<任意>` 当 openid、appid 记成 `dev`，方便小游戏开发者工具连本机。
   - openid / unionid 不出现在响应和日志里。`DELETE /api/me` 和 `guandan admin user delete` 都删掉这个人的 `user_links`，同一个微信再来会建新用户。
   - 还没做：B1（带参数的小游戏码、`POST /api/wx/link {token, wx_code}`）。
@@ -929,6 +929,14 @@ guandan admin user delete <id>            删除用户数据（处理 §14 的�
 guandan admin stats [--since 7d]          查看 §8 指标（来自 events 表）
 guandan restore <快照>                    从备份恢复（§13.3）
 ```
+
+**小游戏用户的封禁（#145）**。H5 封了设备的人清掉 cookie，只能拿到一个新的匿名身份，回不到原用户，所以按设备封禁对 H5 有效。小游戏不一样：删掉小游戏再进、或换一台手机，`wx.login` 认回的还是**同一个**用户，再挂一台新设备。所以：
+
+- `/api/wx/login`、`/api/wx/link` 发现这个用户名下有被封的 `ua = wx-minigame` 设备时拒绝登录，返回 `403 banned`，不再新建设备。`/api/wx/link` 两边都查：认领码主人，以及这个微信原来关联的人（防止把被封的微信切到另一个号上）。
+- 只看小游戏设备，不看这个用户被封的 H5 设备。封 H5 设备是按设备的处置，同一个人别的设备照常可用，和 H5 那边一致；小游戏设备背后就是这个微信身份，封它等于封这个微信。
+- 已经登录着的其他设备不受影响（和 H5 一样只拦被封的那台）。要彻底封一个小游戏用户，直接 `admin ban <用户 id>`。
+- 被封的设备也按 §13.1 在 180 天没活动后被清理，清理之后这层拦截随之失效。要长期封，用 `admin ban <用户 id>`。
+- 没有解封命令；解封是把那台设备的 `banned_at` 清空，之后小游戏登录恢复。
 
 执行方式：`docker exec guandan /guandan admin …`。这些命令和服务共用同一个数据库，写操作同样通过 `store.Write`，不会与正在运行的服务冲突。
 
