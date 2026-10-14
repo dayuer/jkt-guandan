@@ -1,5 +1,6 @@
 // 小游戏入口：一期约局的全部页面（#85），画在一张画布上。
 import "./shim";
+import { installSelftest, runSelftest } from "./selftest";
 import { App, type Scene } from "./core/app";
 import { C, Ctx, circle, font, text } from "./core/ui";
 import { API_BASE } from "./lib/api";
@@ -14,6 +15,7 @@ import { Learn, LessonScene } from "./scenes/learn";
 import { Devices, Me, Privacy } from "./scenes/me";
 import type { Nav, TabName } from "./scenes/nav";
 
+if (__DEV__ && __SELFTEST__) installSelftest();
 const app = new App();
 const tabs: Partial<Record<TabName, Scene>> = {};
 
@@ -109,4 +111,6 @@ if (__DEV__) {
   console.log("[guandan] API", API_BASE);
   // 只在开发版：无界面测试脚本（按热区 id 点按）要拿到它
   GameGlobal.__app = app;
+  GameGlobal.__nav = nav;
+  if (__SELFTEST__) runSelftest();
 }

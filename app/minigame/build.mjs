@@ -11,6 +11,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const h5 = path.resolve(here, "../h5/src");
 const dev = process.argv.includes("--dev");
 const watch = process.argv.includes("--watch");
+const selftest = process.argv.includes("--selftest");
 const apiBase = process.env.API_BASE || (dev ? "http://127.0.0.1:8080" : "https://guandan.synon.ai");
 
 const swapFormat = {
@@ -32,7 +33,7 @@ const ctx = await esbuild.context({
   sourcemap: dev ? "inline" : false,
   minify: !dev,
   legalComments: "none",
-  define: { __API_BASE__: JSON.stringify(apiBase), __DEV__: String(dev) },
+  define: { __API_BASE__: JSON.stringify(apiBase), __DEV__: String(dev), __SELFTEST__: String(selftest) },
   plugins: [swapFormat],
   logLevel: "info",
 });

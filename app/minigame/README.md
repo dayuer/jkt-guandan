@@ -20,6 +20,8 @@ npm test
 开发者工具里要关掉「校验合法域名」（`project.private.config.json` 的 `urlCheck`），否则连不上 `http://127.0.0.1`。
 换端口：`API_BASE=http://127.0.0.1:18674 npm run build:dev`。
 
+**在真实运行时里自检**：`node build.mjs --dev --selftest` 打出的包启动后会自动切一遍 Tab，把报错、触摸命中的热区、每一步的画布截图发到 `127.0.0.1:18675`（自己起一个接收端，收 JSON 和 multipart 图片）。正式版不含这段代码。
+
 正式版上线前，仓库所有者要在小游戏后台把 `guandan.synon.ai` 加进 request、socket（wss）、uploadFile、downloadFile 合法域名，并在用户隐私保护指引里声明相册（保存海报）。
 
 ## 目录

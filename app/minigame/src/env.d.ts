@@ -3,3 +3,4 @@ declare const wx: any;
 declare const GameGlobal: any;
 declare const __API_BASE__: string;
 declare const __DEV__: boolean;
+declare const __SELFTEST__: boolean;
