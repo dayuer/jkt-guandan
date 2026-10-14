@@ -51,14 +51,17 @@ CREATE TABLE users (
   nickname    TEXT NOT NULL,
   wa_phone    TEXT,                        -- 可选，绑定后用于找回
   merged_into TEXT REFERENCES users(id),   -- 只有 admin 合并会写入（§5.2：不提供面向用户的合并）
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  banned_at   INTEGER,                     -- 非空 = 封禁时间，之后的请求一律 403 banned（§13.6，0003_bans.sql）
+  deleted_at  INTEGER                      -- 非空 = 已注销：称呼与号码抹掉、设备和推送订阅删除、座位保留（§14，0004_user_delete.sql）
 );
 CREATE TABLE devices (
   id         TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL REFERENCES users(id),
   token_hash BLOB NOT NULL UNIQUE,         -- sha256(device_token)，不存明文
   ua         TEXT,
-  last_seen  INTEGER NOT NULL
+  last_seen  INTEGER NOT NULL,
+  banned_at  INTEGER                       -- 非空 = 这台设备被封禁（§13.6，0003_bans.sql）
 );
 CREATE TABLE claim_tokens (
   token_hash BLOB PRIMARY KEY,             -- sha256(claim_token)
