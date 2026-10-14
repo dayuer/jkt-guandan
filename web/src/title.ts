@@ -18,6 +18,8 @@ export function pageTitle(route: string): string {
   switch (route) {
     case "me":
       return `我的 · ${APP_NAME}`;
+    case "friends":
+      return `牌友 · ${APP_NAME}`;
     case "devices":
       return `登录的设备 · ${APP_NAME}`;
     case "privacy":

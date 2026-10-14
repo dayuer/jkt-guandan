@@ -53,6 +53,26 @@ afterEach(() => {
   });
 
   // #60：从分享链接 /g/X 落地后切回首页，标题要换回应用名，而不是停在那一局。
+  // #108：底部「牌友」能点，进 /friends，标题跟着换。
+  it("首页底部点「牌友」进 /friends，标题是「牌友 · 随时掼掼蛋」", async () => {
+    stubFetch((url) => {
+      if (url === "/api/friends") return respond(401, { error: { code: "unauthorized", message: "" } });
+      if (url === "/api/config") return respond(200, { group: { wechat_id: "", whatsapp_group_url: "" } });
+      return anonymous(url);
+    });
+    visit("/");
+    const container = renderApp();
+    const tab = await vi.waitFor(() => {
+      const t = [...container.querySelectorAll(".tabbar .tab")].find((b) => b.textContent?.includes("牌友"));
+      expect(t).toBeTruthy();
+      return t as HTMLButtonElement;
+    });
+    tab.click();
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/friends"));
+    await vi.waitFor(() => expect(container.querySelector("[data-testid=friends-empty]")).not.toBeNull());
+    expect(document.title).toBe("牌友 · 随时掼掼蛋");
+  });
+
   it("路由切换时重设 document.title", async () => {
     const game = {
       game: {
