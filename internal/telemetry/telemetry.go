@@ -61,6 +61,10 @@ type Options struct {
 
 // Routes 是埋点的路由。没有身份也能用，被封禁的身份由中间件 403。
 func Routes(opts Options) []route.Route {
+	// 漏填会让两个接口一直 500（#123 复审抓到过）：启动时就报错，别等到第一个请求。
+	if opts.Store == nil {
+		panic("telemetry.Routes: Options.Store 不能为空")
+	}
 	if opts.Clock == nil {
 		opts.Clock = clock.System{}
 	}
@@ -183,7 +187,7 @@ func (h *handler) clientError(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_input", "env 只能是 "+strings.Join(Envs, " / "))
 		return
 	}
-	msg := truncate(strings.TrimSpace(body.Message), maxMessageRunes)
+	msg := truncate(redact(strings.TrimSpace(body.Message)), maxMessageRunes)
 	if msg == "" {
 		writeError(w, http.StatusBadRequest, "invalid_input", "缺少 message")
 		return
@@ -198,7 +202,7 @@ func (h *handler) clientError(w http.ResponseWriter, r *http.Request) {
 
 	props, _ := json.Marshal(map[string]string{
 		"message": msg,
-		"stack":   truncate(body.Stack, maxStackRunes),
+		"stack":   truncate(redact(body.Stack), maxStackRunes),
 		"path":    truncate(pathOnly(body.URL), maxPathRunes),
 	})
 	userID := identity.UserID(r.Context())
@@ -244,6 +248,12 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	}
 	return true
 }
+
+// secretRE 匹配地址或报错文字里的令牌参数（?claim=…、&token=…）：消息和堆栈里常带完整地址。
+var secretRE = regexp.MustCompile(`(?i)\b(claim|token|code)=[^&\s"'<>)#]+`)
+
+// redact 把令牌参数的值抹掉，先抹再截断，免得截断把半截令牌留下来。
+func redact(s string) string { return secretRE.ReplaceAllString(s, "$1=[redacted]") }
 
 // pathOnly 只留地址里的路径。解析不了就返回空串。
 func pathOnly(raw string) string {

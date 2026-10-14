@@ -281,3 +281,39 @@ func TestClientErrorValidationAndLimits(t *testing.T) {
 		t.Fatalf("应存下 6 条，实际 %d", n)
 	}
 }
+
+// 报错文字里常带完整地址：认领令牌、认领码之类的参数值要抹掉，堆栈里也一样。
+func TestClientErrorRedactsSecretsInMessageAndStack(t *testing.T) {
+	f := newFixture(t)
+	r := f.post(f.browser(), "/api/client-errors", map[string]any{
+		"env":     "wechat",
+		"message": "Failed to fetch https://guandan.id/?claim=AbC123SECRET&x=1",
+		"stack":   "at load (https://guandan.id/g/8K2QXM?token=TOPSECRET#h:1:1)\nat code=123456 ok",
+		"url":     "https://guandan.id/?claim=AbC123SECRET",
+	})
+	if r.status != http.StatusNoContent {
+		t.Fatalf("%d %s", r.status, r.raw)
+	}
+	var props string
+	if err := f.st.Read().QueryRow(`SELECT props FROM events WHERE name = 'client_error'`).Scan(&props); err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"AbC123SECRET", "TOPSECRET", "123456"} {
+		if strings.Contains(props, secret) {
+			t.Fatalf("props 里还有 %s：%s", secret, props)
+		}
+	}
+	if !strings.Contains(props, "claim=[redacted]") || !strings.Contains(props, "x=1") {
+		t.Fatalf("只该抹令牌的值，别的参数保留：%s", props)
+	}
+}
+
+// 漏填 Store 要在启动时就报错，而不是上线后两个接口一直 500。
+func TestRoutesPanicsWithoutStore(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("没有 Store 应当 panic")
+		}
+	}()
+	telemetry.Routes(telemetry.Options{})
+}

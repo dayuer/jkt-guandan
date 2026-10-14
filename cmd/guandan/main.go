@@ -191,9 +191,10 @@ func run() error {
 			Identity: identitySvc,
 			Routes: appRoutes(appDeps{
 				identity: identitySvc, games: gamesSvc, notify: notifySvc, ws: wsHandler,
-				friends: friends.NewService(st, clk),
-				share:   share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()},
-				agent:   agent.Options{Model: agentModel(cfg), Clock: clk},
+				friends:   friends.NewService(st, clk),
+				share:     share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()},
+				agent:     agent.Options{Model: agentModel(cfg), Clock: clk},
+				telemetry: telemetry.Options{Store: st, Clock: clk},
 			}),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,

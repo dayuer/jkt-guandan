@@ -366,3 +366,35 @@ func TestRealtimeChecksOriginBeforeIdentity(t *testing.T) {
 		t.Fatalf("Origin 正确时才轮到封禁：%d %q", status, body)
 	}
 }
+
+// #123 复审：两个埋点接口走真实路由表要能用，不是 500。
+// （main 里漏填 telemetry.Options 时，Store 为空，两个接口会一直 500。）
+func TestTelemetryRoutesWorkThroughRealRouter(t *testing.T) {
+	a := newApp(t)
+	c := a.browser()
+	status, body, raw := a.doRaw(c, http.MethodPost, "/api/events", map[string]any{
+		"env": "wechat", "events": []map[string]any{{"name": "detail_view"}, {"name": "jumpout"}},
+	}, nil)
+	if status != http.StatusOK || body["accepted"] != 2.0 {
+		t.Fatalf("POST /api/events: %d %s", status, raw)
+	}
+	status, _, raw = a.doRaw(c, http.MethodPost, "/api/client-errors",
+		map[string]any{"env": "pwa", "message": "boom"}, nil)
+	if status != http.StatusNoContent {
+		t.Fatalf("POST /api/client-errors: %d %s", status, raw)
+	}
+	var n int
+	if err := a.st.Read().QueryRow(`SELECT count(*) FROM events WHERE name IN ('detail_view','jumpout','client_error')`).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("应存下 3 条，实际 %d, %v", n, err)
+	}
+}
+
+// appRoutes 里漏填 telemetry 要启动即失败，不是上线后 500。
+func TestAppRoutesRequiresTelemetryStore(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), "telemetry") {
+			t.Fatalf("telemetry 没填 Store 应当因它而 panic，实际 %v", r)
+		}
+	}()
+	appRoutes(appDeps{})
+}
