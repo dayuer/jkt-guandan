@@ -4,8 +4,29 @@
     {
       "name": "design-prototype",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "4173", "--bind", "127.0.0.1", "--directory", "design/guandan-h5"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "4173",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "design/guandan-h5"
+      ],
       "port": 4173
+    },
+    {
+      "name": "rv61",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "GUANDAN_DEV=1",
+        "GUANDAN_DATA=/tmp/rv61-data",
+        "GUANDAN_ADDR=127.0.0.1:18061",
+        "GUANDAN_METRICS_ADDR=127.0.0.1:19061",
+        "GUANDAN_PUBLIC_URL=http://localhost:18061",
+        "/tmp/rv61-bin"
+      ],
+      "port": 18061
     }
   ]
 }

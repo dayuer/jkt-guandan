@@ -1,6 +1,7 @@
 import { render } from "preact";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { installFakeSocket } from "./fakeSocket";
 
 /** 假的 fetch 响应：api.ts 用的是 text() + JSON.parse。 */
 function respond(status: number, body: unknown) {
@@ -40,7 +41,11 @@ const anonymous = (url: string) => {
 };
 
 describe("App", () => {
-  afterEach(() => {
+  beforeEach(() => {
+  installFakeSocket();
+});
+
+afterEach(() => {
     document.body.innerHTML = "";
     localStorage.clear();
     vi.unstubAllGlobals();

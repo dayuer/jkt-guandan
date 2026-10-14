@@ -29,6 +29,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/internal/identity"
 	"github.com/dayuer/jkt-guandan/internal/janitor"
+	"github.com/dayuer/jkt-guandan/internal/notify"
 	"github.com/dayuer/jkt-guandan/internal/realtime"
 	"github.com/dayuer/jkt-guandan/internal/share"
 	"github.com/dayuer/jkt-guandan/internal/store"
@@ -150,6 +151,17 @@ func run() error {
 	// 注销（§14）要同时清身份侧和牌局侧的数据，两边在各自的包里，这里接起来。
 	identitySvc.SetGameCleaner(gamesSvc)
 
+	// §5.3 Web Push：VAPID 密钥第一次启动时生成，存在 kv 表里（跟着备份走）。
+	notifyCtx, cancelNotify := context.WithTimeout(context.Background(), 10*time.Second)
+	notifySvc, err := notify.New(notifyCtx, st, clk, vapidSubject(cfg))
+	cancelNotify()
+	if err != nil {
+		return err
+	}
+	// 发送 worker 每 15 秒一轮；心跳周期报 2 分钟：一轮最多 100 条、每条 10 秒超时、8 个并发，
+	// 慢的时候一轮要一两分钟，按 15 秒算会被 /readyz 误判为卡死。
+	group.Go(bgCtx, "push", 2*time.Minute, notify.NewWorker(notifySvc, notifySvc.NewSender(), clk).Task)
+
 	// §12.4 第 1 步：开始关闭后 /readyz 立刻返回 503。
 	checks = append(checks, httpapi.ReadinessCheck{Name: "关闭中", Fn: func(context.Context) error {
 		if hub.Closing() {
@@ -176,6 +188,7 @@ func run() error {
 				games.Register(mux, gamesSvc, identitySvc)
 				mux.Handle("GET /ws", wsHandler)
 				share.Register(mux, gamesSvc, cfg.PublicURL, clk)
+				notify.Register(mux, notifySvc, identitySvc)
 			},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -352,4 +365,16 @@ type gamesPublisher struct{ hub *realtime.Hub }
 
 func (p gamesPublisher) Publish(ev games.Event) {
 	p.hub.Publish(realtime.Event{Topic: ev.Topic, Type: ev.Type, V: ev.V, Data: ev.Data})
+}
+
+// vapidSubject 是 VAPID 的联系方式（RFC 8292）：推送服务出问题时用它联系我们。
+func vapidSubject(cfg config.Config) string {
+	switch {
+	case cfg.AdminEmail != "":
+		return "mailto:" + cfg.AdminEmail
+	case cfg.PublicURL != "":
+		return cfg.PublicURL
+	default:
+		return "mailto:dev@localhost"
+	}
 }

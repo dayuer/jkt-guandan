@@ -1,7 +1,8 @@
 import { render } from "preact";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GameDetail, GamePatch } from "../api";
 import { Detail } from "./Detail";
+import { installFakeSocket } from "../fakeSocket";
 
 function detail(version: number, over: Partial<GameDetail["game"]> = {}): GameDetail {
   return {
@@ -89,6 +90,10 @@ async function editVenue(container: HTMLElement, venue: string) {
   form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 }
 
+beforeEach(() => {
+  installFakeSocket();
+});
+
 afterEach(() => {
   document.body.innerHTML = "";
   vi.unstubAllGlobals();
@@ -149,5 +154,34 @@ describe("局头改牌局的版本冲突（K4 / K5 / K6）", () => {
 
     await vi.waitFor(() => expect(toasts).toContain("你已经不是局头了"));
     await vi.waitFor(() => expect(getGets()).toBeGreaterThan(before));
+  });
+});
+
+// 分享面板（§5.4）：从详情页左下角进去，任何能看到这一局的人都能分享——
+// 报了名的、路过的，都能帮局头拉人。
+describe("分享入口", () => {
+  it("底部有「⇪ 分享」，点开面板", async () => {
+    vi.stubGlobal("navigator", { userAgent: "Mozilla/5.0 (iPhone)", clipboard: { writeText: async () => {} } });
+    const { container } = setup(detail(1), []);
+    await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+
+    const share = [...container.querySelectorAll(".actionbar button")].find((b) =>
+      b.textContent?.includes("分享"),
+    ) as HTMLButtonElement;
+    expect(share).toBeTruthy();
+    share.click();
+
+    await vi.waitFor(() => expect(container.querySelector("[data-testid=share-sheet]")).not.toBeNull());
+    expect(container.querySelector(".script p")?.textContent).toContain("差 3 人");
+  });
+
+  it("已经结束的局不再显示分享——发出去也没用", async () => {
+    const { container } = setup(detail(2, { status: "done" }), []);
+    await vi.waitFor(() => expect(container.textContent).toContain("这一局已经结束"));
+
+    const share = [...container.querySelectorAll(".actionbar button")].find((b) =>
+      b.textContent?.includes("分享"),
+    );
+    expect(share).toBeUndefined();
   });
 });

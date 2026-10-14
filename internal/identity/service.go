@@ -413,6 +413,12 @@ func (s *Service) RedeemByToken(ctx context.Context, token, userAgent, currentDe
 				`UPDATE devices SET user_id = ? WHERE id = ?`, ownerID, currentDeviceID); err != nil {
 				return err
 			}
+			// 这台设备上的推送订阅是以旧身份开的：删掉，前端以新身份重新订阅。否则旧身份的提醒会继续发到
+			// 这台已经换了人的设备上（#48 复审）。
+			if _, err := tx.ExecContext(ctx,
+				`DELETE FROM push_subscriptions WHERE device_id = ?`, currentDeviceID); err != nil {
+				return err
+			}
 			// 这台设备原来的连接认的是旧身份，断开它，让它以新身份重连（#43）。
 			s.kickDeviceAfterCommit(tx, currentDeviceID)
 			user, err := loadUser(ctx, tx, ownerID)
@@ -611,17 +617,22 @@ func (s *Service) Devices(ctx context.Context, userID string) ([]Device, error) 
 // SignOutDevice 让当前用户退出另一台设备（§10.3）。只能退自己的设备。
 func (s *Service) SignOutDevice(ctx context.Context, userID, deviceID string) error {
 	return s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`DELETE FROM devices WHERE id = ? AND user_id = ?`, deviceID, userID)
-		if err != nil {
+		var owned int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM devices WHERE id = ? AND user_id = ?`, deviceID, userID).Scan(&owned); err != nil {
 			return err
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if n == 0 {
+		if owned == 0 {
 			return ErrDeviceNotFound
+		}
+		// 先删这台设备的推送订阅：push_subscriptions.device_id 引用 devices(id)，订阅还在时删不掉设备；
+		// 被退出的设备（可能是被盗的会话）也不能再收到推送（§10.3，#48 复审）。
+		if _, err := tx.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE device_id = ?`, deviceID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM devices WHERE id = ? AND user_id = ?`, deviceID, userID); err != nil {
+			return err
 		}
 		// 被退出的设备（可能是被盗的会话）立刻断开实时连接（§10.3、#43）。
 		s.kickDeviceAfterCommit(tx, deviceID)

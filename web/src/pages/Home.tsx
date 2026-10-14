@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "preact/hooks";
 import { listGames, type GameSummary, type UserRef } from "../api";
 import { initial } from "../components/Table";
 import { kindLabel, missingLabel, slashDate, timeHM } from "../format";
+import { OfflineDot, useRealtime } from "../useRealtime";
 
 type Day = "today" | "tomorrow" | "weekend" | "";
 
@@ -62,6 +63,19 @@ export function Home({ me, onOpen, onCreate, onMe, toast }: Props) {
     void load();
   }, [load]);
 
+  // 列表的实时（#49）：服务端把「这个片区有新局 / 有局变了」发到 feed:{area} 上，
+  // 收到就重新拉一次列表。事件本身不带完整数据，所以不试着往列表里塞。
+  //
+  // 消息是按片区发的，没有「所有片区」这个主题；所以选了「全部」时逐个片区订阅
+  // （服务端每个连接最多 20 个主题，这里最多 9 个）。
+  const topics = (area ? [area] : AREAS).map((a) => `feed:${a}`);
+  useRealtime({
+    topics,
+    poll: true,
+    onEvent: () => void load(),
+    refresh: () => void load(),
+  });
+
   const waiting = games?.reduce((n, g) => n + g.missing, 0) ?? 0;
 
   return (
@@ -69,7 +83,9 @@ export function Home({ me, onOpen, onCreate, onMe, toast }: Props) {
       <div class="body">
         <div class="head">
           <h1>随时掼掼蛋</h1>
-          <p class="sub">📍 Jakarta · 找人凑一桌，就差你一个</p>
+          <p class="sub">
+            📍 Jakarta · 找人凑一桌，就差你一个 <OfflineDot />
+          </p>
         </div>
 
         <div class="segmented" role="tablist" aria-label="按日期筛选">
