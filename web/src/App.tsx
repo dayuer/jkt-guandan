@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, getMe, signOutCurrentDevice, type UserRef } from "./api";
 import { FirstLaunch } from "./components/FirstLaunch";
 import { NicknameSheet } from "./components/NicknameSheet";
+import { TabBar, type TabKey } from "./components/TabBar";
 import { shouldWelcome } from "./guide";
 import { clearIdentityMarker, redeemClaimFromURL } from "./identity";
 import { agentDisabled } from "./agent";
@@ -36,6 +37,13 @@ function parseRoute(): Route {
   if (path === "/privacy") return { name: "privacy" };
   return { name: "home" };
 }
+
+/** 哪些路由是 tab 级页面、各自对应哪个 tab（#107）。 */
+const TAB_FOR_ROUTE: Record<string, TabKey> = {
+  home: "games",
+  me: "me",
+  // 学牌（#106）、牌友（#108）落地后加进来，TabBar 里已经画好了。
+};
 
 type Claim =
   | { kind: "idle" }
@@ -258,18 +266,39 @@ export function App() {
       ) : (
         <Home
           me={me}
-          toast={toast}
           onOpen={(code) => navigate(`/g/${code}`)}
           onCreate={() => {
             setPrefill(null);
             navigate("/new");
           }}
-          // 服务端没配蛋蛋（503 agent_disabled）时，「约局」直接打开表单。
-          onAgent={() => {
-            setPrefill(null);
-            navigate(agentDisabled() ? "/new" : "/agent");
+        />
+      )}
+
+      {/* tab 级页面才有底部 Tab（#107）：详情页、开局表单、隐私页这类不挂。
+          放在 App 这一层，新增 tab 页时不会再漏（`/me` 就是漏了才让 iOS 主屏幕上的
+          用户进得去出不来）。 */}
+      {TAB_FOR_ROUTE[route.name] && (
+        <TabBar
+          active={TAB_FOR_ROUTE[route.name]}
+          onTab={(tab) => {
+            switch (tab) {
+              case "games":
+                navigate("/");
+                return;
+              case "me":
+                navigate("/me");
+                return;
+              case "create":
+                // 服务端没配蛋蛋（503 agent_disabled）时，「约局」直接打开表单。
+                setPrefill(null);
+                navigate(agentDisabled() ? "/new" : "/agent");
+                return;
+              default:
+                // 学牌（#106）、牌友（#108）还没做，先如实说一句。
+                toast(`「${tab === "learn" ? "学牌" : "牌友"}」还在做`);
+                return;
+            }
           }}
-          onMe={() => navigate("/me")}
         />
       )}
 

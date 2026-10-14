@@ -103,7 +103,7 @@ async function renderHome(games: GameSummary[]) {
   const { Home } = await loadPages();
   const container = document.createElement("div");
   document.body.appendChild(container);
-  render(<Home me={null} onOpen={() => {}} onCreate={() => {}} onMe={() => {}} toast={() => {}} />, container);
+  render(<Home me={null} onOpen={() => {}} onCreate={() => {}} />, container);
   return { container, getLists: () => lists };
 }
 

@@ -223,4 +223,33 @@ afterEach(() => {
     // 文案要点明原身份的下场。
     expect(container.textContent).toContain("只能通过认领链接或认领码找回");
   });
+
+  // #107：/me 以前既没有 Tab 栏也没有返回键——iOS 主屏幕上打开（独立窗口、没有浏览器
+  // 返回键）点进「我的」就出不来了。Tab 栏现在由 App 统一挂，tab 级页面都有。
+  it("我的页也有 Tab 栏，点「牌局」能回首页", async () => {
+    visit("/me");
+    stubFetch(anonymous);
+
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.textContent).toContain("登录的设备"));
+
+    const tabbar = container.querySelector(".tabbar");
+    expect(tabbar).not.toBeNull();
+    // 当前 tab 高亮的是「我的」。
+    expect(tabbar!.querySelector(".tab.on")?.textContent).toContain("我的");
+
+    const games = [...tabbar!.querySelectorAll(".tab")].find((b) => b.textContent?.includes("牌局")) as HTMLButtonElement;
+    games.click();
+
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/"));
+    await vi.waitFor(() => expect(container.textContent).toContain("随时掼掼蛋"));
+  });
+
+  it("详情页、开局表单这类非 tab 页不挂 Tab 栏", async () => {
+    visit("/new");
+    stubFetch(anonymous);
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.textContent).toContain("开一局"));
+    expect(container.querySelector(".tabbar")).toBeNull();
+  });
 });

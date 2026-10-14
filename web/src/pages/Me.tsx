@@ -18,7 +18,7 @@ interface Props {
  */
 export function Me({ me, requireIdentity, onDevices, onPrivacy }: Props) {
   return (
-    <div class="body">
+    <div class="body has-bar">
       <div class="head">
         <h1>我的</h1>
       </div>
