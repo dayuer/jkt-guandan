@@ -154,3 +154,21 @@ func TestFeedHasNoPresence(t *testing.T) {
 		t.Fatalf("feed 主题不该收到 presence：%v", m)
 	}
 }
+
+// 被踢下线（4001）的设备马上不算在看的人：踢的那一刻就不计，不等连接真正关掉。
+func TestPresenceDropsKickedDevice(t *testing.T) {
+	e := newEnv(t, 0, 0)
+	e.hub.SetPresenceInterval(20 * time.Millisecond)
+	const topic = "game:KICK"
+	watcher := e.dialAs(t, "w")
+	subscribe(t, watcher, topic)
+	victim := e.dialAs(t, "v")
+	subscribe(t, victim, topic)
+	waitViewers(t, watcher, topic, 2)
+
+	e.hub.KickDevice("v")
+	if n := e.hub.Viewers(topic); n != 1 {
+		t.Fatalf("踢掉之后应只剩 1 人，实际 %d", n)
+	}
+	waitViewers(t, watcher, topic, 1)
+}
