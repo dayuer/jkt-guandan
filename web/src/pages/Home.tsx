@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { listGames, type GameSummary, type UserRef } from "../api";
 import { initial } from "../components/Table";
+import { useBarHeight } from "../useBarHeight";
 import { kindLabel, missingLabel, slashDate, timeHM } from "../format";
 import { OfflineDot, useRealtime } from "../useRealtime";
 
@@ -193,6 +194,8 @@ function TabBar({
   onMe: () => void;
   onTodo: (name: string) => void;
 }) {
+  // 让 toast 知道底栏有多高（Tab 栏高度固定，但它也得报一次数）。
+  const bar = useBarHeight<HTMLElement>();
   const tabs = [
     { key: "games", label: "牌局", glyph: "♠", on: true },
     { key: "learn", label: "学牌", glyph: "♣", on: false },
@@ -201,7 +204,7 @@ function TabBar({
     { key: "me", label: "我的", glyph: "♥", on: false },
   ];
   return (
-    <nav class="tabbar">
+    <nav class="tabbar" ref={bar}>
       {tabs.map((t) => (
         <button
           key={t.key}

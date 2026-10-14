@@ -122,6 +122,8 @@ button:disabled {
    盖掉这里的 90px（#75）。 */
 :root {
   --bar-height: 90px;
+  /* toast 的抬起高度：没有底栏时 20px。有底栏的页面由 useBarHeight 按实际高度改写。 */
+  --toast-lift: 20px;
 }
 
 .pad {
@@ -1015,8 +1017,9 @@ a.btn {
 .toast {
   position: fixed;
   left: 50%;
-  /* 96 是给底部固定条留的位置，再加安全区（#53）。 */
-  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+  /* 底部固定条的**实际**高度 + 20px（由 useBarHeight 量出来写到 --toast-lift 上）。
+     写死 96px 在局头那种两行操作栏（155px）下会盖住上面那一行（#94 follow-up）。 */
+  bottom: calc(var(--toast-lift, 20px) + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   background: var(--ink);
   color: var(--cream);
