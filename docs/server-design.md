@@ -438,11 +438,11 @@ GET  /*                               内嵌的前端页面（单页应用，未
   - `env` 只能是 `wechat` / `whatsapp` / `browser` / `pwa`，整批共用一个，不对返回 400。
   - 事件名白名单：`detail_view`、`join_click`、`join_ok`、`share_open`、`share_channel`、`push_prompt`、`push_ok`、`jumpout`。不在白名单里的单条丢掉，不拖垮整批；响应 `{"accepted":N,"dropped":M}`。
   - `props` 只认两个键：`game`（6 位牌局短码，形状固定）、`channel`（只给 `share_channel`，取值 `whatsapp` / `wechat` / `copy` / `system` / `poster`）。别的键或形状不对，这一条丢掉。不收自由文本，不采集个人信息；有身份时记 `user_id`（注销时置空，§14），没有就为空。
-  - 限流：每个 IP 每分钟 20 批，每台设备每分钟 10 批（先 IP 后设备，IP 被拦时不扣设备的）；超出 `429 rate_limited`。
+  - 限流：主要按设备，每台设备每分钟 30 批；每个 IP 每分钟 120 批（办公室、运营商出口 NAT 后面一个 IP 有很多人，IP 这一道放宽，只防单个来源刷爆）。先 IP 后设备，IP 被拦时不扣设备的；超出 `429 rate_limited`。
   - 时间用服务器的，不收客户端时间。
 - `POST /api/client-errors`：`{"env":"…","message":"…","stack":"…","url":"…"}`，成功 204。
   - `message` 截成 300 字、`stack` 截成 2000 字；`url` 只留路径（查询串里可能有认领 token）。存进 `events`（`name='client_error'`），同时记一条 warn 日志。
-  - 限流：每个 IP 每分钟 6 条，每台设备每分钟 3 条，全站每小时 200 条（防止有人换设备把磁盘灌满）。
+  - 限流：每台设备每分钟 6 条，每个 IP 每分钟 60 条，全站每小时 5000 条（防止有人换设备把磁盘灌满）。
 - `guandan admin stats` 在原有输出后面按环境打印转化漏斗：上面白名单里各事件的**次数**（不是去重人数，埋点不记设备），加上 view→click、click→ok、prompt→ok 三个转化率。
 
 **蛋蛋 `POST /api/agent`**（#11，§10.10）：只出草稿，不写库。

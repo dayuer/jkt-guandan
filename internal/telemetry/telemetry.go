@@ -30,12 +30,14 @@ const (
 	// MaxBatch 是一次最多收几条事件。
 	MaxBatch = 20
 
-	eventsPerIPPerMin     = 20
-	eventsPerDevicePerMin = 10
-	errorsPerIPPerMin     = 6
-	errorsPerDevicePerMin = 3
+	// 主要按设备限：办公室和运营商的出口 NAT 后面一个 IP 有很多人，IP 限得太死会丢漏斗数据，
+	// 所以 IP 这一道放宽，只防单个来源刷爆。
+	eventsPerDevicePerMin = 30
+	eventsPerIPPerMin     = 120
+	errorsPerDevicePerMin = 6
+	errorsPerIPPerMin     = 60
 	// 全站每小时最多存多少条前端错误：防止有人轮换设备把磁盘灌满。
-	errorsGlobalPerHour = 200
+	errorsGlobalPerHour = 5000
 
 	maxMessageRunes = 300
 	maxStackRunes   = 2000

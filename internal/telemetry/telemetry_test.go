@@ -197,10 +197,10 @@ func TestEventsRateLimitedPerIPAndPerDevice(t *testing.T) {
 		return f.post(c, "/api/events", map[string]any{"env": "browser", "events": ev("detail_view")}).status
 	}
 
-	// 按设备：有身份的浏览器 10 次之后被拦（IP 额度 20 次，还没到）。
+	// 按设备：有身份的浏览器 30 次之后被拦（IP 额度 120 次，还没到）。
 	dev := f.browser()
 	f.signUp(dev, "老王")
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 30; i++ {
 		if s := post(dev); s != http.StatusOK {
 			t.Fatalf("第 %d 次应放行，实际 %d", i+1, s)
 		}
@@ -209,17 +209,17 @@ func TestEventsRateLimitedPerIPAndPerDevice(t *testing.T) {
 		t.Fatalf("设备额度用完应 429，实际 %d", s)
 	}
 
-	// 按 IP：匿名的浏览器共用一个 IP（本机），一共 20 次，前面设备那 10 次也算在里面。
+	// 按 IP：匿名的浏览器共用一个 IP（本机），一共 120 次。设备放行的 30 次加上被拦的那 1 次
+	// 也扣过 IP 额度（先 IP 后设备），所以匿名的只剩 120 - 31 = 89 次。
 	anon := f.browser()
 	var ok int
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 150; i++ {
 		if post(anon) == http.StatusOK {
 			ok++
 		}
 	}
-	if ok != 9 { // 20 - 设备放行的 10 次 - 设备被拦那次不扣 IP... 见下
-		// 设备被拦的那一次 IP 额度已经扣了（先 IP 后设备），所以是 20 - 11 = 9。
-		t.Fatalf("同一 IP 的匿名请求应只放行 9 次，实际 %d", ok)
+	if ok != 89 {
+		t.Fatalf("同一 IP 的匿名请求应只放行 89 次，实际 %d", ok)
 	}
 
 	// 过了一分钟，额度回来一部分。
@@ -265,20 +265,31 @@ func TestClientErrorValidationAndLimits(t *testing.T) {
 	if r := f.post(c, "/api/client-errors", map[string]any{"env": "ie6", "message": "x"}); r.status != http.StatusBadRequest {
 		t.Fatalf("环境不对应 400，实际 %d", r.status)
 	}
-	var ok, limited int
-	for i := 0; i < 10; i++ {
-		switch f.post(c, "/api/client-errors", map[string]any{"env": "browser", "message": "boom"}).status {
-		case http.StatusNoContent:
-			ok++
-		case http.StatusTooManyRequests:
-			limited++
+	count := func(client *http.Client, n int) (ok, limited int) {
+		for i := 0; i < n; i++ {
+			switch f.post(client, "/api/client-errors", map[string]any{"env": "browser", "message": "boom"}).status {
+			case http.StatusNoContent:
+				ok++
+			case http.StatusTooManyRequests:
+				limited++
+			}
 		}
+		return
 	}
-	if ok != 6 || limited != 4 {
-		t.Fatalf("每 IP 每分钟 6 条：放行 %d、拦下 %d", ok, limited)
+
+	// 有身份：每台设备每分钟 6 条，先到的是设备额度。
+	dev := f.browser()
+	f.signUp(dev, "老王")
+	if ok, limited := count(dev, 10); ok != 6 || limited != 4 {
+		t.Fatalf("每台设备每分钟 6 条：放行 %d、拦下 %d", ok, limited)
 	}
-	if n := f.count(`name = 'client_error'`); n != 6 {
-		t.Fatalf("应存下 6 条，实际 %d", n)
+
+	// 匿名：只按 IP，每分钟 60 条。上面设备放行的 6 条和被拦的 4 条都扣过 IP 额度，所以还剩 50。
+	if ok, limited := count(c, 70); ok != 50 || limited != 20 {
+		t.Fatalf("每 IP 每分钟 60 条：放行 %d、拦下 %d", ok, limited)
+	}
+	if n := f.count(`name = 'client_error'`); n != 56 {
+		t.Fatalf("应存下 56 条，实际 %d", n)
 	}
 }
 
