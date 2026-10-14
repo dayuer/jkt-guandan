@@ -13,6 +13,7 @@ import {
   type UserRef,
 } from "../api";
 import { CalendarSheet } from "../components/CalendarSheet";
+import { JoinedSheet } from "../components/JoinedSheet";
 import { ShareSheet } from "../components/ShareSheet";
 import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
@@ -64,8 +65,10 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   useEffect(() => {
     if (realtimeStatus !== "online") setViewers(0);
   }, [realtimeStatus]);
-  /** 「加入日历」弹层：手动点开的，或刚报上名时自动弹的（#6）。 */
-  const [calendar, setCalendar] = useState<"manual" | "joined" | null>(null);
+  /** 「加入日历」弹层（#6）。 */
+  const [calendar, setCalendar] = useState(false);
+  /** 刚报上名：报名成功弹层，问要不要提醒（B4–B6，#10）。 */
+  const [joinedOpen, setJoinedOpen] = useState(false);
   const retrying = useRetrying();
 
   const load = useCallback(async () => {
@@ -144,14 +147,14 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       if (!identity) return;
       // 拿到身份后接着报名：cookie 已经在浏览器里了。
     }
-    // 报上名之后顺手问一句要不要加日历（#6）。候补没有确定的座位，不问。
+    // 报上名之后问一句要不要提醒（方案 §3）。候补没有确定的座位，不问。
     let seated = false;
     const ok = await run(async () => {
       const next = await joinGame(code);
       seated = next.me.role === "seat";
       return next;
     });
-    if (ok && seated) setCalendar("joined");
+    if (ok && seated) setJoinedOpen(true);
   };
 
   // ── 局头改牌局（K4 / K5 / K6）────────────────────────────────────────────
@@ -329,7 +332,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         </div>
 
         {myRole.role === "seat" && !closed && (
-          <button class="btn ghost cal-entry" onClick={() => setCalendar("manual")}>
+          <button class="btn ghost cal-entry" onClick={() => setCalendar(true)}>
             📅 加入日历
           </button>
         )}
@@ -381,7 +384,20 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         />
       )}
 
-      {calendar && <CalendarSheet code={code} justJoined={calendar === "joined"} onClose={() => setCalendar(null)} />}
+      {joinedOpen && (
+        <JoinedSheet
+          detail={detail}
+          meID={me?.id}
+          toast={toast}
+          onCalendar={() => {
+            setJoinedOpen(false);
+            setCalendar(true);
+          }}
+          onClose={() => setJoinedOpen(false)}
+        />
+      )}
+
+      {calendar && <CalendarSheet code={code} onClose={() => setCalendar(false)} />}
 
       {shareOpen && <ShareSheet detail={detail} toast={toast} onClose={() => setShareOpen(false)} />}
 

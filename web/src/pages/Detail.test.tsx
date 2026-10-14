@@ -232,7 +232,7 @@ describe("加入日历", () => {
     }
   });
 
-  it("报名成功后自动弹出「占上了！加到日历里？」", async () => {
+  it("报名成功后弹出「占上了！」，从那里点「加到日历」进日历弹层", async () => {
     vi.stubGlobal("navigator", { userAgent: SAFARI });
     const before = { ...detail(1), me: { role: "none" as const } };
     const after = { ...detail(2), me: { role: "seat" as const, seat_no: 2 } };
@@ -243,7 +243,14 @@ describe("加入日历", () => {
       b.textContent?.includes("报名占座"),
     ) as HTMLButtonElement;
     join.click();
-    await vi.waitFor(() => expect(container.querySelector("[data-testid=calendar-sheet]")).not.toBeNull());
+    await vi.waitFor(() => expect(container.querySelector(".sheet.joined")).not.toBeNull());
     expect(container.textContent).toContain("占上了");
+
+    const cal = [...container.querySelectorAll(".sheet.joined button")].find((b) =>
+      b.textContent?.includes("加到日历"),
+    ) as HTMLButtonElement;
+    cal.click();
+    await vi.waitFor(() => expect(container.querySelector("[data-testid=calendar-sheet]")).not.toBeNull());
+    expect(container.querySelector(".sheet.joined")).toBeNull();
   });
 });
