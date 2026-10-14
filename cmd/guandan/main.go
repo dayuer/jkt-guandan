@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -33,6 +34,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/janitor"
 	"github.com/dayuer/jkt-guandan/internal/notify"
 	"github.com/dayuer/jkt-guandan/internal/realtime"
+	"github.com/dayuer/jkt-guandan/internal/route"
 	"github.com/dayuer/jkt-guandan/internal/share"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
@@ -140,11 +142,9 @@ func run() error {
 	wsHandler := realtime.Handler(realtime.Options{
 		Hub:         hub,
 		AllowOrigin: cfg.AllowsOrigin,
-		// 被 guandan admin ban 封禁的用户或设备握手直接 403；连上之后被封禁的，下一次心跳断开（#43）。
-		Identify: func(r *http.Request) (realtime.Principal, error) {
-			userID, deviceID, err := identitySvc.ForRealtime(r)
-			return realtime.Principal{UserID: userID, DeviceID: deviceID}, err
-		},
+		// 身份由 httpapi 的身份中间件放进 ctx（#41）。被 guandan admin ban 封禁的用户或设备握手 403
+		// （先查 Origin 和连接数，所以这条路由是 DeferBan）；连上之后被封禁的，下一次心跳断开（#43）。
+		Identify: realtimeIdentify,
 		Revalidate: func(ctx context.Context, p realtime.Principal) bool {
 			return identitySvc.StillValid(ctx, p.UserID, p.DeviceID)
 		},
@@ -177,21 +177,19 @@ func run() error {
 	srv := &http.Server{
 		Addr: cfg.Addr,
 		Handler: httpapi.New(httpapi.Options{
-			Config:  cfg,
-			Store:   st,
-			Group:   group,
-			Clock:   clk,
-			Checks:  checks,
-			Build:   buildinfo.Get(),
-			Metrics: reg.http,
-			RegisterRoutes: func(mux *http.ServeMux) {
-				identity.Register(mux, identitySvc)
-				games.Register(mux, gamesSvc, identitySvc)
-				mux.Handle("GET /ws", wsHandler)
-				share.Register(mux, share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()})
-				notify.Register(mux, notifySvc, identitySvc)
-				agent.Register(mux, agent.Options{Model: agentModel(cfg), Identity: identitySvc, Clock: clk})
-			},
+			Config:   cfg,
+			Store:    st,
+			Group:    group,
+			Clock:    clk,
+			Checks:   checks,
+			Build:    buildinfo.Get(),
+			Metrics:  reg.http,
+			Identity: identitySvc,
+			Routes: appRoutes(appDeps{
+				identity: identitySvc, games: gamesSvc, notify: notifySvc, ws: wsHandler,
+				share: share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()},
+				agent: agent.Options{Model: agentModel(cfg), Clock: clk},
+			}),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -397,4 +395,34 @@ func agentModel(cfg config.Config) agent.Model {
 		return nil
 	}
 	return agent.NewClaude(cfg.AnthropicKey, cfg.AgentModel)
+}
+
+// appDeps 是组装路由表要用到的各个服务。
+type appDeps struct {
+	identity *identity.Service
+	games    *games.Service
+	notify   *notify.Service
+	ws       http.Handler
+	share    share.Options
+	agent    agent.Options
+}
+
+// appRoutes 是各业务包的路由，和 httpapi 的基础设施路由一起组成整张路由表（#41）。
+// 授权要求写在各包的 Routes 里；cmd/guandan 的路由表测试把整张表逐条列出来核对。
+func appRoutes(d appDeps) []route.Route {
+	return slices.Concat(
+		identity.Routes(d.identity),
+		games.Routes(d.games),
+		// 没有身份也能连（只能订阅公开主题）。
+		[]route.Route{{Method: http.MethodGet, Pattern: "/ws", Access: route.Public, DeferBan: true, Handler: d.ws}},
+		share.Routes(d.share),
+		notify.Routes(d.notify),
+		agent.Routes(d.agent),
+	)
+}
+
+// realtimeIdentify 从身份中间件放进 ctx 的身份里取出 WebSocket 的身份；被封禁时返回错误，握手 403。
+func realtimeIdentify(r *http.Request) (realtime.Principal, error) {
+	userID, deviceID, err := identity.ForRealtime(r)
+	return realtime.Principal{UserID: userID, DeviceID: deviceID}, err
 }

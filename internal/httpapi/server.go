@@ -14,7 +14,9 @@ import (
 
 	"github.com/dayuer/jkt-guandan/internal/clock"
 	"github.com/dayuer/jkt-guandan/internal/config"
+	"github.com/dayuer/jkt-guandan/internal/identity"
 	"github.com/dayuer/jkt-guandan/internal/metrics"
+	"github.com/dayuer/jkt-guandan/internal/route"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
 )
@@ -48,9 +50,11 @@ type Options struct {
 	Build string
 	// Metrics 收集请求数和耗时，供 /metrics 输出（§13.7）。可以为 nil。
 	Metrics *metrics.HTTP
-	// RegisterRoutes 让 identity、games 等包把自己的 handler 挂到主 mux 上。
-	// 它们拿到的是已经套好中间件的 mux，所以不用自己处理 CSRF、限流和日志。
-	RegisterRoutes func(mux *http.ServeMux)
+	// Identity 是唯一的身份入口用的（#41）：路由表里有要识别身份的路由时必须提供。
+	Identity *identity.Service
+	// Routes 是各业务包的路由（identity.Routes、games.Routes……），和基础设施的路由一起组成
+	// 整张路由表（Table）。它们挂在套好中间件的 mux 上，不用自己处理 CSRF、限流、日志和身份。
+	Routes []route.Route
 }
 
 type Server struct {
@@ -64,12 +68,19 @@ type Server struct {
 	stats  *metrics.HTTP
 }
 
-// New 组装路由和中间件。以后各包的 handler 都挂到这个 mux 上。
+// New 组装路由和中间件：按路由表（Table）注册，每条路由套上身份中间件，外面再套通用中间件。
 func New(opts Options) http.Handler {
+	s := newServer(opts)
+	mux := http.NewServeMux()
+	mount(mux, opts.Identity, s.table(opts.Routes))
+	return s.middleware(mux)
+}
+
+func newServer(opts Options) *Server {
 	if opts.Clock == nil {
 		opts.Clock = clock.System{}
 	}
-	s := &Server{
+	return &Server{
 		cfg:    opts.Config,
 		st:     opts.Store,
 		group:  opts.Group,
@@ -79,17 +90,6 @@ func New(opts Options) http.Handler {
 		build:  opts.Build,
 		stats:  opts.Metrics,
 	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", s.healthz)
-	mux.HandleFunc("GET /readyz", s.readyz)
-	if opts.RegisterRoutes != nil {
-		opts.RegisterRoutes(mux)
-	}
-	// 兜底放在最后注册：它匹配所有剩下的路径，交给内嵌的前端。
-	mux.Handle("/", s.assets())
-
-	return s.middleware(mux)
 }
 
 // healthz 是存活检查：进程能响应就 200，供 Docker 的 HEALTHCHECK 和重启策略使用（§12.5）。

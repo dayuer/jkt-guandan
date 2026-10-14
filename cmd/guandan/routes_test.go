@@ -1,0 +1,307 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"reflect"
+	"runtime"
+	"strings"
+	"testing"
+	"testing/fstest"
+	"time"
+
+	"github.com/dayuer/jkt-guandan/internal/agent"
+	"github.com/dayuer/jkt-guandan/internal/clock"
+	"github.com/dayuer/jkt-guandan/internal/config"
+	"github.com/dayuer/jkt-guandan/internal/games"
+	"github.com/dayuer/jkt-guandan/internal/httpapi"
+	"github.com/dayuer/jkt-guandan/internal/identity"
+	"github.com/dayuer/jkt-guandan/internal/notify"
+	"github.com/dayuer/jkt-guandan/internal/realtime"
+	"github.com/dayuer/jkt-guandan/internal/route"
+	"github.com/dayuer/jkt-guandan/internal/share"
+	"github.com/dayuer/jkt-guandan/internal/store"
+)
+
+// 路由表和授权矩阵（#41、§10.4、§10.12）。用的是 cmd/guandan 真实组装出来的整张表：
+// 新加一条路由不在这里列出来，路由表测试就失败；授权矩阵按表逐条、逐个身份打一遍。
+
+const routesTestOrigin = "https://guandan.id"
+
+type app struct {
+	t       *testing.T
+	st      *store.Store
+	clk     *clock.Fake
+	srv     *httptest.Server
+	options httpapi.Options
+}
+
+func newApp(t *testing.T) *app {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	clk := clock.NewFake(time.Date(2026, 10, 14, 3, 0, 0, 0, time.UTC))
+	cfg := config.Config{DataDir: dir, PublicURL: routesTestOrigin}
+
+	hub := realtime.NewHub()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = hub.Shutdown(ctx)
+	})
+	identitySvc := identity.NewService(st, clk, false)
+	gamesSvc := games.NewService(st, clk, gamesPublisher{hub})
+	notifySvc, err := notify.New(context.Background(), st, clk, "mailto:ops@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := httpapi.Options{
+		Config: cfg, Store: st, Clock: clk, Identity: identitySvc,
+		Routes: appRoutes(appDeps{
+			identity: identitySvc, games: gamesSvc, notify: notifySvc,
+			ws: realtime.Handler(realtime.Options{
+				Hub: hub, AllowOrigin: cfg.AllowsOrigin, Identify: realtimeIdentify,
+				Revalidate: func(ctx context.Context, p realtime.Principal) bool {
+					return identitySvc.StillValid(ctx, p.UserID, p.DeviceID)
+				},
+			}),
+			share: share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk,
+				Dist: fstest.MapFS{"index.html": {Data: []byte("<!doctype html><html><head><title>x</title></head><body></body></html>")}}},
+			agent: agent.Options{Clock: clk}, // 没有 key：agent_disabled，矩阵只看授权
+		}),
+	}
+	// 必须 TLS：生产 cookie 带 __Host- 前缀和 Secure（见 identity 测试里的说明）。
+	srv := httptest.NewTLSServer(httpapi.New(opts))
+	t.Cleanup(srv.Close)
+	return &app{t: t, st: st, clk: clk, srv: srv, options: opts}
+}
+
+// 整张路由表逐条列出来：方法、路径、身份要求、handler。新增或改动路由时必须同时改这里，
+// 路由不可能悄悄丢掉授权要求、也不可能多出一条没人审过的路由。
+func TestRouteTable(t *testing.T) {
+	a := newApp(t)
+	type row struct{ key, access, handler string }
+	want := []row{
+		{"GET /healthz", "anonymous", "httpapi.(*Server).healthz"},
+		{"GET /readyz", "anonymous", "httpapi.(*Server).readyz"},
+		{"POST /api/me", "public", "identity.(*handler).createMe"},
+		{"GET /api/me", "user", "identity.(*handler).getMe"},
+		{"DELETE /api/me/devices/{id}", "user", "identity.(*handler).signOutDevice"},
+		{"POST /api/claim", "user", "identity.(*handler).issueClaim"},
+		{"POST /api/claim/redeem", "public", "identity.(*handler).redeemClaim"},
+		{"GET /api/games", "public", "games.(*handler).list"},
+		{"GET /api/games/{code}", "public", "games.(*handler).detail"},
+		{"POST /api/games", "user", "games.(*handler).create"},
+		{"PATCH /api/games/{code}", "user", "games.(*handler).update"},
+		{"POST /api/games/{code}/seat", "user", "games.(*handler).join"},
+		{"DELETE /api/games/{code}/seat", "user", "games.(*handler).leave"},
+		{"POST /api/games/{code}/cancel", "user", "games.(*handler).cancel"},
+		{"POST /api/games/{code}/kick", "user", "games.(*handler).kick"},
+		{"GET /ws", "public+deferban", "*realtime.handler"},
+		{"GET /g/{code}", "anonymous", "share.(*handler).ogPage"},
+		{"GET /g/{code}/og.png", "anonymous", "share.(*handler).ogImage"},
+		{"GET /g/{code}/poster.png", "anonymous", "share.(*handler).posterImage"},
+		{"GET /g/{code}/game.ics", "anonymous", "share.(*handler).ics"},
+		{"GET /g/{code}/google", "anonymous", "share.(*handler).google"},
+		{"GET /api/push/key", "anonymous", "notify.(*handler).key"},
+		{"POST /api/push/subscribe", "user", "notify.(*handler).subscribe"},
+		{"DELETE /api/push/subscribe", "user", "notify.(*handler).unsubscribe"},
+		{"POST /api/agent", "public", "agent.(*handler).draft"},
+		{" /", "anonymous", "httpapi.referrerPolicyForClaim.func1"},
+	}
+	var got []row
+	for _, rt := range httpapi.Table(a.options) {
+		access := rt.Access.String()
+		if rt.DeferBan {
+			access += "+deferban"
+		}
+		got = append(got, row{rt.Key(), access, handlerName(rt.Handler)})
+	}
+	if !reflect.DeepEqual(got, want) {
+		var b strings.Builder
+		for _, r := range got {
+			fmt.Fprintf(&b, "\t\t{%q, %q, %q},\n", r.key, r.access, r.handler)
+		}
+		t.Fatalf("路由表和预期不一致，实际：\n%s", b.String())
+	}
+}
+
+func handlerName(h http.Handler) string {
+	if f, ok := h.(http.HandlerFunc); ok {
+		name := runtime.FuncForPC(reflect.ValueOf(f).Pointer()).Name()
+		name = strings.TrimPrefix(name, "github.com/dayuer/jkt-guandan/internal/")
+		return strings.TrimSuffix(name, "-fm")
+	}
+	return fmt.Sprintf("%T", h)
+}
+
+// 授权矩阵：每条路由用访客、普通用户（device）、这一局的局头（host）、被封禁的用户（banned）各打一次。
+//
+//   - anonymous：谁来都不会被身份挡住（被封禁也不挡：不识别身份）；
+//   - public：访客和用户都能用，被封禁 403 banned；
+//   - user：访客 401 unauthorized，被封禁 403 banned；
+//   - 局头才能做的事（改局、取消、移出）：普通用户 403 not_host，局头放行。
+//
+// 「放行」只看授权：业务上的 400/404/409/503 都算放行。
+func TestAuthorizationMatrix(t *testing.T) {
+	hostOnly := map[string]bool{
+		"PATCH /api/games/{code}": true, "POST /api/games/{code}/cancel": true, "POST /api/games/{code}/kick": true,
+	}
+	for _, rt := range httpapi.Table(newApp(t).options) {
+		for _, role := range []string{"guest", "device", "host", "banned"} {
+			rt, role := rt, role
+			t.Run(rt.Key()+" as "+role, func(t *testing.T) {
+				a := newApp(t)
+				hostClient := a.browser()
+				a.signUp(hostClient, "局头")
+				code := a.createGame(hostClient)
+
+				client := a.browser()
+				switch role {
+				case "device":
+					a.signUp(client, "牌友")
+				case "host":
+					client = hostClient
+				case "banned":
+					id := a.signUp(client, "捣乱的")
+					if _, err := a.st.Ban(context.Background(), id, a.clk.Now()); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				status, errCode := a.probe(client, rt, code)
+				want := "pass"
+				switch {
+				case rt.Access == route.Anonymous:
+				case role == "banned":
+					want = "banned"
+				case role == "guest" && !rt.Access.AllowsGuest():
+					want = "unauthorized"
+				case role == "device" && hostOnly[rt.Key()]:
+					want = "not_host"
+				}
+				got := "pass"
+				switch {
+				case status == http.StatusUnauthorized:
+					got = "unauthorized"
+				case status == http.StatusForbidden && (errCode == "banned" || rt.Pattern == "/ws"):
+					got = "banned" // /ws 握手被拒是纯文本 403
+				case status == http.StatusForbidden:
+					got = errCode
+				}
+				if got != want {
+					t.Fatalf("期望 %s，实际 %d %s", want, status, errCode)
+				}
+			})
+		}
+	}
+}
+
+func (a *app) browser() *http.Client {
+	jar, _ := cookiejar.New(nil)
+	return &http.Client{
+		Transport:     a.srv.Client().Transport,
+		Jar:           jar,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+func (a *app) do(c *http.Client, method, path string, body any, header map[string]string) (int, map[string]any) {
+	a.t.Helper()
+	var r io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		r = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, a.srv.URL+path, r)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	req.Header.Set("Origin", routesTestOrigin)
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	return resp.StatusCode, out
+}
+
+func (a *app) signUp(c *http.Client, nickname string) string {
+	a.t.Helper()
+	status, body := a.do(c, http.MethodPost, "/api/me", map[string]string{"nickname": nickname}, nil)
+	if status != http.StatusOK {
+		a.t.Fatalf("建身份: %d %v", status, body)
+	}
+	return body["user"].(map[string]any)["id"].(string)
+}
+
+func (a *app) createGame(c *http.Client) string {
+	a.t.Helper()
+	status, body := a.do(c, http.MethodPost, "/api/games", a.gameBody(), nil)
+	if status != http.StatusOK {
+		a.t.Fatalf("开局: %d %v", status, body)
+	}
+	return body["game"].(map[string]any)["short_code"].(string)
+}
+
+func (a *app) gameBody() map[string]any {
+	return map[string]any{
+		"starts_at": a.clk.Now().Add(3 * time.Hour).Unix(), "area": "SCBD", "venue": "Pacific Place", "kind": "classic",
+	}
+}
+
+// probe 用一个格式合法的请求打这条路由，返回状态码和错误码。
+func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string) {
+	a.t.Helper()
+	path := strings.NewReplacer("{code}", code, "{id}", "nonexistent").Replace(rt.Pattern)
+	method := rt.Method
+	if method == "" {
+		method, path = http.MethodGet, "/some/spa/page"
+	}
+	var body any
+	header := map[string]string{}
+	switch rt.Key() {
+	case "POST /api/me":
+		body = map[string]string{"nickname": "新名字"}
+	case "POST /api/claim/redeem":
+		body = map[string]string{"token": "not-a-real-token"}
+	case "POST /api/games":
+		body = a.gameBody()
+	case "PATCH /api/games/{code}":
+		body, header["If-Match"] = map[string]any{"venue": "Grand Indonesia"}, "1"
+	case "POST /api/games/{code}/kick":
+		body = map[string]string{"user_id": "someone"}
+	case "POST /api/push/subscribe":
+		body = map[string]any{"endpoint": "https://fcm.googleapis.com/fcm/send/x", "keys": map[string]string{"p256dh": "x", "auth": "y"}}
+	case "DELETE /api/push/subscribe":
+		body = map[string]string{"endpoint": "https://fcm.googleapis.com/fcm/send/x"}
+	case "POST /api/agent":
+		body = map[string]string{"text": "周四晚上打一局"}
+	}
+	status, out := a.do(c, method, path, body, header)
+	var errCode string
+	if e, ok := out["error"].(map[string]any); ok {
+		errCode, _ = e["code"].(string)
+	}
+	return status, errCode
+}

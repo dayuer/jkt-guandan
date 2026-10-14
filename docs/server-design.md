@@ -389,16 +389,26 @@ GET  /*                               内嵌的前端页面（单页应用，未
   data: {"text":"好嘞，周四 19:30 在 PIK"}          ← 蛋蛋的回复，分几片推，前端拼起来显示（最多 200 字）
 
   event: draft
-  data: {"draft":{"starts_at":1791980000,"area":"PIK","venue":"PIK Avenue","kind":"classic","note":""},
+  data: {"draft":{"starts_at":1791980000,"area":"PIK","venue":"PIK Avenue","kind":"classic"},
          "valid":true}
   ```
   - 最后一条是 `draft` 或 `error`。`error` 的 `data` 是 `{"code":"agent_unavailable","message":"蛋蛋走神了，直接填表吧"}`，表示推到一半时模型出错、超时或者输出不合格，前端同样退回 08 表单。
-  - `draft` 的字段和 `POST /api/games` 的请求体一致，认不出来的字段不出现。草稿按开局接口的同一套规则校验：`valid` 为假时，`problem` 说明原因（比如缺地点、时间太近），前端把草稿填进 08 表单让用户补；`valid` 为真时，用户确认后前端照常调用 `POST /api/games`。
+  - `draft` 的字段和 `POST /api/games` 的请求体一致，认不出来的字段不出现（比如没有备注就没有 `note`）；`kind` 总有值，认不出来时是 `classic`。草稿按开局接口的同一套规则校验：`valid` 为假时，`problem` 说明原因（比如缺地点、时间太近），前端把草稿填进 08 表单让用户补；`valid` 为真时，用户确认后前端照常调用 `POST /api/games`。
 - 一次请求总共最多 20 秒（比 `WriteTimeout` 短），超时就按上面的规则退回表单。
 - 模型的输出格式是「一句回复 + `===` + 草稿 JSON」，服务端逐字段校验：片区、玩法不在列表里的丢掉，过长的截断。模型拿不到任何工具（§10.10）。
 
+**路由表**（#41）：所有路由在一张表里（`httpapi.Table`：基础设施的几条，加上 `cmd/guandan` 里拼起来的各包 `Routes`，最后是前端页面兜底）。每条路由声明自己对身份的要求，注册、身份识别、授权都按这张表来：
+
+| 要求 | 含义 | 例子 |
+|---|---|---|
+| `anonymous` | 不识别身份，不读 cookie、不受封禁影响 | `/healthz`、`/g/{code}/*`、`GET /api/push/key`、前端页面 |
+| `public` | 识别身份，访客也能用；被封禁 403 `banned` | `GET /api/games`、`POST /api/me`、`POST /api/agent`、`GET /ws` |
+| `user` | 必须有身份，访客 401 `unauthorized`；被封禁 403 `banned` | 报名、开局、`GET /api/me` |
+
+`GET /ws` 是唯一的例外（`DeferBan`）：中间件只把封禁状态记进 ctx，握手先查 Origin 和连接数，再以 403 拒绝被封禁的身份。「是不是这一局的局头」要看具体是哪一局，属于业务逻辑，在 games 的 service 里判。`cmd/guandan` 的路由表测试把整张表（方法、路径、身份要求、handler）逐条列出；授权矩阵测试按表对每条路由用访客、普通用户、局头、被封禁的用户各打一次。
+
 中间件：
-- 身份：从 `__Host-gd_dev` cookie 解析出用户；
+- 身份：唯一的入口（`httpapi.withIdentity`），按路由表的要求从 `__Host-gd_dev` cookie 解析出用户、查一次封禁，放进 ctx；各包用 `identity.FromContext` 取，不再各自查；
 - CSRF：会改数据的请求，必须带 `Content-Type: application/json`，并且 `Origin` 等于本站；
 - 限流：按 IP 和设备；
 - 统一的 JSON 错误格式：`{"error":{"code":"game_closed","message":"…"}}`；
@@ -625,7 +635,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 
 ### 10.12 安全测试与供应链
 
-- **授权矩阵测试**：从路由表自动生成测试，对每个路由分别用「访客、普通用户、局头、其他局的局头、被禁止的用户」五种身份发请求，断言响应状态码。新增接口时，如果没有在矩阵里声明权限，测试直接失败。
+- **授权矩阵测试**：从路由表自动生成测试（`cmd/guandan/routes_test.go`），对每个路由分别用「访客、普通用户、局头、被封禁的用户」四种身份发请求，断言授权结果。新增接口时必须在路由表里声明身份要求，路由表测试会把它逐条列出来，漏写或改了要求都会失败。
 - **模糊测试**（Go fuzz）：覆盖输入校验函数、.ics 转义、OG 模板渲染、WebSocket 消息解析。
 - 检查所有 HTML 响应都带有 CSP 和其他安全头。
 - CI 运行 `govulncheck` 和 `npm audit --omit=dev`，开启 Dependabot。
