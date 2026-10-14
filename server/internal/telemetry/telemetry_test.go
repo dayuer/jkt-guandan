@@ -42,6 +42,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	clk := clock.NewFake(time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC))
 	idSvc := identity.NewService(st, clk, true)
+	idSvc.SetWx(identity.DevWxAppID, identity.DevWxExchanger{}) // 小游戏用 dev: code 登录（#84）
 	srv := httptest.NewTLSServer(httpapi.New(httpapi.Options{
 		Config:   config.Config{DataDir: t.TempDir(), Dev: true, PublicURL: origin},
 		Store:    st,
@@ -226,6 +227,52 @@ func TestEventsRateLimitedPerIPAndPerDevice(t *testing.T) {
 	f.clk.Advance(time.Minute)
 	if s := post(anon); s != http.StatusOK {
 		t.Fatalf("一分钟后应恢复，实际 %d", s)
+	}
+}
+
+// miniPost 模拟小游戏的 wx.request：没有 cookie、不发 Origin，凭证在 Bearer 头里。
+func (f *fixture) miniPost(path, token string, body any) result {
+	f.t.Helper()
+	j, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPost, f.srv.URL+path, bytes.NewReader(j))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	res, err := (&http.Client{Transport: f.srv.Client().Transport}).Do(req)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(res.Body)
+	out := result{status: res.StatusCode, raw: string(raw)}
+	_ = json.Unmarshal(raw, &out.body)
+	return out
+}
+
+// 小游戏（#84）：env=minigame，用 Bearer 认身份、不带 Origin，两个接口都能用，埋点记下 user_id。
+func TestMinigameEnvWithBearer(t *testing.T) {
+	f := newFixture(t)
+	login := f.miniPost("/api/wx/login", "", map[string]string{"code": "dev:alice", "nickname": "Alice"})
+	token, _ := login.body["device_token"].(string)
+	if login.status != http.StatusOK || token == "" {
+		t.Fatalf("小游戏登录：%d %s", login.status, login.raw)
+	}
+	if r := f.miniPost("/api/events", token, map[string]any{"env": "minigame", "events": ev("detail_view", "jumpout")}); r.status != http.StatusOK || r.body["accepted"] != 2.0 {
+		t.Fatalf("POST /api/events：%d %s", r.status, r.raw)
+	}
+	if n := f.count(`env = 'minigame' AND user_id IS NOT NULL`); n != 2 {
+		t.Fatalf("应有 2 条带 user_id 的 minigame 埋点，实际 %d", n)
+	}
+	if r := f.miniPost("/api/client-errors", token, map[string]any{"env": "minigame", "message": "boom"}); r.status != http.StatusNoContent {
+		t.Fatalf("POST /api/client-errors：%d %s", r.status, r.raw)
+	}
+	if n := f.count(`env = 'minigame' AND name = 'client_error'`); n != 1 {
+		t.Fatalf("应记下 1 条 minigame 前端错误，实际 %d", n)
+	}
+	// 没有 Bearer 也没有 Origin：照常被 CSRF 拦下。
+	if r := f.miniPost("/api/events", "", map[string]any{"env": "minigame", "events": ev("jumpout")}); r.status != http.StatusForbidden {
+		t.Fatalf("没凭证没 Origin 应 403：%d %s", r.status, r.raw)
 	}
 }
 

@@ -40,6 +40,8 @@ var deleteStatements = []struct {
 		WHERE device_id IN (SELECT id FROM devices WHERE user_id = ?)`},
 	{"设备", `DELETE FROM devices WHERE user_id = ?`},
 	{"认领令牌", `DELETE FROM claim_tokens WHERE user_id = ?`},
+	// 微信 openid / unionid 关联（#84）：删掉之后同一个微信再登录会建新用户。
+	{"微信关联", `DELETE FROM user_links WHERE user_id = ?`},
 	{"幂等键", `DELETE FROM idempotency_keys WHERE user_id = ?`},
 	{"邀请", `DELETE FROM invites WHERE user_id = ? OR invited_by = ?`},
 	// 星标是双向的：他标了谁、谁标了他，都是关于这个人的数据。
@@ -57,7 +59,7 @@ var deleteStatements = []struct {
 // 一次事务里做完所有事：
 //   - 还没结束的局：按正常退出离开（这个人在那些局里等于「不来了」）；
 //   - 已结束的局：座位行保留，称呼变成「已注销牌友」；
-//   - 个人数据：设备、推送订阅、认领令牌、幂等键、邀请、星标、被移出记录、未发出的提醒，埋点去掉 user_id；
+//   - 个人数据：设备、推送订阅、认领令牌、微信关联、幂等键、邀请、星标、被移出记录、未发出的提醒，埋点去掉 user_id；
 //   - 用户行保留（座位还引用着它），但称呼抹掉、WhatsApp 清空、写上 deleted_at。
 //
 // 重复调用是安全的：已经注销过就直接返回（前端可能重试）。

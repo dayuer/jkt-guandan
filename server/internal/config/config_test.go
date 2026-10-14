@@ -15,6 +15,7 @@ func clearEnv(t *testing.T) {
 		"GUANDAN_ADMIN_EMAIL", "GUANDAN_DEV", "GUANDAN_BACKUP_URL",
 		"GUANDAN_BACKUP_KEY", "ANTHROPIC_API_KEY",
 		"GUANDAN_GROUP_WECHAT_ID", "GUANDAN_GROUP_WHATSAPP_URL",
+		"GUANDAN_WX_APPID", "GUANDAN_WX_SECRET",
 		"AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
 	} {
 		t.Setenv(k, "")
@@ -247,5 +248,23 @@ func TestLoadGroupInfo(t *testing.T) {
 		if _, err := config.Load(); err == nil {
 			t.Errorf("GUANDAN_GROUP_WHATSAPP_URL=%q 应当报错", bad)
 		}
+	}
+}
+
+// 小游戏登录（#84）：AppID 和 AppSecret 都可选，但只设一个是配错了。
+func TestLoadWxCredentials(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("GUANDAN_DEV", "1")
+	if c, err := config.Load(); err != nil || c.WxEnabled() {
+		t.Fatalf("没配置时应关闭：%+v %v", c, err)
+	}
+	t.Setenv("GUANDAN_WX_APPID", " wx123 ")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("只设 AppID 应报错")
+	}
+	t.Setenv("GUANDAN_WX_SECRET", "s3cret")
+	c, err := config.Load()
+	if err != nil || !c.WxEnabled() || c.WxAppID != "wx123" || c.WxSecret != "s3cret" {
+		t.Fatalf("%+v %v", c, err)
 	}
 }

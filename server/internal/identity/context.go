@@ -40,7 +40,7 @@ func UserID(ctx context.Context) string {
 	return ""
 }
 
-// Resolve 是身份中间件用的：从 cookie 认出身份并查封禁（§13.6）。没有身份返回 nil, false, nil。
+// Resolve 是身份中间件用的：从 cookie（或小游戏的 Bearer 头）认出身份并查封禁（§13.6）。没有身份返回 nil, false, nil。
 func (s *Service) Resolve(r *http.Request) (ident *Identity, banned bool, err error) {
 	ident = s.FromRequest(r)
 	if ident == nil {

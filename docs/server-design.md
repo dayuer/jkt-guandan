@@ -178,10 +178,19 @@ CREATE TABLE events (
   at      INTEGER NOT NULL,
   user_id TEXT,
   name    TEXT NOT NULL,                   -- 如 seat_taken / push_enabled / claim_redeemed，以及 POST /api/events 的白名单事件和 client_error
-  env     TEXT,                            -- POST /api/events、/api/client-errors 写入的是 wechat / whatsapp / browser / pwa
+  env     TEXT,                            -- POST /api/events、/api/client-errors 写入的是 wechat / whatsapp / browser / pwa / minigame
   props   TEXT                             -- JSON
 );
 CREATE INDEX events_name_at ON events(name, at);
+-- 微信身份关联（0006，#84，§5.2「小游戏身份」）。unionid / openid 只是指向 user_id 的关联，不返回给客户端；不存 session_key
+CREATE TABLE user_links (
+  provider   TEXT NOT NULL,                -- 'wx_unionid'、'wx_openid:<appid>'
+  subject    TEXT NOT NULL,                -- unionid 或 openid
+  user_id    TEXT NOT NULL REFERENCES users(id),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (provider, subject),
+  UNIQUE (provider, user_id)               -- 一个用户在同一个 provider 下只有一条
+);
 ```
 
 连接设置和并发规则见 §11。
@@ -254,6 +263,12 @@ CREATE INDEX events_name_at ON events(name, at);
   **关于「每个码最多试 5 次」**：这个计数器从来没有生效过，已在 #95 删除（`ClaimCodeMaxAttempts` 常量和 `RedeemByCode` 里的读写都去掉了）。猜错的码查不到记录，本来就数不出每个码被猜了几次；网络不对等失败会让整个写事务回滚，计数也跟着回滚。`claim_tokens.attempts` 列暂时留在库里不再读写，以后在计划好的 breaking 发布里再删。真正限制撞库的是上面第 1–3 条。
 
   按这些限制估算：6 位码共 10⁶ 种，全站每 10 分钟最多大约 200 次失败尝试，而且攻击者必须和受害者在同一个网段，远程撞库几乎不可能成功。
+- **小游戏身份**（#84）。小游戏没有 cookie，凭证走 `Authorization: Bearer`（§10.3 的唯一例外）。两个接口都是 `route.Anonymous`（不读 cookie、不写 cookie），只认微信 code：
+  - `POST /api/wx/login {code, nickname?}`：服务端调 `code2Session` 换出 openid（绑了开放平台时还有 unionid），先按 `wx_unionid`、再按 `wx_openid:<appid>` 在 `user_links` 里找。找到：给这个人新挂一台 `ua = wx-minigame` 的设备，补写缺的关联（以前没有 unionid、这次有了）；没找到且没给称呼：`200 {"need_nickname":true}`；给了称呼（规则同 `POST /api/me`，也占用同一个每 IP 创建配额）：新建用户、设备和关联。成功返回 `200 {"user":{"id","nickname","created_at"},"device_token","device_id"}`。每 IP 每分钟 20 次。被封禁的用户 `403 banned`。
+  - `POST /api/wx/link {code, wx_code, confirm?}`：B2 兜底路径，H5 用 `POST /api/claim` 签发的 6 位认领码在小游戏里输入。防护和上面的凭码兑换完全一样（同网段、每 IP 每分钟 10 次且与 `/api/claim/redeem` 共用、全站失败预算、失败一律 `400 claim_invalid`）。这个微信已经关联了别人且没带 `confirm`：`409 claim_conflict` + `other_nickname`（认领码主人的称呼），码不消耗；确认时要重新 `wx.login` 拿新的 `wx_code`。成功后把 openid / unionid 关联都挂到认领码主人身上（原来关联的用户其他数据不动），新挂一台小游戏设备，返回同 `/api/wx/login`，并发 `claim.redeemed`。
+  - 错误码：`503 wx_disabled`（没配 `GUANDAN_WX_APPID` / `GUANDAN_WX_SECRET`）、`400 wx_code_invalid`、`503 wx_unavailable`（微信接口失败）、`400 nickname_invalid`、`429 rate_limited`。开发模式且没配 AppID 时，接受 `dev:<任意>` 形式的 code，`<任意>` 当 openid、appid 记成 `dev`，方便小游戏开发者工具连本机。
+  - openid / unionid 不出现在响应和日志里。`DELETE /api/me` 和 `guandan admin user delete` 都删掉这个人的 `user_links`，同一个微信再来会建新用户。
+  - 还没做：B1（带参数的小游戏码、`POST /api/wx/link {token, wx_code}`）。
 - **不提供面向用户的身份合并。** 代码里有 `mergeUsers`（`server/internal/identity/merge.go`），但目前只有测试调用它，`guandan admin` 也还没有合并子命令（§13.6）；任何用户能触发的路径都调不到它。将来做成 admin 命令时，语义以代码为准：
   - 以**先注册**的身份为主（`created_at` 更早；相同时取 id 更小的）；
   - 牌局的局头、座位、候补、禁止名单、邀请、幂等键、星标（两个方向）都迁到主身份上。两边在同一局都有座位时，保留更早坐下的那个；其余主键冲突的记录直接丢弃；
@@ -313,7 +328,7 @@ CREATE INDEX events_name_at ON events(name, at);
 **协议**
 
 - 地址是 `GET /ws`，用 `__Host-gd_dev` cookie 识别身份（没有身份也能连，只是不能订阅 `user:*`）。
-- 握手时**必须校验 `Origin` 是本站**，防止跨站 WebSocket 劫持。
+- 握手时**必须校验 `Origin` 是本站**，防止跨站 WebSocket 劫持。小游戏（#84）的 `wx.connectSocket` 没有 `Origin`：没有 `Origin`、也没有设备 cookie 的握手放行（浏览器的握手一定带 `Origin`，劫持靠的是自动附上的 cookie），身份只从 `Authorization: Bearer` 头认，认不出就是访客；带 cookie 却没有 `Origin` 的拒绝（§10.5）。
 - 消息都是 JSON，单条最大 4 KB：
   ```json
   // 客户端发给服务端
@@ -374,6 +389,8 @@ GET  /api/me                          当前身份
 POST /api/claim                       签发 claim token 和认领码
 POST /api/claim/redeem                凭 {token, confirm?} 或 {code} 兑换身份；设备已有别的身份时返回 409 claim_conflict（§5.2）
 DELETE /api/me/devices/{id}           退出这台以外的某个设备（§10.3「退出其他设备」）
+POST /api/wx/login                    小游戏登录 {code, nickname?}，token 在响应体里（§5.2「小游戏身份」）
+POST /api/wx/link                     小游戏凭认领码关联 H5 身份 {code, wx_code, confirm?}
 GET  /api/games?area=&day=            首页列表。每项带 my_role / waitlist_pos / rescheduled_at（见下面「列表条目」）
 POST /api/games                       开一局
 GET  /api/games/{code}                牌局详情
@@ -523,6 +540,8 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `GUANDAN_AGENT_MODEL` | `claude-sonnet-5-5` | 蛋蛋用的 Claude 模型 |
 | `GUANDAN_GROUP_WECHAT_ID` | 空 | 09 牌友顶部「雅加达掼蛋群」横幅里的微信号（#108），经 `GET /api/config` 给前端 |
 | `GUANDAN_GROUP_WHATSAPP_URL` | 空 | 同上，WhatsApp 群链接；必须是 https 地址，否则启动时报错 |
+| `GUANDAN_WX_APPID` | 空 | 小游戏 AppID，`POST /api/wx/login` 调 `code2Session` 用（#84）。和下一项要么都设、要么都不设；都不设时小游戏登录返回 `503 wx_disabled`，开发模式下改为接受 `dev:<openid>` |
+| `GUANDAN_WX_SECRET` | 空 | 小游戏 AppSecret，只放环境变量，不写日志 |
 
 ## 8. 打包与部署
 
@@ -646,6 +665,11 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 - **认领码**：6 位数字（`crypto/rand` 均匀取值），只给没有身份的设备用，必须在签发时的同一网络（/24、/64）兑换，有每 IP 限流和全站失败预算，详见 §5.2。所有失败一律返回同一个 `400 claim_invalid`，不区分「没有这个码」「过期」「网络不对」。注意每个码的尝试次数上限目前并不生效（§5.2）。
 - **claim 不合并身份**：设备已有别的身份时，必须用户确认后才切换，见 §5.2。切换只改这台设备的 `user_id`，不碰两个身份的任何数据。这样，「把自己的 claim 链接发到群里，接管点开链接的人的身份」这条攻击路径就不存在了（#31 审计 P0）。
 - **device_token 不出现在前端可读的地方**：只放在 HttpOnly cookie 里，不写 localStorage，任何响应体里也不出现。claim token 和认领码是例外，它们由 `POST /api/claim` 在响应体里返回给本人，因为本来就要显示或拼进链接；它们短期有效、一次性，换到的也只是一个新的 device_token。
+- **小游戏通道是唯一的例外**（#84）：小游戏没有 cookie，`POST /api/wx/login`、`/api/wx/link` 在响应体里返回 `device_token`（`Cache-Control: no-store`，不写 cookie），小游戏存在 `wx.setStorage` 里，之后每个请求带 `Authorization: Bearer <device_token>`。规则：
+  - Bearer 只在 `/api/*` 和 `/ws` 上接受，别的路径（分享页、静态资源）一律不认；不接受放在查询串里的 token；
+  - cookie 和 Bearer 都有时只认 cookie；
+  - 认出来之后和 cookie 完全一样：封禁检查、合并解析、「我的」设备列表（显示为 `wx-minigame`）、「退出其他设备」都同样生效；
+  - `/api/wx/login` 有单独的每 IP 限流（每分钟 20 次）。
 
 ### 10.4 授权
 
@@ -667,7 +691,10 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 
 - cookie 设置了 `SameSite=Lax`，其他网站发起的 POST 请求不会带上它。
 - 会改数据的请求，还必须同时满足：`Content-Type: application/json`，以及 `Origin` 头等于本站的某个域名（主域名或备用域名）。
-- WebSocket 握手同样校验 `Origin`（§5.5）。
+- 小游戏（#84）的两个例外，`Content-Type: application/json` 仍然必须有：
+  - **只带 Bearer、不带设备 cookie** 的请求不查 `Origin`：CSRF 靠浏览器自动附上 cookie，而 `Authorization` 头浏览器不会自动带，跨站页面要加就得过 CORS 预检，我们不对任何跨站来源放行。带着 cookie 的请求（哪怕同时有 Bearer）照常查 `Origin`；
+  - `POST /api/wx/login`、`/api/wx/link` **没有 `Origin` 时放行，有但不是本站时拒绝**：`wx.request` 不发 `Origin`，而浏览器的跨站 POST 一定带 `Origin`；这两个接口只认微信 code、不读也不写 cookie，token 在响应体里跨站读不到，做不成登录 CSRF。其他没有凭证的写请求（比如 H5 的 `POST /api/me`）照旧要本站 `Origin`。
+- WebSocket 握手同样校验 `Origin`（§5.5）。唯一的例外：没有 `Origin`、也没有设备 cookie 的握手（小游戏的 `wx.connectSocket`）放行，身份只从 Bearer 头认，认不出就是访客；带 cookie 却没有 `Origin` 的照常 403。
 
 ### 10.6 注入与跨站脚本（XSS）
 
@@ -914,9 +941,9 @@ guandan restore <快照>                    从备份恢复（§13.3）
 ## 14. 合规（印尼）
 
 - **个人数据保护法（UU PDP，2024 年 10 月起全面执行）**：
-  - 采集的个人数据只有称呼、可选的 WhatsApp 号码、设备信息、埋点数据，不额外收集其他信息；
+  - 采集的个人数据只有称呼、可选的 WhatsApp 号码、设备信息、埋点数据，以及小游戏用户的微信标识（openid / unionid，只用来识别同一个人，#84），不额外收集其他信息；
   - 提供隐私说明页面 `/privacy`，写明收集什么、用来做什么、保存多久、怎样删除；
-  - `DELETE /api/me` 用于注销：删除称呼、WhatsApp 号码、设备和推送订阅；座位记录改成「已注销牌友」，这样历史局的人数统计不会出错；
+  - `DELETE /api/me` 用于注销：删除称呼、WhatsApp 号码、设备、推送订阅和微信关联（`user_links`）；座位记录改成「已注销牌友」，这样历史局的人数统计不会出错；
   - 保留期限：设备 180 天未活跃就删除（§13.1）；埋点数据 1 年后删除；备份 30 天。
 - **赌博监管**：页面上已经写明「不涉及金钱输赢」。服务端对牌局备注和地点做敏感词过滤（赌、钱、筹码、judi、taruhan……），命中就拒绝提交，并提示「请勿涉及金钱」。词表放在仓库里，可以随时更新。
 - **域名**：`.id` 域名通常需要印尼身份证或本地公司才能注册，所以建议主域名用 `.com` 之类的通用后缀（见 #12）。
