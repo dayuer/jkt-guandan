@@ -150,8 +150,11 @@ func checkContent(venue, note string) error {
 	return nil
 }
 
-// TimeChanged 说明这次修改有没有动时间——动时间要重排提醒（§5.1）。
-func (p Patch) TimeChanged() bool { return p.StartsAt != nil }
+// TimeChanged 说明这次修改把开局时间改成了和库里不一样的值——动时间要重排提醒、推送改期（§5.1）。
+// 原样重发同一个时间不算：不重排，也不给座位上的人发「改期」推送。
+func (p Patch) TimeChanged(current time.Time) bool {
+	return p.StartsAt != nil && !p.StartsAt.Equal(current)
+}
 
 func contains(list []string, v string) bool {
 	for _, item := range list {

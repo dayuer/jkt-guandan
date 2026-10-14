@@ -87,6 +87,10 @@ func mergeUsers(ctx context.Context, tx *store.Tx, a, b string) (string, error) 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM follows WHERE target_id = ?`, other); err != nil {
 		return "", err
 	}
+	// 两个身份原来互相星标的话，搬完会变成「自己星标自己」，去掉。
+	if _, err := tx.ExecContext(ctx, `DELETE FROM follows WHERE user_id = ? AND target_id = ?`, primary, primary); err != nil {
+		return "", err
+	}
 
 	// 这几张表的键不含 user_id，直接改就行。
 	for _, stmt := range []string{

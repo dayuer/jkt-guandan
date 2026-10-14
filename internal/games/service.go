@@ -919,8 +919,7 @@ func (s *Service) Update(ctx context.Context, code, hostID string, patch Patch, 
 			args = append(args, nullIfEmpty(*patch.Note))
 		}
 		// 时间或地点真的变了才记 rescheduled_at（#114）；原样重发不算。
-		if (patch.StartsAt != nil && !patch.StartsAt.Equal(game.StartsAt)) ||
-			(patch.Venue != nil && *patch.Venue != game.Venue) {
+		if patch.TimeChanged(game.StartsAt) || (patch.Venue != nil && *patch.Venue != game.Venue) {
 			sets = append(sets, "rescheduled_at = ?")
 			args = append(args, now.Unix())
 		}
@@ -937,7 +936,7 @@ func (s *Service) Update(ctx context.Context, code, hostID string, patch Patch, 
 		}
 
 		// 改了时间：作废旧的开局提醒，按新时间重排，并通知座位上的人（§5.1）。
-		if patch.TimeChanged() {
+		if patch.TimeChanged(game.StartsAt) {
 			if err := dropReminders(ctx, tx, game.ID, "", ReminderTMinus1h, now); err != nil {
 				return err
 			}

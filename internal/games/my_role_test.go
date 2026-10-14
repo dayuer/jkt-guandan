@@ -121,3 +121,47 @@ func TestRescheduledAtOnlyWhenTimeOrVenueChanges(t *testing.T) {
 		t.Fatalf("改时间后 rescheduled_at 应当更新，实际 %v（上次 %v）", second, first)
 	}
 }
+
+// 原样重发同一个 starts_at 不算改期：不给座位上的人发「改期」推送，也不记 rescheduled_at。
+func TestPatchSameStartsAtSendsNoReschedulePush(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "局头")
+	code := f.createGame(f.http, nil)
+	other := f.newBrowser()
+	f.signUp(other, "牌友")
+	if r := f.do(other, http.MethodPost, "/api/games/"+code+"/seat", nil, nil); r.status != http.StatusOK {
+		t.Fatalf("报名失败：%d %s", r.status, r.raw)
+	}
+
+	rescheduledRows := func() int {
+		var n int
+		if err := f.st.Read().QueryRow(`SELECT count(*) FROM outbox WHERE kind = 'rescheduled'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	patchTime := func(startsAt int64) {
+		t.Helper()
+		d := f.do(f.http, http.MethodGet, "/api/games/"+code, nil, nil)
+		v := strconv.FormatInt(int64(d.gameField("version").(float64)), 10)
+		r := f.do(f.http, http.MethodPatch, "/api/games/"+code, map[string]any{"starts_at": startsAt}, map[string]string{"If-Match": v})
+		if r.status != http.StatusOK {
+			t.Fatalf("改局失败：%d %s", r.status, r.raw)
+		}
+	}
+
+	d := f.do(f.http, http.MethodGet, "/api/games/"+code, nil, nil)
+	same := int64(d.gameField("starts_at").(float64))
+	patchTime(same)
+	if n := rescheduledRows(); n != 0 {
+		t.Fatalf("时间没变，不该有改期推送，实际 %d 条", n)
+	}
+	if v := f.do(other, http.MethodGet, "/api/games/"+code, nil, nil).gameField("rescheduled_at"); v != nil {
+		t.Fatalf("时间没变，不该有 rescheduled_at，实际 %v", v)
+	}
+
+	patchTime(same + 3600)
+	if n := rescheduledRows(); n != 2 { // 座位上的两个人各一条
+		t.Fatalf("改了时间应给座位上的 2 个人各发一条，实际 %d 条", n)
+	}
+}
