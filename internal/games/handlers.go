@@ -58,7 +58,7 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
 
-	items, err := h.svc.List(r.Context(), q.Get("area"), q.Get("day"), limit, offset)
+	items, err := h.svc.List(r.Context(), viewer(r), q.Get("area"), q.Get("day"), limit, offset)
 	if err != nil {
 		writeServiceError(w, "读牌局列表失败", err)
 		return
@@ -256,6 +256,8 @@ type gameJSON struct {
 	Status    string `json:"status"`
 	Version   int64  `json:"version"`
 	Capacity  int    `json:"capacity"`
+	// RescheduledAt 是局头最近一次改时间或地点的时刻（Unix 秒）；没改过就没有这一项。
+	RescheduledAt int64 `json:"rescheduled_at,omitempty"`
 }
 
 type seatJSON struct {
@@ -301,6 +303,7 @@ func toDetailJSON(d *Detail) map[string]any {
 			ID: d.Game.ID, ShortCode: d.Game.ShortCode, StartsAt: d.Game.StartsAt.Unix(),
 			Area: d.Game.Area, Venue: d.Game.Venue, Kind: d.Game.Kind, Note: d.Game.Note,
 			Status: d.Game.Status, Version: d.Game.Version, Capacity: Capacity,
+			RescheduledAt: unixSec(d.Game.RescheduledAt),
 		},
 		"host":     userRefJSON{ID: d.Game.HostID, Nickname: d.HostName},
 		"seats":    seats,
@@ -320,7 +323,7 @@ func toSummariesJSON(items []Summary) []map[string]any {
 				User:   userRefJSON{ID: seat.UserID, Nickname: seat.Nickname},
 			})
 		}
-		out = append(out, map[string]any{
+		item := map[string]any{
 			"short_code": s.Game.ShortCode,
 			"starts_at":  s.Game.StartsAt.Unix(),
 			"area":       s.Game.Area,
@@ -331,9 +334,26 @@ func toSummariesJSON(items []Summary) []map[string]any {
 			"seats":      len(seats),
 			"missing":    s.Missing,
 			"host":       userRefJSON{ID: s.Game.HostID, Nickname: s.HostName},
-		})
+		}
+		if at := unixSec(s.Game.RescheduledAt); at != 0 {
+			item["rescheduled_at"] = at
+		}
+		// 按身份算的字段只在 GET /api/games 里有；首页事件是广播，MyRole 为空，不带。
+		if s.MyRole != "" {
+			item["my_role"] = s.MyRole
+			item["waitlist_pos"] = s.WaitlistPos
+		}
+		out = append(out, item)
 	}
 	return out
+}
+
+// unixSec 零值时间返回 0，其余返回 Unix 秒。
+func unixSec(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
 }
 
 // writeGameError 把业务错误映射成状态码（§6）。

@@ -29,18 +29,19 @@ func loadDetailFrom(ctx context.Context, q queryer, code, viewerID string) (*Det
 	var (
 		d                   Detail
 		startsAt, createdAt int64
+		rescheduledAt       int64
 		hostName            string
 	)
 	err := q.QueryRowContext(ctx, `
 		SELECT g.id, g.short_code, g.host_id, g.starts_at, g.area, g.venue, g.kind,
 		       COALESCE(g.note, ''), g.status, g.version, g.created_at,
-		       COALESCE(u.nickname, '')
+		       COALESCE(g.rescheduled_at, 0), COALESCE(u.nickname, '')
 		  FROM games g
 		  LEFT JOIN users u ON u.id = g.host_id
 		 WHERE g.short_code = ?`, code).
 		Scan(&d.Game.ID, &d.Game.ShortCode, &d.Game.HostID, &startsAt, &d.Game.Area,
 			&d.Game.Venue, &d.Game.Kind, &d.Game.Note, &d.Game.Status, &d.Game.Version,
-			&createdAt, &hostName)
+			&createdAt, &rescheduledAt, &hostName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -49,6 +50,7 @@ func loadDetailFrom(ctx context.Context, q queryer, code, viewerID string) (*Det
 	}
 	d.Game.StartsAt = time.Unix(startsAt, 0)
 	d.Game.CreatedAt = time.Unix(createdAt, 0)
+	d.Game.RescheduledAt = unixOrZero(rescheduledAt)
 	d.HostName = hostName
 
 	seats, err := q.QueryContext(ctx, `
@@ -146,7 +148,8 @@ func loadGameByID(ctx context.Context, tx *store.Tx, id string) (Game, error) {
 
 const gameColumns = `
 	SELECT g.id, g.short_code, g.host_id, g.starts_at, g.area, g.venue, g.kind,
-	       COALESCE(g.note, ''), g.status, g.version, g.created_at
+	       COALESCE(g.note, ''), g.status, g.version, g.created_at,
+	       COALESCE(g.rescheduled_at, 0)
 	  FROM games g`
 
 // scanner 是 *sql.Row 和 *sql.Rows 共有的部分，让同一个扫描逻辑两处都能用。
@@ -164,15 +167,25 @@ func scanGameFrom(row scanner) (Game, error) {
 	var (
 		g                   Game
 		startsAt, createdAt int64
+		rescheduledAt       int64
 	)
 	err := row.Scan(&g.ID, &g.ShortCode, &g.HostID, &startsAt, &g.Area, &g.Venue,
-		&g.Kind, &g.Note, &g.Status, &g.Version, &createdAt)
+		&g.Kind, &g.Note, &g.Status, &g.Version, &createdAt, &rescheduledAt)
 	if err != nil {
 		return Game{}, err
 	}
 	g.StartsAt = time.Unix(startsAt, 0)
 	g.CreatedAt = time.Unix(createdAt, 0)
+	g.RescheduledAt = unixOrZero(rescheduledAt)
 	return g, nil
+}
+
+// unixOrZero 把库里的 0（空）读成零值时间，其余按 Unix 秒。
+func unixOrZero(sec int64) time.Time {
+	if sec == 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0)
 }
 
 func isSeated(ctx context.Context, q queryer, gameID, userID string) (bool, error) {

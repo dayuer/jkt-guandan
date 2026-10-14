@@ -74,6 +74,8 @@ type Game struct {
 	Status    string
 	Version   int64
 	CreatedAt time.Time
+	// RescheduledAt 是局头最近一次改时间或地点的时刻；零值表示没改过（#114）。
+	RescheduledAt time.Time
 }
 
 // Open 表示这局还能报名。
@@ -121,6 +123,10 @@ type Summary struct {
 	HostName string
 	Seats    []Seat
 	Missing  int
+	// MyRole / WaitlistPos 是当前身份在这一局的位置：seated / waitlist / none（#114）。
+	// 空串表示没有按身份算过（首页事件是广播，不带这两项）。
+	MyRole      string
+	WaitlistPos int
 }
 
 // 业务错误。接口层把它们映射成 §6 的状态码。
