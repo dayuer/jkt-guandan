@@ -358,4 +358,8 @@ test("状态提示：改时间横幅，局头转交横幅（#114）", async ({ p
   await expect(crowned).toContainText("E2E 原局头退出了");
   await expect(crowned).toContainText("你现在是局头");
   await host.dispose();
+
+  // W4：服务端给了 my_role（#120），首页卡片上显示「已报名」。
+  await page.goto("/");
+  await expect(page.locator(".gamecard .need.mine").first()).toHaveText("已报名");
 });
