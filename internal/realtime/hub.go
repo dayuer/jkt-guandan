@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/dayuer/jkt-guandan/internal/clock"
 )
 
 // 协议上的各项上限（§5.5、§12.3）。
@@ -101,12 +103,13 @@ type Hub struct {
 	// presence 是各 game: 主题「N 人正在看」的广播状态，只在内存里（#46）。
 	presence      map[string]*presenceState
 	presenceEvery time.Duration
+	clk           clock.Clock // presence 防抖用；测试里换成假时钟（#74）
 }
 
 type presenceState struct {
-	last     int         // 上次广播出去的人数
-	lastSent time.Time   // 上次广播的时间
-	timer    *time.Timer // 已排上的下一次广播；nil 表示没有
+	last     int           // 上次广播出去的人数
+	lastSent time.Time     // 上次广播的时间
+	pending  chan struct{} // 已排上的下一次广播，关掉它就取消；nil 表示没有
 	// greet 是订阅后还没收到过人数的连接。下一次 flush 时：人数变了就广播给所有人（它们也在里面），
 	// 没变就只发给它们。这样一条连接订阅一个牌局只收到一条 presence，不会和广播重复。
 	greet map[*conn]struct{}
@@ -122,7 +125,16 @@ func NewHub() *Hub {
 		conns:         make(map[*conn]struct{}),
 		presence:      make(map[string]*presenceState),
 		presenceEvery: DefaultPresenceInterval,
+		clk:           clock.System{},
 	}
+}
+
+// SetClock 换掉 presence 防抖用的时钟（测试用：假时钟让防抖可以确定性地推进，#74）。
+// 要在有连接之前调用。
+func (h *Hub) SetClock(c clock.Clock) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.clk = c
 }
 
 // SetPresenceInterval 改 presence 广播的最短间隔（测试用）。
@@ -242,24 +254,33 @@ func (h *Hub) markPresenceLocked(topic string, newcomer *conn) {
 	if newcomer != nil {
 		st.greet[newcomer] = struct{}{}
 	}
-	if st.timer != nil {
+	if st.pending != nil {
 		return
 	}
-	wait := time.Until(st.lastSent.Add(h.presenceEvery))
+	wait := h.clk.Until(st.lastSent.Add(h.presenceEvery))
 	if wait < 0 {
 		wait = 0
 	}
-	st.timer = time.AfterFunc(wait, func() { h.flushPresence(topic) })
+	// 在锁里向时钟登记等待（测试里的假时钟据此确定性地触发），再起 goroutine 等它。
+	fire, cancel := h.clk.After(wait), make(chan struct{})
+	st.pending = cancel
+	go func() {
+		select {
+		case <-fire:
+			h.flushPresence(topic, cancel)
+		case <-cancel:
+		}
+	}()
 }
 
-func (h *Hub) flushPresence(topic string) {
+func (h *Hub) flushPresence(topic string, pending chan struct{}) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	st := h.presence[topic]
-	if st == nil || h.closing {
+	if st == nil || h.closing || st.pending != pending {
 		return
 	}
-	st.timer = nil
+	st.pending = nil
 	n := h.viewersLocked(topic)
 	if n == 0 {
 		delete(h.presence, topic) // 没人看了，也就没人收；下次有人来重新开始
@@ -277,7 +298,7 @@ func (h *Hub) flushPresence(topic string) {
 		}
 		return
 	}
-	st.last, st.lastSent = n, time.Now()
+	st.last, st.lastSent = n, h.clk.Now()
 	msg := presenceMsg(topic, n)
 	for c := range h.topics[topic] {
 		sendPresence(c, msg)
@@ -401,8 +422,8 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 	h.mu.Lock()
 	h.closing = true
 	for t, st := range h.presence {
-		if st.timer != nil {
-			st.timer.Stop()
+		if st.pending != nil {
+			close(st.pending)
 		}
 		delete(h.presence, t)
 	}

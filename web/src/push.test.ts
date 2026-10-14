@@ -101,6 +101,15 @@ describe("平台判断的小工具", () => {
   it("inAppBrowser 区分微信和 WhatsApp，普通浏览器返回空", () => {
     expect(inAppBrowser(UA.wechat)).toBe("wechat");
     expect(inAppBrowser(UA.whatsapp)).toBe("whatsapp");
+    expect(
+      inAppBrowser("Mozilla/5.0 (iPhone) Mobile/15E148 Instagram 312.0.0 (iPhone14,5; iOS 17_0; FBAN/FBIOS)"),
+    ).toBe("instagram");
+    expect(inAppBrowser("Mozilla/5.0 (iPhone) Mobile/15E148 [FBAN/FBIOS;FBAV/450.0;FBBV/1]")).toBe("facebook");
+    expect(inAppBrowser("Mozilla/5.0 (Linux; Android 14) Chrome/120 Mobile Safari/537.36 [FB_IAB/FB4A;FBAV/450.0;]")).toBe(
+      "facebook",
+    );
+    expect(inAppBrowser("Mozilla/5.0 (iPhone) Mobile/15E148 Safari Line/13.17.0")).toBe("line");
+    expect(inAppBrowser("Mozilla/5.0 (X11; Linux) Online/1.0 Chrome/120")).toBe("");
     expect(inAppBrowser(UA.iphoneSafari)).toBe("");
   });
 

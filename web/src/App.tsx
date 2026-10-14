@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, getMe, signOutCurrentDevice, type UserRef } from "./api";
+import { FirstLaunch } from "./components/FirstLaunch";
 import { NicknameSheet } from "./components/NicknameSheet";
+import { shouldWelcome } from "./guide";
 import { clearIdentityMarker, redeemClaimFromURL } from "./identity";
 import { agentDisabled } from "./agent";
 import { Agent, type FormPrefill } from "./pages/Agent";
@@ -10,6 +12,7 @@ import { Devices } from "./pages/Devices";
 import { Home } from "./pages/Home";
 import { Me } from "./pages/Me";
 import { Privacy } from "./pages/Privacy";
+import { isStandalone, pushSupport } from "./push";
 import { pageTitle } from "./title";
 
 type Route =
@@ -53,6 +56,8 @@ export function App() {
   const [sheetOpen, setSheetOpen] = useState(false);
   // 07 蛋蛋退回 08 表单时带过去的草稿；从别处进表单就是空的。
   const [prefill, setPrefill] = useState<FormPrefill | null>(null);
+  // 主屏幕图标第一次打开：先认人、再问提醒（H3–H8）。
+  const [welcome, setWelcome] = useState(() => shouldWelcome(isStandalone()));
 
   // 需要身份时弹层给出结果（resolve）。
   const pending = useRef<((user: UserRef | null) => void) | null>(null);
@@ -88,7 +93,9 @@ export function App() {
     (async () => {
       // 先处理跳出链接里的 claim，再问一次身份。
       try {
-        const result = await redeemClaimFromURL();
+        // 应用内置浏览器里不兑换：这里的 ?claim= 是 H1 为「跳出去」签发的，
+        // 微信回收 webview 或下拉刷新时自己兑换，会把令牌用掉，浏览器那边就认不出人了（#70 复审）。
+        const result = pushSupport().kind === "in-app-browser" ? ({ kind: "none" } as const) : await redeemClaimFromURL();
         if (result.kind === "ok") setClaim({ kind: "ok", user: result.user });
         else if (result.kind === "conflict") setClaim({ kind: "conflict", other: result.otherNickname });
       } catch {
@@ -182,6 +189,8 @@ export function App() {
 
       {!ready ? (
         <p class="empty-state">正在打开…</p>
+      ) : welcome ? (
+        <FirstLaunch me={me} onIdentity={setMe} onDone={() => setWelcome(false)} />
       ) : route.name === "detail" ? (
         <Detail
           code={route.code}

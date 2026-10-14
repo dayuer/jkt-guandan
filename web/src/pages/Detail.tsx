@@ -19,6 +19,7 @@ import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
 import { dayLabel, kindLabel, timeHM } from "../format";
 import { gameTitle } from "../title";
+import { useBarHeight } from "../useBarHeight";
 import { OfflineDot, useRealtime, useRealtimeStatus } from "../useRealtime";
 import { useRetrying } from "../useRetrying";
 
@@ -70,6 +71,8 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   /** 刚报上名：报名成功弹层，问要不要提醒（B4–B6，#10）。 */
   const [joinedOpen, setJoinedOpen] = useState(false);
   const retrying = useRetrying();
+  // 操作栏在窄屏上会换行（局头有四颗按钮），高度要量出来（#75）。
+  const actionBar = useBarHeight<HTMLDivElement>();
 
   const load = useCallback(async () => {
     try {
@@ -414,7 +417,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         />
       )}
 
-      <div class="actionbar">
+      <div class="actionbar" ref={actionBar}>
         {/* 分享对所有能看到这一局的人都可用——报了名的、路过的，都能帮局头拉人（§5.4）。 */}
         {!closed && (
           <button class="btn dark-ghost" onClick={() => setShareOpen(true)}>
