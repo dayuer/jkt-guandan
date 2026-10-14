@@ -51,14 +51,17 @@ CREATE TABLE users (
   nickname    TEXT NOT NULL,
   wa_phone    TEXT,                        -- 可选，绑定后用于找回
   merged_into TEXT REFERENCES users(id),   -- 只有 admin 合并会写入（§5.2：不提供面向用户的合并）
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  banned_at   INTEGER,                     -- 0003_bans.sql：guandan admin ban 写入（§13.6），非空时身份中间件对之后的请求一律返回 403；封禁被合并过的旧 id 会顺着 merged_into 把在用的身份一起封
+  deleted_at  INTEGER                      -- 0004_user_delete.sql：DELETE /api/me 注销（§14）。行本身保留（座位还引用着它），称呼改成「已注销牌友」、wa_phone 清空，设备、推送订阅等个人数据删除
 );
 CREATE TABLE devices (
   id         TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL REFERENCES users(id),
   token_hash BLOB NOT NULL UNIQUE,         -- sha256(device_token)，不存明文
   ua         TEXT,
-  last_seen  INTEGER NOT NULL
+  last_seen  INTEGER NOT NULL,
+  banned_at  INTEGER                       -- 0003_bans.sql：按设备封禁（guandan admin ban <device>），非空时这台设备的请求返回 403
 );
 CREATE TABLE claim_tokens (
   token_hash BLOB PRIMARY KEY,             -- sha256(claim_token)
