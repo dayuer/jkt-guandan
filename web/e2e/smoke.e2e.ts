@@ -196,3 +196,17 @@ test("局头视角：操作栏折成两行时，滚到底内容也不被压住�
   const barTop = await page.locator(".actionbar").evaluate((el) => el.getBoundingClientRect().top);
   expect(last).toBeLessThanOrEqual(barTop);
 });
+
+// 访客视角：只有「分享」「报名占座」两个按钮，一行；滚到底最后一段内容也必须在操作栏上面。
+// 这条现在就该过——它拦的是「--bar-height 被改小 / 改成 0」这类回归（#77 复审）。
+test("访客视角：滚到底内容不被操作栏压住", async ({ page }) => {
+  await page.goto(`/g/${codes[2]}`);
+  await expect(page.getByRole("button", { name: "报名占座" })).toBeVisible();
+  // 页面确实比一屏长，才谈得上被压住。
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeGreaterThan(667);
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+
+  const last = await page.locator(".disclaimer").evaluate((el) => el.getBoundingClientRect().bottom);
+  const barTop = await page.locator(".actionbar").evaluate((el) => el.getBoundingClientRect().top);
+  expect(last).toBeLessThanOrEqual(barTop);
+});
