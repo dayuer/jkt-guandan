@@ -1,0 +1,176 @@
+import { expect, request, test, type APIRequestContext, type Page } from "@playwright/test";
+
+/**
+ * 浏览器端到端冒烟（#72），全部在 375×667 下跑（分享面板另外看 375×560）。
+ *
+ * 用到的数据：`guandan seed` 的 SEED01（今天 19:30，三缺一），加上 beforeAll 通过 API 开的 12 局。
+ * 自己开的局都在明天以后，所以不管 CI 在一天里什么时候跑，报名、分享都不会撞上「已经开始」。
+ */
+
+const ORIGIN = `http://127.0.0.1:${process.env.E2E_PORT ?? 18673}`;
+/** 自己开的局放在这两个片区；首页的空状态用 BSD（seed 和这里都不碰它）。 */
+const AREAS = ["Kuningan", "Senayan"];
+
+/** 一个独立的身份（各自的 cookie）。写请求要带 Origin，服务端按 CSRF 规则校验（§10.5）。 */
+async function identity(nickname: string): Promise<APIRequestContext> {
+  const ctx = await request.newContext({ baseURL: ORIGIN, extraHTTPHeaders: { Origin: ORIGIN } });
+  const res = await ctx.post("/api/me", { data: { nickname } });
+  expect(res.ok(), `POST /api/me ${res.status()}`).toBeTruthy();
+  return ctx;
+}
+
+let seq = 0;
+async function openGame(host: APIRequestContext, hoursAhead: number, area: string): Promise<string> {
+  const startsAt = Math.floor(Date.now() / 1000) + 24 * 3600 + hoursAhead * 3600;
+  const res = await host.post("/api/games", {
+    data: { starts_at: startsAt, area, venue: `E2E 测试场 ${++seq}`, kind: "classic" },
+    headers: { "Idempotency-Key": `e2e-${Date.now()}-${seq}` },
+  });
+  expect(res.ok(), `POST /api/games ${res.status()} ${await res.text()}`).toBeTruthy();
+  return (await res.json()).game.short_code as string;
+}
+
+const codes: string[] = [];
+
+test.beforeAll(async () => {
+  // 每人同时最多占 5 个位置（局头占一个），所以分给三个局头，各开 4 局。
+  for (const name of ["E2E 局头甲", "E2E 局头乙", "E2E 局头丙"]) {
+    const host = await identity(name);
+    for (let i = 0; i < 4; i++) codes.push(await openGame(host, codes.length, AREAS[codes.length % AREAS.length]));
+    await host.dispose();
+  }
+});
+
+// 每个用例：拦掉所有非本机请求（并记下来），收集 console error 和页面异常，用例结束时都必须为空。
+const problems = new WeakMap<Page, string[]>();
+
+test.beforeEach(async ({ page }) => {
+  const list: string[] = [];
+  problems.set(page, list);
+  await page.context().route("**/*", (route) => {
+    const url = new URL(route.request().url());
+    if (url.origin === ORIGIN || url.protocol === "data:" || url.protocol === "blob:") return route.continue();
+    list.push(`外网请求：${url.href}`);
+    return route.abort();
+  });
+  page.on("console", (msg) => {
+    if (msg.type() !== "error") return;
+    // 唯一预期内的：还没有身份的访客，GET /api/me 是 401（应用当作「未登录」处理，不是错误）。
+    // Chromium 会把它记成一条「Failed to load resource」。
+    const url = msg.location().url ?? "";
+    if (/Failed to load resource.*401/.test(msg.text()) && new URL(url, ORIGIN).pathname === "/api/me") return;
+    list.push(`console.error：${msg.text()}（${url}）`);
+  });
+  page.on("pageerror", (err) => list.push(`页面异常：${err.message}`));
+});
+
+test.afterEach(async ({ page }) => {
+  expect(problems.get(page) ?? []).toEqual([]);
+});
+
+/** 底栏的定位和 bottom。 */
+async function barBox(page: Page, selector: string) {
+  return page.locator(selector).evaluate((el) => ({
+    position: getComputedStyle(el).position,
+    bottom: el.getBoundingClientRect().bottom,
+    viewport: window.innerHeight,
+  }));
+}
+
+/** 让浏览器以一个新身份进来（cookie 和页面共用）。 */
+async function signIn(page: Page, nickname: string) {
+  const res = await page.request.post("/api/me", { data: { nickname }, headers: { Origin: ORIGIN } });
+  expect(res.ok()).toBeTruthy();
+}
+
+test("首页：长列表滚动前后，Tab 栏都 fixed 贴在视口底", async ({ page }) => {
+  await page.goto("/");
+  // seed 的局有的在今天，跑的时间晚了可能已经不在列表里，所以只要求自己开的那 12 局都在。
+  await expect.poll(() => page.locator(".gamecard").count()).toBeGreaterThanOrEqual(codes.length);
+
+  const before = await barBox(page, ".tabbar");
+  expect(before.position).toBe("fixed");
+  expect(before.bottom).toBe(before.viewport);
+
+  // 列表确实比一屏长，才谈得上「滚走」。
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeGreaterThan(667 * 2);
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+
+  const after = await barBox(page, ".tabbar");
+  expect(after.position).toBe("fixed");
+  expect(after.bottom).toBe(after.viewport);
+
+  // 最后一张卡片没有被 Tab 栏压住（#53）。
+  const lastBottom = await page.locator(".gamecard").last().evaluate((el) => el.getBoundingClientRect().bottom);
+  const barTop = await page.locator(".tabbar").evaluate((el) => el.getBoundingClientRect().top);
+  expect(lastBottom).toBeLessThanOrEqual(barTop);
+});
+
+test("首页空状态没有虚线框（#56）", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("tab", { name: "BSD" }).click();
+  const empty = page.locator(".empty-state", { hasText: "这几天还没有局" });
+  await expect(empty).toBeVisible();
+  const border = await empty.evaluate((el) => getComputedStyle(el).borderTopStyle);
+  expect(border).toBe("none");
+});
+
+test("详情页 SEED01：空座位 64×64，有操作栏，没有 Tab 栏（#55）", async ({ page }) => {
+  await page.goto("/g/SEED01");
+  const seat = page.locator(".disc.empty").first();
+  await expect(seat).toBeVisible();
+  const box = await seat.boundingBox();
+  expect(box?.width).toBe(64);
+  expect(box?.height).toBe(64);
+
+  await expect(page.locator(".actionbar")).toBeVisible();
+  const bar = await barBox(page, ".actionbar");
+  expect(bar.position).toBe("fixed");
+  expect(bar.bottom).toBe(bar.viewport);
+  await expect(page.locator(".tabbar")).toHaveCount(0);
+});
+
+test("报名占座：座位更新成「我」，之后有「加入日历」", async ({ page }) => {
+  await signIn(page, "E2E 路人");
+  const code = codes[0];
+  await page.goto(`/g/${code}`);
+  await expect(page.locator(".disc.empty")).toHaveCount(3);
+
+  await page.getByRole("button", { name: "报名占座" }).click();
+  await expect(page.locator(".disc.me")).toHaveCount(1);
+  await expect(page.locator(".disc.empty")).toHaveCount(2);
+
+  // 报上名会先问一句要不要加日历（#6），关掉之后详情页上也有入口。
+  const sheet = page.getByTestId("calendar-sheet");
+  await expect(sheet).toContainText("占上了");
+  await expect(sheet.getByTestId("calendar-ics")).toHaveAttribute("href", `/g/${code}/game.ics`);
+  await sheet.getByRole("button", { name: "先不用" }).click();
+  await expect(sheet).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "📅 加入日历" })).toBeVisible();
+});
+
+test("分享面板：375×560 下能滚到「取消」，WhatsApp 链接带的就是话术", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 560 });
+  await page.goto(`/g/${codes[1]}`);
+  await page.getByRole("button", { name: "⇪ 分享" }).click();
+
+  const sheet = page.getByTestId("share-sheet");
+  await expect(sheet).toBeVisible();
+  // 海报是服务端渲染的：真的加载出来了，而不是占位图。
+  await expect(sheet.locator("img.poster")).toHaveJSProperty("complete", true);
+  expect(await sheet.locator("img.poster").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+
+  const script = (await sheet.locator(".script p").textContent()) ?? "";
+  expect(script).toContain(`/g/${codes[1]}`);
+  const href = (await sheet.locator("a.outlet", { hasText: "WhatsApp" }).getAttribute("href")) ?? "";
+  const wa = new URL(href);
+  expect(wa.origin).toBe("https://wa.me");
+  expect(wa.searchParams.get("text")).toBe(script);
+
+  const cancel = sheet.getByRole("button", { name: "取消" });
+  await sheet.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+  await expect(cancel).toBeInViewport({ ratio: 1 });
+  await cancel.click();
+  await expect(sheet).toHaveCount(0);
+});
