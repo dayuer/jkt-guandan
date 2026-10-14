@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -457,9 +458,46 @@ func (c cmdIO) admin(ctx context.Context, args []string) error {
 				fmt.Fprintf(c.out, "    %-20s %d\n", e.Name, e.Count)
 			}
 		}
+		funnels, err := st.Funnels(ctx, now.Add(-since))
+		if err != nil {
+			return err
+		}
+		printFunnels(c.out, funnels)
 		return nil
 	}
 	return usageError{"不认识的 admin 命令：" + strings.Join(args, " ")}
+}
+
+// printFunnels 按环境打印转化漏斗：各埋点的次数，加上看详情 → 点报名 → 报名成功、推送弹窗 → 开启的转化率。
+// 是事件次数，不是去重后的人数（埋点不记设备）。
+func printFunnels(w io.Writer, funnels []store.Funnel) {
+	if len(funnels) == 0 {
+		return
+	}
+	pct := func(num, den int64) string {
+		if den == 0 {
+			return "-"
+		}
+		return fmt.Sprintf("%.0f%%", 100*float64(num)/float64(den))
+	}
+	idx := func(name string) int { return slices.Index(store.FunnelEvents, name) }
+	fmt.Fprintln(w, "  漏斗（按环境，事件次数）：")
+	fmt.Fprintf(w, "    %-10s", "环境")
+	for _, n := range store.FunnelEvents {
+		fmt.Fprintf(w, " %13s", n)
+	}
+	fmt.Fprintf(w, " %11s %11s %11s\n", "view→click", "click→ok", "prompt→ok")
+	for _, f := range funnels {
+		fmt.Fprintf(w, "    %-10s", f.Env)
+		for _, n := range f.Counts {
+			fmt.Fprintf(w, " %13d", n)
+		}
+		c := f.Counts
+		fmt.Fprintf(w, " %11s %11s %11s\n",
+			pct(c[idx("join_click")], c[idx("detail_view")]),
+			pct(c[idx("join_ok")], c[idx("join_click")]),
+			pct(c[idx("push_ok")], c[idx("push_prompt")]))
+	}
 }
 
 func fetchTo(w io.Writer, url string) error {

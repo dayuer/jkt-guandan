@@ -48,6 +48,8 @@ var deleteStatements = []struct {
 	{"被移出记录", `DELETE FROM game_bans WHERE user_id = ?`},
 	// 他都不来了，别再推给他。
 	{"未发出的提醒", `DELETE FROM outbox WHERE user_id = ?`},
+	// 埋点留着做汇总，但不能再指回这个人（和 store.DeleteUserData 一致，§14）。
+	{"埋点", `UPDATE events SET user_id = NULL WHERE user_id = ?`},
 }
 
 // DeleteMe 注销当前身份（§14、`DELETE /api/me`）。
@@ -55,7 +57,7 @@ var deleteStatements = []struct {
 // 一次事务里做完所有事：
 //   - 还没结束的局：按正常退出离开（这个人在那些局里等于「不来了」）；
 //   - 已结束的局：座位行保留，称呼变成「已注销牌友」；
-//   - 个人数据：设备、推送订阅、认领令牌、幂等键、邀请、星标、被移出记录、未发出的提醒；
+//   - 个人数据：设备、推送订阅、认领令牌、幂等键、邀请、星标、被移出记录、未发出的提醒，埋点去掉 user_id；
 //   - 用户行保留（座位还引用着它），但称呼抹掉、WhatsApp 清空、写上 deleted_at。
 //
 // 重复调用是安全的：已经注销过就直接返回（前端可能重试）。

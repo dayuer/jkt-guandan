@@ -39,6 +39,7 @@ import (
 	"github.com/dayuer/jkt-guandan/internal/share"
 	"github.com/dayuer/jkt-guandan/internal/store"
 	"github.com/dayuer/jkt-guandan/internal/supervise"
+	"github.com/dayuer/jkt-guandan/internal/telemetry"
 	"github.com/dayuer/jkt-guandan/web"
 )
 
@@ -190,9 +191,10 @@ func run() error {
 			Identity: identitySvc,
 			Routes: appRoutes(appDeps{
 				identity: identitySvc, games: gamesSvc, notify: notifySvc, ws: wsHandler,
-				friends: friends.NewService(st, clk),
-				share:   share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()},
-				agent:   agent.Options{Model: agentModel(cfg), Clock: clk},
+				friends:   friends.NewService(st, clk),
+				share:     share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()},
+				agent:     agent.Options{Model: agentModel(cfg), Clock: clk},
+				telemetry: telemetry.Options{Store: st, Clock: clk},
 			}),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -403,13 +405,14 @@ func agentModel(cfg config.Config) agent.Model {
 
 // appDeps 是组装路由表要用到的各个服务。
 type appDeps struct {
-	identity *identity.Service
-	games    *games.Service
-	notify   *notify.Service
-	friends  *friends.Service
-	ws       http.Handler
-	share    share.Options
-	agent    agent.Options
+	identity  *identity.Service
+	games     *games.Service
+	notify    *notify.Service
+	friends   *friends.Service
+	ws        http.Handler
+	share     share.Options
+	agent     agent.Options
+	telemetry telemetry.Options
 }
 
 // appRoutes 是各业务包的路由，和 httpapi 的基础设施路由一起组成整张路由表（#41）。
@@ -424,6 +427,7 @@ func appRoutes(d appDeps) []route.Route {
 		notify.Routes(d.notify),
 		friends.Routes(d.friends),
 		agent.Routes(d.agent),
+		telemetry.Routes(d.telemetry),
 	)
 }
 

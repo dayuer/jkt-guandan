@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -231,5 +232,36 @@ func TestBackupNowIfExists(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, backup.DBFile)); err == nil {
 		t.Fatal("不该建出空库")
+	}
+}
+
+// #117：admin stats 打印按环境的转化漏斗和转化率。
+func TestPrintFunnels(t *testing.T) {
+	counts := func(m map[string]int64) []int64 {
+		out := make([]int64, len(store.FunnelEvents))
+		for name, n := range m {
+			out[slices.Index(store.FunnelEvents, name)] = n
+		}
+		return out
+	}
+	var b strings.Builder
+	printFunnels(&b, []store.Funnel{
+		{Env: "pwa", Counts: counts(map[string]int64{"detail_view": 4})},
+		{Env: "wechat", Counts: counts(map[string]int64{"detail_view": 10, "join_click": 5, "join_ok": 4, "push_prompt": 4, "push_ok": 1})},
+	})
+	out := b.String()
+	for _, want := range []string{"漏斗", "wechat", "50%", "80%", "25%"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("缺少 %q：\n%s", want, out)
+		}
+	}
+	// 分母为 0 的转化率打 -，不是 NaN。
+	if !strings.Contains(out, "-") || strings.Contains(out, "NaN") {
+		t.Errorf("分母为 0 应打印 -：\n%s", out)
+	}
+	b.Reset()
+	printFunnels(&b, nil)
+	if b.Len() != 0 {
+		t.Errorf("没有埋点时不打印漏斗：%q", b.String())
 	}
 }
