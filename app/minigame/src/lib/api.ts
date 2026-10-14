@@ -1,0 +1,268 @@
+// 后端接口（和 app/h5/src/api.ts 同一套 JSON API），走 wx.request + Authorization: Bearer（#84）。
+// H5 那边的三条约定这里同样要守：
+//   1. 会改数据的请求一律带 Content-Type: application/json，没有请求体也带；
+//   2. 每次「提交」一个新的 Idempotency-Key；
+//   3. 修改牌局带 If-Match: <version>，409 时响应体里有最新数据。
+
+import type {
+  ClaimTicket,
+  CreateGameInput,
+  Friend,
+  GameDetail,
+  GameListFilter,
+  GamePatch,
+  GameSummary,
+  GroupInfo,
+  InviteResult,
+  MeResponse,
+  UserRef,
+} from "../../../h5/src/api";
+
+export type {
+  ClaimTicket,
+  CreateGameInput,
+  Device,
+  Friend,
+  GameDetail,
+  GamePatch,
+  GameSummary,
+  GroupInfo,
+  InviteResult,
+  MeResponse,
+  Seat,
+  UserRef,
+  WaitEntry,
+} from "../../../h5/src/api";
+
+export const API_BASE = __API_BASE__;
+
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+    readonly body: any = null,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+  get isVersionConflict(): boolean {
+    return this.status === 409 && this.code === "version_conflict";
+  }
+  get isClosed(): boolean {
+    return this.status === 409 && this.code === "game_closed";
+  }
+  get field(): string {
+    const f = this.body?.error?.field;
+    return typeof f === "string" ? f : "";
+  }
+}
+
+// ── 凭证：device_token 存在本地存储里，只在请求头里出现 ──
+
+const TOKEN_KEY = "gd_device_token";
+let token: string = (() => {
+  try {
+    return wx.getStorageSync(TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+})();
+const unauthorizedListeners = new Set<() => void>();
+
+export function getToken(): string {
+  return token;
+}
+export function setToken(t: string): void {
+  token = t;
+  if (t) wx.setStorageSync(TOKEN_KEY, t);
+  else {
+    try {
+      wx.removeStorageSync(TOKEN_KEY);
+    } catch {
+      // ignore
+    }
+  }
+}
+/** 服务端说凭证无效（401）：设备被退掉、注销了。 */
+export function onUnauthorized(fn: () => void): () => void {
+  unauthorizedListeners.add(fn);
+  return () => unauthorizedListeners.delete(fn);
+}
+
+// ── 503 自动重试一次（§12.3），按钮据此显示「人有点多，正在重试…」──
+
+let retrying = false;
+const retryListeners = new Set<(v: boolean) => void>();
+export function subscribeRetry(fn: (v: boolean) => void): () => void {
+  retryListeners.add(fn);
+  fn(retrying);
+  return () => retryListeners.delete(fn);
+}
+export function isRetrying(): boolean {
+  return retrying;
+}
+function setRetrying(v: boolean) {
+  if (retrying === v) return;
+  retrying = v;
+  retryListeners.forEach((fn) => fn(v));
+}
+
+interface RawResponse {
+  status: number;
+  data: any;
+  header: Record<string, string>;
+}
+
+function send(method: string, path: string, body: unknown, headers: Record<string, string>): Promise<RawResponse> {
+  return new Promise((resolve, reject) => {
+    wx.request({
+      url: API_BASE + path,
+      method,
+      header: headers,
+      data: body === undefined ? undefined : JSON.stringify(body),
+      dataType: "text",
+      responseType: "text",
+      timeout: 15000,
+      success: (res: any) => resolve({ status: res.statusCode, data: res.data, header: res.header || {} }),
+      fail: (err: any) => reject(new ApiError(0, "network", "网络不通，稍后再试", err)),
+    });
+  });
+}
+
+function retryAfterMs(h: Record<string, string>): number {
+  const raw = h["Retry-After"] ?? h["retry-after"];
+  const s = raw ? Number(raw) : NaN;
+  return !Number.isFinite(s) || s <= 0 ? 1000 : Math.min(s, 10) * 1000;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export async function request<T>(method: string, path: string, opts: { body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
+  const headers: Record<string, string> = { ...opts.headers };
+  if (method !== "GET") headers["content-type"] = "application/json";
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  let resp = await send(method, path, opts.body, headers);
+  if (resp.status === 503 && method !== "GET") {
+    setRetrying(true);
+    try {
+      await sleep(retryAfterMs(resp.header));
+      resp = await send(method, path, opts.body, headers);
+    } finally {
+      setRetrying(false);
+    }
+  }
+  let parsed: any = null;
+  if (typeof resp.data === "string" && resp.data) {
+    try {
+      parsed = JSON.parse(resp.data);
+    } catch {
+      parsed = null;
+    }
+  } else if (resp.data && typeof resp.data === "object") parsed = resp.data;
+
+  if (resp.status < 200 || resp.status >= 300) {
+    const e = parsed?.error ?? {};
+    if (resp.status === 401 && token) unauthorizedListeners.forEach((fn) => fn());
+    throw new ApiError(resp.status, e.code ?? "unknown", e.message ?? "请求失败", parsed);
+  }
+  return parsed as T;
+}
+
+export function newIdempotencyKey(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+const enc = encodeURIComponent;
+
+// ── 小游戏登录（#84）──
+
+export interface WxLoginResponse {
+  user?: UserRef;
+  device_token?: string;
+  device_id?: string;
+  need_nickname?: boolean;
+}
+export function wxLogin(code: string, nickname?: string): Promise<WxLoginResponse> {
+  return request("POST", "/api/wx/login", { body: nickname ? { code, nickname } : { code } });
+}
+/** 凭 H5 上拿到的 6 位认领码，把这个微信身份接到网页上的那个人身上。 */
+export function wxLink(code: string, wxCode: string, confirm = false): Promise<WxLoginResponse> {
+  return request("POST", "/api/wx/link", { body: confirm ? { code, wx_code: wxCode, confirm: true } : { code, wx_code: wxCode } });
+}
+
+// ── 牌局 ──
+
+export async function listGames(f: GameListFilter = {}): Promise<GameSummary[]> {
+  const q: string[] = [];
+  if (f.area) q.push(`area=${enc(f.area)}`);
+  if (f.day) q.push(`day=${enc(f.day)}`);
+  const body = await request<{ games: GameSummary[] }>("GET", `/api/games${q.length ? "?" + q.join("&") : ""}`);
+  return body?.games ?? [];
+}
+export const getGame = (code: string) => request<GameDetail>("GET", `/api/games/${enc(code)}`);
+export const createGame = (input: CreateGameInput, key: string) =>
+  request<GameDetail>("POST", "/api/games", { body: input, headers: { "Idempotency-Key": key } });
+export const joinGame = (code: string) => request<GameDetail>("POST", `/api/games/${enc(code)}/seat`);
+export const leaveGame = (code: string) => request<GameDetail>("DELETE", `/api/games/${enc(code)}/seat`);
+export const kickPlayer = (code: string, userID: string) =>
+  request<GameDetail>("POST", `/api/games/${enc(code)}/kick`, { body: { user_id: userID } });
+export const cancelGame = (code: string) => request<{ status: string }>("POST", `/api/games/${enc(code)}/cancel`);
+export const updateGame = (code: string, patch: GamePatch, version: number) =>
+  request<GameDetail>("PATCH", `/api/games/${enc(code)}`, { body: patch, headers: { "If-Match": String(version) } });
+
+// ── 身份 ──
+
+export const getMe = () => request<MeResponse>("GET", "/api/me");
+export const signOutDevice = (id: string) => request<void>("DELETE", `/api/me/devices/${enc(id)}`);
+export const deleteMe = () => request<void>("DELETE", "/api/me");
+export const issueClaim = () => request<ClaimTicket>("POST", "/api/claim");
+export const setWaPhone = (phone: string) => request<{ wa_phone: string }>("PUT", "/api/me/wa", { body: { phone } });
+export const clearWaPhone = () => request<void>("DELETE", "/api/me/wa");
+
+export async function signOutOtherDevices(): Promise<number> {
+  const me = await getMe();
+  const others = me.devices.filter((d) => d.id !== me.device_id);
+  for (const d of others) await signOutDevice(d.id);
+  return others.length;
+}
+
+// ── 牌友 ──
+
+export async function listFriends(): Promise<Friend[]> {
+  const body = await request<{ friends: Friend[] }>("GET", "/api/friends");
+  return body?.friends ?? [];
+}
+export const setStar = (userID: string, starred: boolean) =>
+  request<void>(starred ? "PUT" : "DELETE", `/api/follows/${enc(userID)}`);
+
+export async function getGroupInfo(): Promise<GroupInfo> {
+  const body = await request<{ group?: Partial<GroupInfo> }>("GET", "/api/config");
+  return { wechat_id: body?.group?.wechat_id ?? "", whatsapp_group_url: body?.group?.whatsapp_group_url ?? "" };
+}
+
+export async function inviteFriends(code: string, userIDs: string[]): Promise<InviteResult> {
+  const body = await request<Partial<InviteResult>>("POST", `/api/games/${enc(code)}/invites`, { body: { user_ids: userIDs } });
+  return { invited: body?.invited ?? [], skipped: body?.skipped ?? [] };
+}
+
+export function inviteSummary(r: InviteResult): string {
+  if (r.invited.length === 0) return "他们都已经在局里或邀请过了";
+  const base = `已邀请 ${r.invited.length} 位牌友，他们会收到通知`;
+  return r.skipped.length > 0 ? `${base}（${r.skipped.length} 位已在局里或邀请过）` : base;
+}
+
+export function inviteError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === "quota_exceeded") return "今天邀请太多了，明天再试";
+    if (err.code === "not_friend") return "有人不在你的牌友里了，刷新一下再选";
+    if (err.code === "game_closed") return "这一局已经结束或取消了";
+    if (err.code === "not_host") return "只有局头能邀请";
+  }
+  return "邀请没发出去，稍后再试";
+}
+
+// ── 页面链接（分享话术、日历、海报都指向 H5 站点）──
+
+export const shareURL = (code: string) => `${API_BASE}/g/${enc(code)}`;
+export const posterURL = (code: string, version: number) => `${API_BASE}/g/${enc(code)}/poster.png?v=${version}`;
