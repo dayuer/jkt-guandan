@@ -141,9 +141,14 @@ test("报名占座：座位更新成「我」，之后有「加入日历」", as
   await expect(page.locator(".disc.me")).toHaveCount(1);
   await expect(page.locator(".disc.empty")).toHaveCount(2);
 
-  // 报上名会先问一句要不要加日历（#6），关掉之后详情页上也有入口。
+  // 报上名先弹报名成功弹层（B4–B6，#10）问要不要提醒；从那里点「加到日历」进日历弹层（#6）。
+  const joined = page.getByTestId("joined-sheet");
+  await expect(joined).toContainText("占上了");
+  await expect(joined.getByRole("button", { name: "加到日历" })).toBeVisible();
+  await joined.getByRole("button", { name: "加到日历" }).click();
+  await expect(joined).toHaveCount(0);
+
   const sheet = page.getByTestId("calendar-sheet");
-  await expect(sheet).toContainText("占上了");
   await expect(sheet.getByTestId("calendar-ics")).toHaveAttribute("href", `/g/${code}/game.ics`);
   await sheet.getByRole("button", { name: "先不用" }).click();
   await expect(sheet).toHaveCount(0);

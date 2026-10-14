@@ -153,9 +153,25 @@ export async function hasPushSubscription(): Promise<boolean> {
   }
 }
 
-/** 注册并等 Service Worker 就绪（第一次要等它装上）。 */
-export async function serviceWorker(): Promise<ServiceWorkerRegistration> {
-  return navigator.serviceWorker.ready;
+/** 等 Service Worker 就绪最多这么久。 */
+export const SW_READY_TIMEOUT_MS = 5000;
+
+/**
+ * 等 Service Worker 就绪（第一次要等它装上）。
+ *
+ * `ready` 在注册失败时永远不会 resolve（Firefox 隐私模式、存储被禁时 `serviceWorker`
+ * 对象在，但 `register` 会抛错），不加超时的话「提醒我」会一直转圈（#63 审查建议 1）。
+ */
+export async function serviceWorker(timeoutMs: number = SW_READY_TIMEOUT_MS): Promise<ServiceWorkerRegistration> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("Service Worker 没有就绪")), timeoutMs);
+  });
+  try {
+    return await Promise.race([navigator.serviceWorker.ready, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

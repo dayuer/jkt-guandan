@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  SW_READY_TIMEOUT_MS,
+  hasPushSubscription,
   inAppBrowser,
   isIOS,
   isStandalone,
   pushSupport,
+  serviceWorker,
   subscribeToPush,
   unsubscribeFromPush,
   urlBase64ToUint8Array,
@@ -233,5 +236,27 @@ describe("VAPID 公钥解码", () => {
     expect([...urlBase64ToUint8Array("aGVsbG8")]).toEqual([...new TextEncoder().encode("hello")]);
     // 带上 - 和 _ 的那几个字节。
     expect([...urlBase64ToUint8Array("-_8")]).toEqual([251, 255]);
+  });
+});
+
+describe("等 Service Worker 就绪（#63 审查建议 1）", () => {
+  it("ready 永远不 resolve 时按超时失败，订阅返回 failed 而不是一直转圈", async () => {
+    const requestPermission = vi.fn(async () => "granted" as NotificationPermission);
+    vi.stubGlobal("navigator", { serviceWorker: { ready: new Promise(() => {}) } });
+    vi.stubGlobal("window", { PushManager: function () {}, Notification: { requestPermission } });
+    vi.stubGlobal("Notification", { requestPermission, permission: "default" });
+
+    await expect(serviceWorker(10)).rejects.toThrow();
+    vi.useFakeTimers();
+    try {
+      const pending = subscribeToPush();
+      await vi.advanceTimersByTimeAsync(SW_READY_TIMEOUT_MS + 1);
+      expect((await pending).kind).toBe("failed");
+      const has = hasPushSubscription();
+      await vi.advanceTimersByTimeAsync(SW_READY_TIMEOUT_MS + 1);
+      expect(await has).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

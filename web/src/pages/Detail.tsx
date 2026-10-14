@@ -13,6 +13,8 @@ import {
   type UserRef,
 } from "../api";
 import { CalendarSheet } from "../components/CalendarSheet";
+import { JoinedSheet } from "../components/JoinedSheet";
+import { PushGuide } from "../components/PushGuide";
 import { ShareSheet } from "../components/ShareSheet";
 import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
@@ -65,8 +67,12 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   useEffect(() => {
     if (realtimeStatus !== "online") setViewers(0);
   }, [realtimeStatus]);
-  /** 「加入日历」弹层：手动点开的，或刚报上名时自动弹的（#6）。 */
-  const [calendar, setCalendar] = useState<"manual" | "joined" | null>(null);
+  /** 「加入日历」弹层（#6）。 */
+  const [calendar, setCalendar] = useState(false);
+  /** 刚报上名：报名成功弹层，问要不要提醒（B4–B6，#10）。 */
+  const [joinedOpen, setJoinedOpen] = useState(false);
+  /** 「提醒我」在收不到推送的环境里点下去：跳出 / 加主屏幕引导屏（H1 / H2，#70）。 */
+  const [guide, setGuide] = useState(false);
   const retrying = useRetrying();
   // 操作栏在窄屏上会换行（局头有四颗按钮），高度要量出来（#75）。
   const actionBar = useBarHeight<HTMLDivElement>();
@@ -147,14 +153,14 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
       if (!identity) return;
       // 拿到身份后接着报名：cookie 已经在浏览器里了。
     }
-    // 报上名之后顺手问一句要不要加日历（#6）。候补没有确定的座位，不问。
+    // 报上名之后问一句要不要提醒（方案 §3）。候补没有确定的座位，不问。
     let seated = false;
     const ok = await run(async () => {
       const next = await joinGame(code);
       seated = next.me.role === "seat";
       return next;
     });
-    if (ok && seated) setCalendar("joined");
+    if (ok && seated) setJoinedOpen(true);
   };
 
   // ── 局头改牌局（K4 / K5 / K6）────────────────────────────────────────────
@@ -332,7 +338,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         </div>
 
         {myRole.role === "seat" && !closed && (
-          <button class="btn ghost cal-entry" onClick={() => setCalendar("manual")}>
+          <button class="btn ghost cal-entry" onClick={() => setCalendar(true)}>
             📅 加入日历
           </button>
         )}
@@ -384,7 +390,34 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         />
       )}
 
-      {calendar && <CalendarSheet code={code} justJoined={calendar === "joined"} onClose={() => setCalendar(null)} />}
+      {joinedOpen && (
+        <JoinedSheet
+          detail={detail}
+          meID={me?.id}
+          toast={toast}
+          onCalendar={() => {
+            setJoinedOpen(false);
+            setCalendar(true);
+          }}
+          onGuide={() => setGuide(true)}
+          onClose={() => setJoinedOpen(false)}
+        />
+      )}
+
+      {/* 微信 / WhatsApp 等内置浏览器 → H1，iOS Safari 标签页 → H2，盖在报名成功弹层上（#70）。 */}
+      {guide && (
+        <PushGuide
+          signedIn={!!me}
+          onCalendar={() => {
+            setGuide(false);
+            setJoinedOpen(false);
+            setCalendar(true);
+          }}
+          onClose={() => setGuide(false)}
+        />
+      )}
+
+      {calendar && <CalendarSheet code={code} onClose={() => setCalendar(false)} />}
 
       {shareOpen && <ShareSheet detail={detail} toast={toast} onClose={() => setShareOpen(false)} />}
 

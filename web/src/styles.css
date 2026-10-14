@@ -1579,3 +1579,78 @@ a.btn {
   color: var(--red);
   margin-top: var(--s1);
 }
+
+/* 11 · 报名成功弹层（设计稿 B4 / B5 / B6） */
+.sheet.joined h3 {
+  text-align: center;
+  margin-top: var(--s3);
+}
+
+.sheet.joined .check {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto;
+  border-radius: 50%;
+  background: var(--red);
+  color: var(--cream);
+  display: grid;
+  place-items: center;
+  font-size: var(--fs-h2);
+  font-weight: 700;
+  box-shadow: 0 0 0 10px var(--red-tint);
+}
+
+.sheet.joined .mini {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  margin-top: var(--s4);
+  padding: 14px var(--s4);
+  border-radius: var(--r-16);
+  background: var(--cream);
+  border: 1px solid var(--line);
+}
+
+.sheet.joined .mini-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.sheet.joined .mini .w {
+  font-size: var(--fs-h3);
+}
+
+.sheet.joined .mini .v {
+  color: var(--ink-3);
+  font-size: var(--fs-13);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.sheet.joined .dots {
+  align-items: center;
+  flex: none;
+}
+
+.sheet.joined .dots i.me {
+  background: var(--gold);
+}
+
+.sheet.joined .count {
+  color: var(--red);
+  margin-left: var(--s1);
+  font-size: var(--fs-h3);
+}
+
+.sheet.joined .ask {
+  text-align: center;
+  font-weight: 700;
+  margin-top: var(--s5);
+}
+
+.sheet.joined .ask-sub {
+  text-align: center;
+  color: var(--ink-3);
+  font-size: var(--fs-13);
+  margin-top: var(--s1);
+}

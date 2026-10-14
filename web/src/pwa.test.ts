@@ -62,6 +62,14 @@ describe("manifest 和 iOS 的元数据", () => {
     expect(html).not.toMatch(/href="[^"]*\.webmanifest"/);
   });
 
+  it("theme-color 和 manifest 的 theme_color 同值（#63 审查建议 4）", () => {
+    // 不一致时，安卓 standalone 的状态栏颜色会随「从哪儿打开」变来变去。
+    const meta = /name="theme-color"\s+content="([^"]+)"/.exec(html)?.[1];
+    expect(meta?.toLowerCase()).toBe(String(manifest.theme_color).toLowerCase());
+    // 启动画面也用同一个页面底色，免得打开时闪一下（#80 预审建议 2）。
+    expect(String(manifest.background_color).toLowerCase()).toBe(meta?.toLowerCase());
+  });
+
   it("manifest.json 里引用的图标文件都在", () => {
     for (const icon of manifest.icons) {
       expect(() => read("public" + icon.src)).not.toThrow();
@@ -88,7 +96,10 @@ describe("推送内容的格式（和 #48 的约定）", () => {
  * sw.js 里没有一行会被 TypeScript 检查（它不在模块图里），所以真正的保证是拿假事件
  * 把它跑一遍。这里把 sw.js 当函数执行，注入一个假的 self，然后自己触发 push。
  */
-function runServiceWorker() {
+function runServiceWorker(
+  windows?: { url: string; navigate?: (url: string) => Promise<unknown> }[],
+  onFocus?: () => void,
+) {
   const listeners: Record<string, ((ev: unknown) => void)[]> = {};
   const shown: { title: string; options: Record<string, unknown> }[] = [];
   const opened: string[] = [];
@@ -106,12 +117,14 @@ function runServiceWorker() {
       },
     },
     clients: {
-      matchAll: async () => [
-        {
-          url: "https://guandan.id/",
-          focus: async () => focused.push("/"),
-        },
-      ],
+      matchAll: async () =>
+        (windows ?? [{ url: "https://guandan.id/" }]).map((w) => ({
+          ...w,
+          focus: async () => {
+            onFocus?.();
+            focused.push(new URL(w.url).pathname);
+          },
+        })),
       openWindow: async (url: string) => {
         opened.push(url);
       },
@@ -174,5 +187,60 @@ describe("把推送显示成通知（用假事件真跑一遍 sw.js）", () => {
     };
     await (listeners.notificationclick[0](event) as unknown as Promise<void>);
     expect(opened).toEqual(["/g/SEED01"]);
+  });
+
+  // notificationclick 的处理函数不返回 promise，要等 waitUntil 里的那个。
+  let pending: Promise<unknown> = Promise.resolve();
+  const click = (url: string) => ({
+    notification: { close: () => {}, data: { url } },
+    waitUntil: (p: Promise<unknown>) => {
+      pending = p;
+    },
+  });
+
+  it("已有窗口停在别的页面：让它跳过去，不再开新窗口（#63 审查建议 2）", async () => {
+    const navigated: string[] = [];
+    const order: string[] = [];
+    const { listeners, opened, focused } = runServiceWorker(
+      [
+        {
+          url: "https://guandan.id/",
+          navigate: async (url) => {
+            order.push("navigate");
+            navigated.push(url);
+            return null;
+          },
+        },
+      ],
+      () => order.push("focus"),
+    );
+    listeners.notificationclick[0](click("/g/SEED01?from=push#seat"));
+    await pending;
+    expect(navigated).toEqual(["/g/SEED01?from=push#seat"]);
+    expect(opened).toEqual([]);
+    expect(focused).toEqual(["/"]);
+    expect(order).toEqual(["focus", "navigate"]);
+  });
+
+  it("已经在那个局上：只聚焦", async () => {
+    const { listeners, opened, focused } = runServiceWorker([{ url: "https://guandan.id/g/SEED01" }]);
+    listeners.notificationclick[0](click("/g/SEED01"));
+    await pending;
+    expect(focused).toEqual(["/g/SEED01"]);
+    expect(opened).toEqual([]);
+  });
+
+  it("navigate 失败（窗口不受控）就新开；外链只取站内路径", async () => {
+    const { listeners, opened } = runServiceWorker([
+      {
+        url: "https://guandan.id/",
+        navigate: async () => {
+          throw new TypeError("not controlled");
+        },
+      },
+    ]);
+    listeners.notificationclick[0](click("https://evil.com/g/X1?a=1"));
+    await pending;
+    expect(opened).toEqual(["/g/X1?a=1"]);
   });
 });
