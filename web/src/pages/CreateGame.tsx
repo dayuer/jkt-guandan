@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, createGame, newIdempotencyKey, type UserRef } from "../api";
-import { slashDate, timeHM, weekday } from "../format";
+import { dayShort, slashDate, timeHM, weekday } from "../format";
 import type { FormPrefill } from "./Agent";
 import { useRetrying } from "../useRetrying";
 
@@ -22,10 +22,20 @@ function commonTime(offsetDays: number): { label: string; unix: number } {
   return { label: `${prefix} ${weekday(unix)} 19:30`, unix };
 }
 
+/**
+ * 蛋蛋草稿里的时间，写法和旁边的常用时间对齐：「明天 周四 20:00」；
+ * 不是今明两天才写日期「10/17 周六 20:00」（#69 复审建议 2）。
+ */
+export function draftTimeLabel(startsAt: number, now: number = Math.floor(Date.now() / 1000)): string {
+  const day = dayShort(startsAt, now);
+  const prefix = day === "今天" || day === "明天" ? day : slashDate(startsAt);
+  return `${prefix} ${weekday(startsAt)} ${timeHM(startsAt)}`;
+}
+
 /** 蛋蛋给的时间不在三个常用时间里时，加成第一个选项并选中。 */
 function withDraftTime(presets: { label: string; unix: number }[], startsAt?: number) {
   if (!startsAt || presets.some((p) => p.unix === startsAt)) return presets;
-  return [{ label: `${slashDate(startsAt)} ${weekday(startsAt)} ${timeHM(startsAt)}`, unix: startsAt }, ...presets];
+  return [{ label: draftTimeLabel(startsAt), unix: startsAt }, ...presets];
 }
 
 interface Props {
