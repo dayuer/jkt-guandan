@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dayuer/jkt-guandan/internal/games"
+	"github.com/dayuer/jkt-guandan/internal/textclean"
 )
 
 // Page 是带 OG 标签的 /g/{code} 页面（§5.4）。
@@ -71,6 +72,9 @@ type OGData struct {
 // OGFor 生成一局的预览内容。now 用来判断「今天」「明天」。
 func OGFor(d *games.Detail, publicURL string, now time.Time) OGData {
 	g := d.Game
+	// 渲染时再清一遍：修复前入库的旧数据里可能已有零宽和 BiDi 字符。
+	g.Venue, g.Note = textclean.Clean(g.Venue), textclean.Clean(g.Note)
+	hostName := textclean.Clean(d.HostName)
 	base := strings.TrimSuffix(publicURL, "/") + "/g/" + g.ShortCode
 	title := "掼蛋局 · " + dayLabel(g.StartsAt, now) + " " + g.StartsAt.In(Jakarta).Format("15:04") + " · " + g.Venue
 	var status string
@@ -85,7 +89,7 @@ func OGFor(d *games.Detail, publicURL string, now time.Time) OGData {
 	default:
 		status = fmt.Sprintf("还差 %d 人，点开占座", d.Missing)
 	}
-	desc := status + " · 局头 " + d.HostName
+	desc := status + " · 局头 " + hostName
 	if g.Note != "" {
 		desc += " · " + g.Note
 	}

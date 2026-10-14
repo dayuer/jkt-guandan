@@ -249,3 +249,37 @@ func TestOGPageClaimHasNoReferrer(t *testing.T) {
 		}
 	}
 }
+
+// 修复前入库的旧数据可能带 BiDi / 零宽字符，渲染时要再清一遍。
+func TestOGPageStripsLegacyBidiChars(t *testing.T) {
+	srv, st, _ := setupPages(t)
+	exec(t, st, `UPDATE games SET venue = ?, note = ? WHERE short_code = 'SEED01'`,
+		"\u202eecalP\u200b Cificap\u202c", "\u2066备注\u2069\u200f")
+	exec(t, st, `UPDATE users SET nickname = ? WHERE id = 'seed-laowang'`, "\u202e老\u200b王")
+
+	_, body := get(t, srv, "/g/SEED01")
+	for _, bad := range []string{"\u202e", "\u202c", "\u200b", "\u2066", "\u2069", "\u200f"} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("OG 页面里还有 %U", []rune(bad)[0])
+		}
+	}
+	for _, want := range []string{"ecalP Cificap", "备注", "局头 老王"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("缺少 %q：\n%s", want, body)
+		}
+	}
+	// 海报和 OG 图的卡片文字同样先清理。
+	d, err := games.NewService(st, clock.NewFake(time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)), nil).Get(context.Background(), "SEED01", "")
+	if err != nil {
+		t.Fatalf("取不到详情：%v", err)
+	}
+	card := share.CardFor(d, "https://guandan.synon.ai", time.Now())
+	if strings.ContainsRune(card.Venue, '\u202e') || strings.ContainsRune(card.Venue, '\u200b') {
+		t.Fatalf("卡片地点没清理：%q", card.Venue)
+	}
+	for _, s := range card.Seats {
+		if strings.ContainsAny(s, "\u202e\u200b") {
+			t.Fatalf("卡片称呼没清理：%q", s)
+		}
+	}
+}
