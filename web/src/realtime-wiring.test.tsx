@@ -292,3 +292,40 @@ describe("useRealtime 的 presence", () => {
     expect(viewers).toEqual([["game:8K2QXM", 3]]);
   });
 });
+
+// #46 前端：原型 R1 的「👀 N 人正在看」。
+describe("详情页的「N 人正在看」", () => {
+  beforeEach(() => {
+    installFakeSocket();
+  });
+  afterEach(() => {
+    document.body.innerHTML = "";
+    vi.unstubAllGlobals();
+  });
+
+  it("多于 1 人在看时显示，回落到 1 人（只剩自己）就藏起来", async () => {
+    const { container } = await renderDetail(detail(oneSeat));
+    await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+    const pill = () => container.querySelector("[data-testid=viewers]");
+    expect(pill()).toBeNull();
+
+    const socket = lastSocket();
+    socket.open();
+    socket.receive({ topic: "game:8K2QXM", type: "presence", data: { viewers: 3 } });
+    await vi.waitFor(() => expect(pill()?.textContent).toBe("👀 3 人正在看"));
+
+    socket.receive({ topic: "game:8K2QXM", type: "presence", data: { viewers: 1 } });
+    await vi.waitFor(() => expect(pill()).toBeNull());
+  });
+
+  it("别的局的 presence 不算到这一局头上", async () => {
+    const { container } = await renderDetail(detail(oneSeat));
+    await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
+
+    const socket = lastSocket();
+    socket.open();
+    socket.receive({ topic: "game:OTHER1", type: "presence", data: { viewers: 5 } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(container.querySelector("[data-testid=viewers]")).toBeNull();
+  });
+});

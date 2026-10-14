@@ -54,6 +54,8 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   const [kickTarget, setKickTarget] = useState<Seat | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  /** 这一局现在有几台设备在看（含自己，#46 / 原型 R1）。 */
+  const [viewers, setViewers] = useState(0);
   /** 「加入日历」弹层：手动点开的，或刚报上名时自动弹的（#6）。 */
   const [calendar, setCalendar] = useState<"manual" | "joined" | null>(null);
   const retrying = useRetrying();
@@ -80,6 +82,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   // 不然会停在上一个局的分享面板上。
   useEffect(() => {
     setShareOpen(false);
+    setViewers(0);
   }, [code]);
 
   // 这一局的实时（#49）：座位有人坐上、有人退出、局头改了时间……服务端都发到 game:{code} 上，
@@ -89,6 +92,10 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
     topics: [`game:${code}`],
     poll: true,
     onEvent: () => void load(),
+    // 「👀 N 人正在看」：只认这一局的主题，从别的局跳过来时不会串。
+    onPresence: (topic, n) => {
+      if (topic === `game:${code}`) setViewers(n);
+    },
     refresh: () => void load(),
   });
 
@@ -281,6 +288,12 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
               候补 {w.position} · {w.user.nickname}
             </span>
           ))}
+          {/* 原型 R1：和名字同一排的普通胶囊。人数含自己，只有自己在看时不显示。 */}
+          {viewers > 1 && !closed && (
+            <span class="chip" data-testid="viewers">
+              👀 {viewers} 人正在看
+            </span>
+          )}
         </div>
 
         <div class="info">
