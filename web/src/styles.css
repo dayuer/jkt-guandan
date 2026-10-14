@@ -682,15 +682,16 @@ a.btn {
   overflow-y: auto;
 }
 
+/* C1 里海报约占面板一半宽；3:4 竖版，和服务端渲染的海报同比例。 */
 .poster-frame {
-  margin: var(--s4) auto 0;
-  width: 270px;
+  margin: var(--s2) auto 0;
+  width: 188px;
 }
 
 .poster {
   display: block;
-  width: 270px;
-  height: 360px;
+  width: 188px;
+  height: 250px;
   object-fit: cover;
   border-radius: var(--r-lg);
   border: 1px solid var(--line);
@@ -724,14 +725,15 @@ a.btn {
   font-size: var(--fs-small);
 }
 
+/* C1：出口铺满整行、等分；不支持系统分享只有三个出口时也一样。 */
 .outlets {
   display: flex;
-  justify-content: center;
-  gap: 18px;
   margin-top: var(--s4);
 }
 
 .outlet {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -752,12 +754,10 @@ a.btn {
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  background: var(--red-tint);
+  background: var(--beige);
   color: var(--red);
-  font-size: 20px;
 }
 
-/* WhatsApp 用它自己的绿，别用我们的红。 */
 /* WhatsApp 用它自己的品牌绿，图标反白——令牌里有 --whatsapp，别写死颜色。 */
 .outlet .ico.wa {
   background: var(--whatsapp);
@@ -776,6 +776,11 @@ a.btn {
   text-align: left;
 }
 
+/* 「取消」是整行的 soft 按钮（C1），和话术框隔开一点。 */
+.sheet.share .cancel {
+  margin-top: var(--s3);
+}
+
 .script p {
   flex: 1;
   color: var(--ink-2);
@@ -788,8 +793,9 @@ a.btn {
 .btn.small {
   flex: none;
   width: auto;
+  height: 36px;
   min-height: 0;
-  padding: 10px 16px;
+  padding: 0 16px;
   font-size: var(--fs-13);
   white-space: nowrap;
 }
