@@ -1,0 +1,16 @@
+{
+  "name": "随时掼掼蛋",
+  "short_name": "掼蛋",
+  "description": "找人凑一桌，就差你一个",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#B3352C",
+  "background_color": "#FFF7EC",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
+  ]
+}
