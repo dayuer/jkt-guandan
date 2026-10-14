@@ -16,7 +16,7 @@ SRC=${1:?"用法：scripts/fonts/subset.sh <原始字体目录>"}
 DIR=$(cd "$(dirname "$0")" && pwd)
 OUT="$DIR/../../internal/share/fonts"
 
-# 原始字体的 sha256（notofonts/noto-cjk@$UPSTREAM）
+echo "核对原始字体（notofonts/noto-cjk@$UPSTREAM）的 sha256"
 (cd "$SRC" && shasum -a 256 -c - <<SUMS
 c6cb5a93abaa9edc8ee7463b7ebb7f42d618d40e6ed2f7a5371c97b0b64767c0  NotoSansSC-Bold.otf
 91dde57622845beeb663f300813999febdb7fcd5e451bde199d7c954a9740cb4  NotoSerifSC-Black.otf
