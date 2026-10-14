@@ -906,7 +906,8 @@ a.btn {
 /* 命中敏感词的那个输入框（原型 X1）：边框和底色变红，提示就在它下面，
    用户已经写好的内容一个字都不动。 */
 .field input.err,
-.field textarea.err {
+.field textarea.err,
+.sheet input.err {
   border-color: var(--red);
   background: var(--red-tint);
 }

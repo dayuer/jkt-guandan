@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/dayuer/jkt-guandan/server/internal/moderate"
 	"github.com/dayuer/jkt-guandan/server/internal/route"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
@@ -71,6 +72,9 @@ func (h *handler) createMe(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, ErrNicknameInvalid):
 		writeError(w, http.StatusBadRequest, "nickname_invalid", "称呼需要 1–12 个字符")
+		return
+	case errors.Is(err, moderate.ErrSensitive):
+		writeSensitive(w, err)
 		return
 	case err != nil:
 		writeServiceError(w, "创建身份失败", err)
@@ -326,6 +330,23 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 // writeError 用统一的错误格式：{"error":{"code":"…","message":"…"}}（§6）。
+// writeSensitive 写敏感词命中的响应，格式和牌局的地点、备注完全一样（games 包的 writeGameError，§14）：
+// 422 sensitive_word，带上字段名，前端把提示放在对应输入框下面，不清空用户已经写好的内容。
+func writeSensitive(w http.ResponseWriter, err error) {
+	field := "nickname"
+	var hit *moderate.Hit
+	if errors.As(err, &hit) {
+		field = hit.Field
+	}
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+		"error": map[string]any{
+			"code":    "sensitive_word",
+			"message": "请勿涉及金钱：这里只约纯娱乐局",
+			"field":   field,
+		},
+	})
+}
+
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]any{
 		"error": ErrorBody{Code: code, Message: message},

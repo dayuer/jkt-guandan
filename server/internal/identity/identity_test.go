@@ -19,6 +19,7 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/config"
 	"github.com/dayuer/jkt-guandan/server/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/server/internal/identity"
+	"github.com/dayuer/jkt-guandan/server/internal/moderate"
 	"github.com/dayuer/jkt-guandan/server/internal/realtime"
 	"github.com/dayuer/jkt-guandan/server/internal/route"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
@@ -383,6 +384,50 @@ func TestCreateIdentityRejectsBadNickname(t *testing.T) {
 		if resp.status != http.StatusBadRequest || resp.errCode() != "nickname_invalid" {
 			t.Fatalf("称呼 %q 应当被拒绝，实际 %d %s", bad, resp.status, resp.raw)
 		}
+	}
+}
+
+// errField 取错误体里的 field（sensitive_word 用它告诉前端是哪个输入框）。
+func (r response) errField() string {
+	e, _ := r.body["error"].(map[string]any)
+	c, _ := e["field"].(string)
+	return c
+}
+
+// #147：称呼和地点、备注过同一套敏感词表，命中返回 422 sensitive_word + field=nickname，不建身份。
+func TestCreateIdentityRejectsSensitiveNickname(t *testing.T) {
+	f := newFixture(t, false)
+
+	for _, bad := range []string{"judi 50rb", "赌神", "賭神", "赌 王", "Ｊｕｄｉ"} {
+		resp := f.do(http.MethodPost, "/api/me", map[string]string{"nickname": bad})
+		if resp.status != http.StatusUnprocessableEntity || resp.errCode() != "sensitive_word" || resp.errField() != "nickname" {
+			t.Fatalf("称呼 %q 应当 422 sensitive_word field=nickname，实际 %d %s", bad, resp.status, resp.raw)
+		}
+		if resp.header.Get("Set-Cookie") != "" {
+			t.Fatalf("称呼 %q 被拒时不能下发设备凭证", bad)
+		}
+	}
+	if n := f.countRows(`SELECT count(*) FROM users`); n != 0 {
+		t.Fatalf("被拒时不能建用户，实际 %d 个", n)
+	}
+	// 正常称呼不受影响（拉丁词按整词比：Betty 不命中 bet）。
+	for _, ok := range []string{"老王", "Betty", "Bandar 阿强"} {
+		if resp := f.do(http.MethodPost, "/api/me", map[string]string{"nickname": ok}); resp.status != http.StatusOK {
+			t.Fatalf("称呼 %q 应当通过，实际 %d %s", ok, resp.status, resp.raw)
+		}
+		f.http = f.newBrowser()
+	}
+}
+
+func TestNormalizeNicknameSensitive(t *testing.T) {
+	_, err := identity.NormalizeNickname("  judi  ")
+	var hit *moderate.Hit
+	if !errors.Is(err, moderate.ErrSensitive) || !errors.As(err, &hit) || hit.Field != "nickname" {
+		t.Fatalf("应返回 field=nickname 的敏感词错误，得到 %v", err)
+	}
+	// 长度先于敏感词：太长的直接 ErrNicknameInvalid。
+	if _, err := identity.NormalizeNickname("赌" + strings.Repeat("长", identity.NicknameMax)); err != identity.ErrNicknameInvalid {
+		t.Fatalf("超长应先报 ErrNicknameInvalid，得到 %v", err)
 	}
 }
 

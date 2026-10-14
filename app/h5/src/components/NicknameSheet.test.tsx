@@ -3,14 +3,14 @@ import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NicknameSheet } from "./NicknameSheet";
 
-function mount() {
-  const fetchMock = vi.fn(
-    async () =>
-      new Response(JSON.stringify({ user: { id: "u1", nickname: "阿明" } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-  );
+const ok = () =>
+  new Response(JSON.stringify({ user: { id: "u1", nickname: "阿明" } }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+
+function mount(respond: () => Response = ok) {
+  const fetchMock = vi.fn(async () => respond());
   vi.stubGlobal("fetch", fetchMock);
   const onDone = vi.fn();
   const container = document.createElement("div");
@@ -74,5 +74,43 @@ describe("称呼弹层（#130 第 3 条）", () => {
     expect(input.getAttribute("autocomplete")).toBe("nickname");
     expect(input.getAttribute("inputmode")).toBe("text");
     expect(input.getAttribute("enterkeyhint")).toBe("done");
+  });
+});
+
+describe("称呼命中敏感词（#147）", () => {
+  const sensitive = () =>
+    new Response(
+      JSON.stringify({
+        error: { code: "sensitive_word", message: "请勿涉及金钱：这里只约纯娱乐局", field: "nickname" },
+      }),
+      { status: 422, headers: { "content-type": "application/json" } },
+    );
+
+  async function submit(container: HTMLElement) {
+    await act(async () => {
+      (container.querySelector("form") as HTMLFormElement).requestSubmit();
+    });
+  }
+
+  it("提示显示在输入框下面，输入框标红，已经写的字不动，不算成功", async () => {
+    const { container, input, onDone } = mount(sensitive);
+    await type(input, "judi 50rb");
+    await submit(container);
+    await vi.waitFor(() => expect(container.querySelector(".errmsg")?.textContent).toContain("请勿涉及金钱"));
+    expect(input.classList.contains("err")).toBe(true);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(input.nextElementSibling?.classList.contains("errmsg")).toBe(true);
+    expect(input.value).toBe("judi 50rb");
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("开始改称呼，提示就收起来", async () => {
+    const { container, input } = mount(sensitive);
+    await type(input, "judi");
+    await submit(container);
+    await vi.waitFor(() => expect(container.querySelector(".errmsg")).not.toBeNull());
+    await type(input, "阿明");
+    expect(container.querySelector(".errmsg")).toBeNull();
+    expect(input.classList.contains("err")).toBe(false);
   });
 });

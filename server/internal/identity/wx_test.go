@@ -211,6 +211,24 @@ func TestWxLoginErrors(t *testing.T) {
 }
 
 // 生产没配 AppID / Secret：两个接口都 503 wx_disabled。
+// #147：小游戏新建用户时带的称呼也过敏感词：422 sensitive_word + field=nickname，不建用户。
+func TestWxLoginRejectsSensitiveNickname(t *testing.T) {
+	f, wx := newWxFixture(t)
+	wx.add("c1", "open-1", "")
+	r := f.mini(http.MethodPost, "/api/wx/login", map[string]string{"code": "c1", "nickname": "judi 50rb"}, nil)
+	if r.status != http.StatusUnprocessableEntity || r.errCode() != "sensitive_word" || r.errField() != "nickname" {
+		t.Fatalf("敏感称呼应 422 sensitive_word field=nickname：%d %s", r.status, r.raw)
+	}
+	if n := f.countRows(`SELECT count(*) FROM users`); n != 0 {
+		t.Fatalf("被拒时不能建用户，实际 %d 个", n)
+	}
+	// 换个正常称呼重来（code 已经用过，要新的）。
+	wx.add("c2", "open-1", "")
+	if login := f.wxLogin("c2", "阿强"); login.userField("nickname") != "阿强" {
+		t.Fatalf("正常称呼应成功：%s", login.raw)
+	}
+}
+
 func TestWxDisabledWithoutCredentials(t *testing.T) {
 	f := newFixture(t, false)
 	for _, path := range []string{"/api/wx/login", "/api/wx/link"} {

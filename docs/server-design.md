@@ -266,7 +266,7 @@ CREATE TABLE user_links (
 - **小游戏身份**（#84）。小游戏没有 cookie，凭证走 `Authorization: Bearer`（§10.3 的唯一例外）。两个接口都是 `route.Anonymous`（不读 cookie、不写 cookie），只认微信 code：
   - `POST /api/wx/login {code, nickname?}`：服务端调 `code2Session` 换出 openid（绑了开放平台时还有 unionid），先按 `wx_unionid`、再按 `wx_openid:<appid>` 在 `user_links` 里找。找到：给这个人新挂一台 `ua = wx-minigame` 的设备，补写缺的关联（以前没有 unionid、这次有了）；没找到且没给称呼：`200 {"need_nickname":true}`；给了称呼（规则同 `POST /api/me`，也占用同一个每 IP 创建配额）：新建用户、设备和关联。成功返回 `200 {"user":{"id","nickname","created_at"},"device_token","device_id"}`。每 IP 每分钟 20 次。被封禁的用户 `403 banned`。
   - `POST /api/wx/link {code, wx_code, confirm?}`：B2 兜底路径，H5 用 `POST /api/claim` 签发的 6 位认领码在小游戏里输入。防护和上面的凭码兑换完全一样（同网段、每 IP 每分钟 10 次且与 `/api/claim/redeem` 共用、全站失败预算、失败一律 `400 claim_invalid`）。这个微信已经关联了别人且没带 `confirm`：`409 claim_conflict` + `other_nickname`（认领码主人的称呼），码不消耗；确认时要重新 `wx.login` 拿新的 `wx_code`。成功后把 openid / unionid 关联都挂到认领码主人身上（原来关联的用户其他数据不动），新挂一台小游戏设备，返回同 `/api/wx/login`，并发 `claim.redeemed`。
-  - 错误码：`503 wx_disabled`（没配 `GUANDAN_WX_APPID` / `GUANDAN_WX_SECRET`）、`400 wx_code_invalid`、`503 wx_unavailable`（微信接口失败）、`400 nickname_invalid`、`429 rate_limited`。开发模式且没配 AppID 时，接受 `dev:<任意>` 形式的 code，`<任意>` 当 openid、appid 记成 `dev`，方便小游戏开发者工具连本机。
+  - 错误码：`503 wx_disabled`（没配 `GUANDAN_WX_APPID` / `GUANDAN_WX_SECRET`）、`400 wx_code_invalid`、`503 wx_unavailable`（微信接口失败）、`400 nickname_invalid`、`422 sensitive_word`（称呼命中敏感词，`field: "nickname"`，§14）、`429 rate_limited`。开发模式且没配 AppID 时，接受 `dev:<任意>` 形式的 code，`<任意>` 当 openid、appid 记成 `dev`，方便小游戏开发者工具连本机。
   - openid / unionid 不出现在响应和日志里。`DELETE /api/me` 和 `guandan admin user delete` 都删掉这个人的 `user_links`，同一个微信再来会建新用户。
   - 还没做：B1（带参数的小游戏码、`POST /api/wx/link {token, wx_code}`）。
 - **不提供面向用户的身份合并。** 代码里有 `mergeUsers`（`server/internal/identity/merge.go`），但目前只有测试调用它，`guandan admin` 也还没有合并子命令（§13.6）；任何用户能触发的路径都调不到它。将来做成 admin 命令时，语义以代码为准：
@@ -830,7 +830,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 - 请求体用 `http.MaxBytesReader` 限制在 64 KB 以内，单条 WebSocket 消息限制在 4 KB。
 - 所有对外的 HTTP 调用都有自己的超时：推送 10 秒、Claude 30 秒、备份上传 5 分钟；只用自己配置过超时的 `http.Client`，不用 `http.DefaultClient`。
 - panic 恢复中间件：单个请求出问题，返回 500，不影响其他请求。后台任务的 panic 由 `supervise` 兜住。
-- **输入校验**放在接口入口：称呼 1–12 个字符，去掉控制字符和首尾空白；地点不超过 40 个字符；备注不超过 200 个字符；开局时间必须在现在之后 10 分钟到 30 天之间；片区只接受固定列表里的值。
+- **输入校验**放在接口入口：称呼 1–12 个字符，去掉控制字符和首尾空白，并过敏感词（§14）；地点不超过 40 个字符；备注不超过 200 个字符；开局时间必须在现在之后 10 分钟到 30 天之间；片区只接受固定列表里的值。
 
 ### 12.3 过载保护
 
@@ -945,7 +945,9 @@ guandan restore <快照>                    从备份恢复（§13.3）
   - 提供隐私说明页面 `/privacy`，写明收集什么、用来做什么、保存多久、怎样删除；
   - `DELETE /api/me` 用于注销：删除称呼、WhatsApp 号码、设备、推送订阅和微信关联（`user_links`）；座位记录改成「已注销牌友」，这样历史局的人数统计不会出错；
   - 保留期限：设备 180 天未活跃就删除（§13.1）；埋点数据 1 年后删除；备份 30 天。
-- **赌博监管**：页面上已经写明「不涉及金钱输赢」。服务端对牌局备注和地点做敏感词过滤（赌、钱、筹码、judi、taruhan……），命中就拒绝提交，并提示「请勿涉及金钱」。词表放在仓库里，可以随时更新。
+- **赌博监管**：页面上已经写明「不涉及金钱输赢」。服务端对牌局备注、地点和**称呼**做敏感词过滤（赌、钱、筹码、judi、taruhan……），命中就拒绝提交，并提示「请勿涉及金钱」。词表放在仓库里，可以随时更新。
+  - 称呼也过滤（#147），因为它和地点一样公开展示，还会画进小游戏转发卡片、海报和 OG 图。入口是 `identity.NormalizeNickname`，`POST /api/me` 和 `POST /api/wx/login {nickname}` 都走它；和地点、备注是同一套词表，返回也一样：`422 sensitive_word`，带 `field: "nickname"`，前端把提示显示在称呼输入框下面。
+  - 已经入库的称呼不回溯检查。
 - **域名**：`.id` 域名通常需要印尼身份证或本地公司才能注册，所以建议主域名用 `.com` 之类的通用后缀（见 #12）。
 - **电子系统运营商登记（PSE）**：面向印尼用户的服务原则上需要向 Komdigi 登记。这个规模下被查的概率低，但已记入风险清单，用户量明显增长后再评估。
 
