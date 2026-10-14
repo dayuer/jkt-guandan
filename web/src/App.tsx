@@ -5,7 +5,6 @@ import { NicknameSheet } from "./components/NicknameSheet";
 import { TabBar, type TabKey } from "./components/TabBar";
 import { shouldWelcome } from "./guide";
 import { clearIdentityMarker, redeemClaimFromURL } from "./identity";
-import { agentDisabled } from "./agent";
 import { Agent, type FormPrefill } from "./pages/Agent";
 import { ComingSoon } from "./pages/ComingSoon";
 import { CreateGame } from "./pages/CreateGame";
@@ -48,7 +47,9 @@ const TAB_FOR_ROUTE: Record<string, TabKey> = {
   home: "games",
   learn: "learn", // 学牌（#106）—— 现在是个占位页
   friends: "friends", // 牌友（#108）—— 同上
-  agent: "create", // 约局：蛋蛋那一页
+  // /agent 在 phase 1 界面上没有入口了（约局直接开表单），但直接输 URL 还能打开——
+  // 那也给它一条 Tab，别让误闯进来的人困在一个没有出口的页面上。
+  agent: "create",
   me: "me",
 };
 
@@ -300,9 +301,10 @@ export function App() {
                 navigate("/me");
                 return;
               case "create":
-                // 服务端没配蛋蛋（503 agent_disabled）时，「约局」直接打开表单。
+                // phase 1 的约局就是手填表单：不上蛋蛋（用户的决定）。
+                // /agent 那条路由留在代码里（phase 3 的 #11 会回来），但界面上没有入口。
                 setPrefill(null);
-                navigate(agentDisabled() ? "/new" : "/agent");
+                navigate("/new");
                 return;
               case "learn":
                 navigate("/learn");

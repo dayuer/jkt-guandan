@@ -287,4 +287,31 @@ afterEach(() => {
     expect(container.querySelector(".tabbar")).toBeNull();
     expect(container.querySelector('button[aria-label="返回"]')).not.toBeNull();
   });
+
+  // phase 1 的约局就是手填表单（用户的决定）：中间那颗「蛋」直接开 08 表单，
+  // 界面上不能再有去 07 蛋蛋页的入口（/agent 路由留着，phase 3 的 #11 会回来）。
+  it("点「约局」直接开 08 表单，不去蛋蛋页", async () => {
+    stubFetch(anonymous);
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.querySelector(".tabbar")).not.toBeNull());
+
+    [...container.querySelectorAll(".tab")].find((b) => b.textContent?.includes("约局"))!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/new"));
+    await vi.waitFor(() => expect(container.textContent).toContain("开一局"));
+    // 表单里没有「跟蛋蛋说」这类回到对话的入口。
+    expect(container.textContent).not.toContain("跟蛋蛋说");
+  });
+
+  it("界面上没有任何通往蛋蛋页的链接", async () => {
+    stubFetch(anonymous);
+    const container = renderApp();
+    await vi.waitFor(() => expect(container.textContent).toContain("随时掼掼蛋"));
+
+    const html = container.innerHTML;
+    expect(html).not.toContain("/agent");
+    expect(container.textContent).not.toContain("蛋蛋");
+  });
 });
