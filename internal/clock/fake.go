@@ -44,6 +44,14 @@ func (f *Fake) NewTicker(d time.Duration) Ticker {
 	return t
 }
 
+// PendingAfters 返回还没到期的 After 个数。Advance 是同步摘掉到期等待的，所以测试可以据此
+// 确定性地断言「还没触发」：不用为了证明「没发生」去睡墙钟。
+func (f *Fake) PendingAfters() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.waiters)
+}
+
 // Advance 把时间往前推，并按顺序触发到期的 After 和 Ticker。
 func (f *Fake) Advance(d time.Duration) {
 	f.mu.Lock()

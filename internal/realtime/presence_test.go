@@ -146,8 +146,20 @@ func TestPresenceIsDebounced(t *testing.T) {
 	_ = conns[0].Close(websocket.StatusNormalClosure, "")
 	eventually(t, "人数稳定在 3", func() bool { return e.hub.Viewers(topic) == 3 })
 
-	clk.Advance(every - time.Nanosecond) // 还差一点：不发
-	clk.Advance(time.Nanosecond)         // 满一个间隔：合并成一条
+	// 间隔内的进出只排了一次广播：时钟上正好有一个等待。
+	if n := clk.PendingAfters(); n != 1 {
+		t.Fatalf("间隔内应只排一次广播，实际等待 %d 个", n)
+	}
+	// 还差 1ns：广播必须还没触发（假时钟的 Advance 同步摘掉到期的等待，这里是确定的）。
+	clk.Advance(every - time.Nanosecond)
+	if n := clk.PendingAfters(); n != 1 {
+		t.Fatal("还差 1ns 就触发了广播：防抖间隔短了")
+	}
+	// 满一个间隔：触发，合并成一条。
+	clk.Advance(time.Nanosecond)
+	if n := clk.PendingAfters(); n != 0 {
+		t.Fatal("满一个间隔还没触发广播")
+	}
 	if n := nextViewers(t, watcher); n != 3 {
 		t.Fatalf("间隔内的变化应合并成一条 3，实际 %d", n)
 	}
