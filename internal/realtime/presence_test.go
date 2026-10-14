@@ -28,6 +28,27 @@ func (e *env) dialAs(t *testing.T, device string) *websocket.Conn {
 	return c
 }
 
+// subscribeGame 订阅一个牌局，读到订阅回执和第一条人数，返回人数。两者的先后不固定（人数由
+// 防抖的 flush 发出，可能比回执先到），所以不能先用 subscribe 读回执：它会跳过 presence，把第一条
+// 人数吞掉（#74：TestPresenceCountsDistinctDevices 因此偶发超时）。
+func subscribeGame(t *testing.T, c *websocket.Conn, topic string) int {
+	t.Helper()
+	send(t, c, map[string]any{"op": "sub", "topics": []string{topic}})
+	acked, viewers := false, -1
+	for !acked || viewers < 0 {
+		m := readAny(t, c)
+		switch m["type"] {
+		case "subscribed":
+			acked = true
+		case realtime.EventPresence:
+			if m["topic"] == topic && viewers < 0 {
+				viewers = int(m["data"].(map[string]any)["viewers"].(float64))
+			}
+		}
+	}
+	return viewers
+}
+
 // waitViewers 一直读到一条 presence 说 viewers == want。
 func waitViewers(t *testing.T, c *websocket.Conn, topic string, want int) {
 	t.Helper()
@@ -55,8 +76,9 @@ func TestPresenceCountsDistinctDevices(t *testing.T) {
 	const topic = "game:8K2"
 
 	tab1 := e.dialAs(t, "d1")
-	subscribe(t, tab1, topic)
-	waitViewers(t, tab1, topic, 1)
+	if n := subscribeGame(t, tab1, topic); n != 1 {
+		t.Fatalf("第一条应是 1，实际 %d", n)
+	}
 
 	// 同一设备的第二个标签页：人数不变，不广播，但它自己订阅后马上收到当前人数。
 	tab2 := e.dialAs(t, "d1")
@@ -106,8 +128,7 @@ func TestPresenceIsDebounced(t *testing.T) {
 	const topic = "game:BUSY"
 
 	watcher := e.dialAs(t, "w")
-	subscribe(t, watcher, topic)
-	if n := nextViewers(t, watcher); n != 1 { // 第一次立即发
+	if n := subscribeGame(t, watcher, topic); n != 1 { // 第一次立即发
 		t.Fatalf("第一条应是 1，实际 %d", n)
 	}
 
@@ -167,7 +188,7 @@ func TestPresenceDropsKickedDevice(t *testing.T) {
 	e.hub.SetPresenceInterval(20 * time.Millisecond)
 	const topic = "game:KICK"
 	watcher := e.dialAs(t, "w")
-	subscribe(t, watcher, topic)
+	subscribeGame(t, watcher, topic)
 	victim := e.dialAs(t, "v")
 	subscribe(t, victim, topic)
 	waitViewers(t, watcher, topic, 2)
