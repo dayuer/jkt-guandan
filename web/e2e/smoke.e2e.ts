@@ -176,9 +176,8 @@ test("分享面板：375×560 下能滚到「取消」，WhatsApp 链接带的�
 });
 
 // #75：局头的操作栏有 3–4 个按钮，会折成两行；页面底部留白要跟着变高，不然最后一段内容被压住。
-// #75 修好之前这条预期失败（test.fail）；修好后它会「意外通过」报错，到时去掉 test.fail。
+// 这条断言原本挂着 `test.fail`（当时确实失败）；#75 修好之后去掉，让它真的跑起来。
 test("局头视角：操作栏折成两行时，滚到底内容也不被压住（#75）", async ({ page }) => {
-  test.fail(true, "#75 未修：--bar-height 只留了一行");
   await signIn(page, "E2E 局头丁");
   const startsAt = Math.floor(Date.now() / 1000) + 3 * 24 * 3600;
   const res = await page.request.post("/api/games", {

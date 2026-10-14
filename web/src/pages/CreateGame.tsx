@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, createGame, newIdempotencyKey, type UserRef } from "../api";
 import { dayShort, slashDate, timeHM, weekday } from "../format";
 import type { FormPrefill } from "./Agent";
+import { useBarHeight } from "../useBarHeight";
 import { useRetrying } from "../useRetrying";
 
 /** 允许的片区，和 internal/games 里的白名单一致（§12.2：不接受任意字符串）。 */
@@ -67,6 +68,7 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated, pref
   // 命中敏感词时是哪个字段（§14）：提示要放在对应的输入框下面，而不是笼统地报一句错。
   const [badField, setBadField] = useState("");
   const retrying = useRetrying();
+  const actionBar = useBarHeight<HTMLDivElement>();
 
   // 幂等键代表「这一次提交」（§11.4）。放进状态，只有表单内容变了才换新的：
   // 固定不变的话，用户改了内容又提交会用同一个键、拿到上一次的结果；
@@ -219,7 +221,7 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated, pref
         </form>
       </div>
 
-      <div class="actionbar single">
+      <div class="actionbar single" ref={actionBar}>
         <button class="btn primary" disabled={busy || retrying || venue.trim() === ""} onClick={submit}>
           {retrying ? "人有点多，正在重试…" : busy ? "正在开…" : "开这一局"}
         </button>

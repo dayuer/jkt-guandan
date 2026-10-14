@@ -18,6 +18,7 @@ import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
 import { dayLabel, kindLabel, timeHM } from "../format";
 import { gameTitle } from "../title";
+import { useBarHeight } from "../useBarHeight";
 import { OfflineDot, useRealtime, useRealtimeStatus } from "../useRealtime";
 import { useRetrying } from "../useRetrying";
 
@@ -67,6 +68,8 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   /** 「加入日历」弹层：手动点开的，或刚报上名时自动弹的（#6）。 */
   const [calendar, setCalendar] = useState<"manual" | "joined" | null>(null);
   const retrying = useRetrying();
+  // 操作栏在窄屏上会换行（局头有四颗按钮），高度要量出来（#75）。
+  const actionBar = useBarHeight<HTMLDivElement>();
 
   const load = useCallback(async () => {
     try {
@@ -398,7 +401,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
         />
       )}
 
-      <div class="actionbar">
+      <div class="actionbar" ref={actionBar}>
         {/* 分享对所有能看到这一局的人都可用——报了名的、路过的，都能帮局头拉人（§5.4）。 */}
         {!closed && (
           <button class="btn dark-ghost" onClick={() => setShareOpen(true)}>

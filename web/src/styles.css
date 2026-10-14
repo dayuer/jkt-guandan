@@ -112,12 +112,16 @@ button:disabled {
   padding-bottom: calc(var(--bar-height, 0px) + var(--s4) + env(safe-area-inset-bottom, 0px));
 }
 
+/* tab 栏高度固定，写死就够。 */
 .body.has-bar {
-  --bar-height: 76px; /* .tabbar 的高度 */
+  --bar-height: 76px;
 }
 
-.body.has-actionbar {
-  --bar-height: 90px; /* .actionbar：52 的按钮 + 上下内边距 */
+/* 操作栏是**兜底值**：它会不会换行取决于宽度和按钮个数（局头有四颗按钮，
+   375 宽下换两行），所以真实高度由 useBarHeight 量出来写到 <html> 上，
+   盖掉这里的 90px（#75）。 */
+:root {
+  --bar-height: 90px;
 }
 
 .pad {
