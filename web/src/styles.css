@@ -32,7 +32,11 @@ body {
 }
 
 body {
+  /* 安卓 Chrome 的 100vh 是「地址栏收起后」的高度，比看得见的区域高出一截地址栏：
+     列表很短时页面也能往上滚这一截，第一张卡片就钻到固定头部下面去了（#130 第 2 条）。
+     和 #app 一样用 100dvh，老浏览器不认识 dvh 就用前一行。 */
   min-height: 100vh;
+  min-height: 100dvh;
   -webkit-text-size-adjust: 100%;
 }
 

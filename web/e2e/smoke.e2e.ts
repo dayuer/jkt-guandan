@@ -154,6 +154,40 @@ for (const height of [667, 560]) {
   });
 }
 
+test("首页：第一张卡片完整露在固定头部下面，顶边和圆角不被盖住（#130）", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.goto("/");
+  await expect.poll(() => page.locator(".gamecard").count()).toBeGreaterThan(0);
+
+  const check = async () =>
+    page.evaluate(() => {
+      const header = document.querySelector("[data-testid=home-top]")!.getBoundingClientRect();
+      const card = document.querySelector(".gamecard")!.getBoundingClientRect();
+      // 卡片顶边往下 2px、左右圆角附近各取一个点：命中的必须是卡片本身，不是头部。
+      const hits = [card.left + 12, card.left + card.width / 2, card.right - 12].map(
+        (x) => !!document.elementFromPoint(x, card.top + 2)?.closest(".gamecard"),
+      );
+      return { headerBottom: header.bottom, cardTop: card.top, hits };
+    });
+
+  const atRest = await check();
+  expect(atRest.cardTop).toBeGreaterThanOrEqual(atRest.headerBottom);
+  expect(atRest.hits).toEqual([true, true, true]);
+
+  // 列表很短时（只剩一个片区的局）页面不该还能往上滚：
+  // 安卓 Chrome 上 100vh 比可视区域高，曾经能多滚出一截，把第一张卡片推到头部下面（#130）。
+  const area = (await page.locator(".gamecard .tag").first().textContent())?.trim();
+  if (area) await page.getByRole("tab", { name: area, exact: true }).click();
+  await expect.poll(() => page.locator(".gamecard").count()).toBeGreaterThan(0);
+  const short = await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight);
+  if (short) {
+    await page.evaluate(() => window.scrollTo(0, 10_000));
+    const after = await check();
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    expect(after.hits).toEqual([true, true, true]);
+  }
+});
+
 test("首页空状态没有虚线框（#56）", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("tab", { name: "BSD" }).click();

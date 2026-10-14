@@ -129,3 +129,15 @@ describe("styles.css 的完整性", () => {
     expect(usages).toBeGreaterThan(0);
   });
 });
+
+describe("视口高度（#130 第 2 条）", () => {
+  it("body 的最小高度用 100dvh：安卓 Chrome 的 100vh 比可视区域高，短列表也能滚出一截", () => {
+    const body = rules.find((r) => r.selector === "body" && /min-height/.test(r.body));
+    expect(body?.body).toMatch(/min-height:\s*100dvh/);
+  });
+
+  it("viewport 声明 interactive-widget=resizes-content：键盘弹出时贴底的弹层跟着上移", () => {
+    const html = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
+    expect(html).toMatch(/name="viewport"[^>]*interactive-widget=resizes-content/);
+  });
+});

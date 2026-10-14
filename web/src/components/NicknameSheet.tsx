@@ -46,10 +46,23 @@ export function NicknameSheet({ onDone, onCancel }: Props) {
           <input
             value={nickname}
             onInput={(e) => setNickname((e.target as HTMLInputElement).value)}
+            onKeyDown={(e) => {
+              // 输入法还在拼字时的回车是「上屏」，不是提交；拼完再按回车才提交（#130 第 3 条）。
+              if (e.key === "Enter" && !e.isComposing) {
+                e.preventDefault();
+                (e.currentTarget as HTMLInputElement).form?.requestSubmit();
+              }
+            }}
             placeholder="比如：老王"
             maxLength={12}
             autoFocus
             aria-label="称呼"
+            name="gd-nickname"
+            // 不要浏览器的自动填充条：它会盖住「就用这个名字」，而且填进来的多半是真名（#130）。
+            autoComplete="off"
+            autoCapitalize="off"
+            spellcheck={false}
+            enterKeyHint="done"
           />
           {error && <p class="error">{error}</p>}
           <button class="btn primary" type="submit" disabled={busy || nickname.trim() === ""}>
