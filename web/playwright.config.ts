@@ -30,6 +30,8 @@ export default defineConfig({
     url: `http://127.0.0.1:${PORT}/healthz`,
     env: { E2E_PORT: String(PORT) },
     reuseExistingServer: false,
+    // 默认是 SIGKILL，脚本来不及删临时数据目录；先发 SIGTERM。
+    gracefulShutdown: { signal: "SIGTERM", timeout: 5_000 },
     timeout: 20_000,
     stdout: "ignore",
     stderr: "pipe",

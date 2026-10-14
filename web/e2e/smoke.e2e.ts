@@ -123,6 +123,12 @@ test("详情页 SEED01：空座位 64×64，有操作栏，没有 Tab 栏（#55�
   const box = await seat.boundingBox();
   expect(box?.width).toBe(64);
   expect(box?.height).toBe(64);
+  // 虚线边框和零内边距：border-box 下 padding 小于内容盒时尺寸不变，只量宽高拦不住这两样。
+  const style = await seat.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return { border: cs.borderTopStyle, padding: cs.paddingTop };
+  });
+  expect(style).toEqual({ border: "dashed", padding: "0px" });
 
   await expect(page.locator(".actionbar")).toBeVisible();
   const bar = await barBox(page, ".actionbar");
