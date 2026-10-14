@@ -6,16 +6,17 @@ import { TabBar, type TabKey } from "./components/TabBar";
 import { shouldWelcome } from "./guide";
 import { clearIdentityMarker, redeemClaimFromURL } from "./identity";
 import { Agent, type FormPrefill } from "./pages/Agent";
-import { ComingSoon } from "./pages/ComingSoon";
 import { CreateGame } from "./pages/CreateGame";
 import { Detail } from "./pages/Detail";
 import { Devices } from "./pages/Devices";
 import { Friends } from "./pages/Friends";
 import { Home } from "./pages/Home";
+import { Learn } from "./pages/Learn";
+import { Lesson } from "./pages/Lesson";
 import { Me } from "./pages/Me";
 import { Privacy } from "./pages/Privacy";
 import { isStandalone, pushSupport } from "./push";
-import { pageTitle } from "./title";
+import { lessonTitle, pageTitle } from "./title";
 
 type Route =
   | { name: "home" }
@@ -26,7 +27,8 @@ type Route =
   | { name: "learn" }
   | { name: "friends" }
   | { name: "devices" }
-  | { name: "privacy" };
+  | { name: "privacy" }
+  | { name: "lesson"; id: string };
 
 function parseRoute(): Route {
   const path = window.location.pathname;
@@ -35,18 +37,20 @@ function parseRoute(): Route {
   if (path === "/new") return { name: "new" };
   if (path === "/agent") return { name: "agent" };
   if (path === "/me") return { name: "me" };
-  if (path === "/learn") return { name: "learn" };
+  if (path === "/learn" || path === "/learn/") return { name: "learn" };
   if (path === "/friends") return { name: "friends" };
   if (path === "/me/devices") return { name: "devices" };
   // 隐私说明不要求登录：还没有填称呼的人也应当能看到（§14）。
   if (path === "/privacy") return { name: "privacy" };
+  const lesson = /^\/learn\/([a-z0-9-]+)\/?$/.exec(path);
+  if (lesson) return { name: "lesson", id: lesson[1] };
   return { name: "home" };
 }
 
 /** 哪些路由是 tab 级页面、各自对应哪个 tab（#107）。 */
 const TAB_FOR_ROUTE: Record<string, TabKey> = {
   home: "games",
-  learn: "learn", // 学牌（#106）—— 现在是个占位页
+  learn: "learn", // 05 学牌列表（#106）；06 规则速览有自己的操作栏，不挂
   friends: "friends", // 牌友（#108）—— 同上
   // /agent 在 phase 1 界面上没有入口了（约局直接开表单），但直接输 URL 还能打开——
   // 那也给它一条 Tab，别让误闯进来的人困在一个没有出口的页面上。
@@ -87,7 +91,8 @@ export function App() {
   // 标题（#60）：从分享链接落地时服务端注入的是这一局的标题，SPA 内跳回别的页面要换回应用名。
   // 详情页的标题由 Detail 拿到数据后自己设。
   useEffect(() => {
-    if (route.name !== "detail") document.title = pageTitle(route.name);
+    if (route.name === "lesson") document.title = lessonTitle(route.id);
+    else if (route.name !== "detail") document.title = pageTitle(route.name);
   }, [route]);
 
   useEffect(() => {
@@ -262,7 +267,7 @@ export function App() {
           }}
         />
       ) : route.name === "learn" ? (
-        <ComingSoon title="学牌" note="掼蛋的规则、记牌和常见牌型，做成能翻的卡片。" />
+        <Learn onOpen={(id) => navigate(`/learn/${id}`)} />
       ) : route.name === "friends" ? (
         <Friends
           toast={toast}
@@ -281,6 +286,18 @@ export function App() {
             clearIdentityMarker();
             setMe(null);
             navigate("/");
+          }}
+        />
+      ) : route.name === "lesson" ? (
+        <Lesson
+          // 换课就是换一个组件：练习题的作答状态不能带到下一课。
+          key={route.id}
+          id={route.id}
+          onBack={() => navigate("/learn")}
+          // 课与课之间用替换：返回直接回学牌列表，不用一课课倒回去。
+          onOpen={(id) => {
+            window.history.replaceState(null, "", `/learn/${id}`);
+            setRoute(parseRoute());
           }}
         />
       ) : (

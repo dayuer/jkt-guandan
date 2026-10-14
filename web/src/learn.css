@@ -1,0 +1,326 @@
+/*
+ * 学牌（#106，设计稿 E1 / E2）。数值一律取 tokens.css。
+ * 单独一个文件，免得和别的 PR 在 styles.css 里抢同一段。
+ */
+
+/* ── E1 · 学牌列表 ──────────────────────────────────────────── */
+
+.progress-card {
+  margin: var(--s2) 18px 0;
+  padding: var(--s5);
+  border-radius: var(--r-lg);
+  background: var(--sand);
+  position: relative;
+  overflow: hidden;
+}
+
+/* 右上角那朵淡淡的梅花。 */
+.progress-card::after {
+  content: "♣";
+  position: absolute;
+  right: -10px;
+  bottom: -34px;
+  font-size: 112px;
+  line-height: 1;
+  color: var(--beige);
+  pointer-events: none;
+}
+
+.progress-card .row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.progress-card h2 {
+  font: var(--fw-black) var(--fs-h3) / 1.3 var(--font-serif);
+}
+
+.progress-card .count {
+  font-size: var(--fs-13);
+  color: var(--ink-2);
+}
+
+.progress-card .count b {
+  font: var(--fw-black) var(--fs-display) / 1 var(--font-serif);
+  color: var(--red);
+  margin: 0 2px;
+}
+
+.progress-card .bar {
+  position: relative;
+  z-index: 1;
+  height: 6px;
+  margin-top: var(--s3);
+  border-radius: var(--r-pill);
+  background: var(--line);
+  overflow: hidden;
+}
+
+.progress-card .bar i {
+  display: block;
+  height: 100%;
+  background: var(--red);
+  transition: width var(--t-base) var(--ease-out);
+}
+
+.progress-card .go {
+  position: relative;
+  z-index: 1;
+  margin-top: var(--s3);
+  color: var(--red);
+  font-size: var(--fs-body);
+  font-weight: 700;
+  text-align: left;
+}
+
+.learn-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: var(--s5) 18px var(--s3);
+}
+
+.learn-head h3 {
+  font: var(--fw-black) var(--fs-h2) / 1.3 var(--font-serif);
+}
+
+.learn-head span {
+  font-size: var(--fs-13);
+  color: var(--ink-3);
+}
+
+.lessons {
+  list-style: none;
+  margin: 0;
+  padding: 0 18px;
+  display: grid;
+  gap: var(--s3);
+}
+
+.lesson {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s4);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-card);
+  text-align: left;
+}
+
+.lesson .pip {
+  flex: none;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  width: 46px;
+  height: 62px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-2);
+  background: var(--card);
+  color: var(--ink);
+  font-size: var(--fs-h3);
+  line-height: 1.1;
+}
+
+.lesson .pip b {
+  font: var(--fw-black) var(--fs-h2) / 1 var(--font-serif);
+}
+
+.lesson .tx {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.lesson .tx strong {
+  font: var(--fw-black) var(--fs-h3) / 1.3 var(--font-serif);
+}
+
+.lesson .tx span {
+  font-size: var(--fs-13);
+  color: var(--ink-2);
+}
+
+.lesson .tx small {
+  font-size: var(--fs-small);
+  color: var(--ink-4);
+}
+
+.lesson .state {
+  flex: none;
+  font-size: var(--fs-small);
+  font-weight: 700;
+  color: var(--ink-3);
+}
+
+.lesson .state.done {
+  color: var(--green);
+}
+
+/* ── E2 · 规则速览 ──────────────────────────────────────────── */
+
+.lesson-head {
+  padding: var(--s2) 18px 0;
+}
+
+.lesson-head h1 {
+  font: var(--fw-black) var(--fs-display) / 1.25 var(--font-serif);
+}
+
+.lesson-head p {
+  margin-top: var(--s1);
+  font-size: var(--fs-13);
+  color: var(--ink-3);
+}
+
+.felt {
+  margin: var(--s4) 18px 0;
+  padding: var(--s4) var(--s3) var(--s3);
+  border-radius: var(--r-xl);
+  background: var(--red-deep);
+  box-shadow: var(--sh-table);
+  text-align: center;
+}
+
+.felt .hand {
+  display: flex;
+  justify-content: center;
+}
+
+.pcard {
+  display: grid;
+  justify-items: start;
+  align-content: start;
+  width: 44px;
+  height: 64px;
+  margin-left: var(--s1);
+  padding: 4px 6px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  font-size: var(--fs-h3);
+  line-height: 1.1;
+  box-shadow: var(--sh-float);
+}
+
+.pcard:first-child {
+  margin-left: 0;
+}
+
+.pcard b {
+  font: var(--fw-black) var(--fs-h3) / 1.1 var(--font-serif);
+}
+
+.pcard.red {
+  color: var(--red);
+}
+
+.pcard.hot {
+  border: 2px solid var(--gold);
+  transform: translateY(-6px);
+}
+
+.felt figcaption {
+  margin-top: var(--s3);
+  font-size: var(--fs-small);
+  color: var(--red-tint);
+}
+
+.rule {
+  padding: var(--s5) 18px 0;
+}
+
+.rule h2 {
+  font: var(--fw-black) var(--fs-h3) / 1.3 var(--font-serif);
+}
+
+.rule h2 b {
+  color: var(--red);
+  margin-right: var(--s2);
+}
+
+.rule p {
+  margin-top: var(--s2);
+  font-size: var(--fs-15);
+  line-height: 1.8;
+  color: var(--ink);
+}
+
+.tip {
+  display: flex;
+  gap: var(--s3);
+  margin: var(--s5) 18px 0;
+  padding: var(--s4);
+  border-radius: var(--r-md);
+  background: var(--sand);
+  font-size: var(--fs-body);
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+.tip b {
+  flex: none;
+  color: var(--red);
+  font-family: var(--font-serif);
+}
+
+.quiz {
+  padding: var(--s6) 18px var(--s4);
+}
+
+.quiz h2 {
+  font: var(--fw-black) var(--fs-h3) / 1.3 var(--font-serif);
+}
+
+.quiz > p {
+  margin-top: var(--s2);
+  font-size: var(--fs-15);
+}
+
+.quiz .opts {
+  display: grid;
+  gap: var(--s2);
+  margin-top: var(--s3);
+}
+
+.quiz .opts button {
+  width: 100%;
+  min-height: 48px;
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r-12);
+  border: 1.5px solid var(--line-2);
+  background: var(--card);
+  font-size: var(--fs-15);
+  text-align: left;
+  color: var(--ink);
+}
+
+.quiz .opts button.right {
+  border-color: var(--green);
+  color: var(--green);
+  font-weight: 700;
+}
+
+.quiz .opts button.wrong {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.quiz .verdict {
+  margin-top: var(--s3);
+  font-size: var(--fs-body);
+  line-height: 1.7;
+  color: var(--red);
+}
+
+.quiz .verdict.ok {
+  color: var(--ink-2);
+}
