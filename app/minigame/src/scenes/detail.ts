@@ -97,6 +97,9 @@ export class Detail implements Scene {
     this.app.redraw();
   }
 
+  /** 当前这一局（右上角「···」转发用）。 */
+  get current(): GameDetail | null { return this.detail; }
+
   private get closed() { const s = this.detail?.game.status; return s === "cancelled" || s === "done"; }
   private get isHost() { const me = currentUser(); return !!me && this.detail?.host.id === me.id; }
 

@@ -1,10 +1,10 @@
 // 各页共用的弹层：填称呼、认领码认回、报名成功、候补转正、加日历、分享、选牌友。
 
 import type { App, Sheet } from "../core/app";
-import { C, Ctx, circle, ellipsize, fillRR, font, initial, paragraph, strokeRR, text, Scroller } from "../core/ui";
+import { C, Ctx, circle, ellipsize, fillRR, font, initial, measure, paragraph, strokeRR, text, wrap, Scroller } from "../core/ui";
 import { avatar, button, copy, field, sheetButtons, sheetHeader, simpleSheet, textLink } from "../core/widgets";
 import { ApiError, API_BASE, listFriends, posterURL, shareURL, type Friend, type GameDetail, type UserRef } from "../lib/api";
-import { dayShort, slashDate, timeHM, weekday } from "../lib/fmt";
+import { dayShort, kindLabel, slashDate, timeHM, weekday } from "../lib/fmt";
 import { currentUser, linkWithCode, signUp } from "../lib/session";
 import { track } from "../lib/telemetry";
 import { shareText } from "../../../h5/src/share";
@@ -245,7 +245,7 @@ export function shareSheet(app: App, d: GameDetail) {
       }
       let cy = py + ph + 18;
       const outlets: [string, string, () => void, boolean][] = [
-        ["发到微信", "💬", () => { channel("wechat"); shareToChat(d); }, false],
+        ["发到微信", "💬", () => { channel("wechat"); shareToChat(app, d); }, false],
         ["保存海报", "🖼️", savePoster, posterFailed],
         ["复制话术", "📋", () => { channel("copy"); copy(app, textS, "话术已复制"); }, false],
       ];
@@ -269,46 +269,82 @@ export function shareSheet(app: App, d: GameDetail) {
   app.openSheet(s);
 }
 
-/** 转发卡片：5:4 的图在画布上现画，query 带牌局短码。 */
-export function shareToChat(d: GameDetail) {
-  const g = d.game;
-  const n = d.missing;
-  wx.shareAppMessage({
-    title: `${dayShort(g.starts_at)} ${timeHM(g.starts_at)} ${g.area} 掼蛋，${g.status === "full" || n <= 0 ? "已满，可排候补" : `还差 ${n} 人`}`,
-    imageUrl: renderShareCard(d),
-    query: `g=${encodeURIComponent(g.short_code)}`,
-  });
+/** 转发卡片的标题，和卡片图上的信息一致。 */
+export function shareTitle(d: GameDetail): string {
+  const g = d.game, n = d.missing;
+  return `${dayShort(g.starts_at)} ${timeHM(g.starts_at)} ${g.area} 掼蛋，${g.status === "full" || n <= 0 ? "已满，可排候补" : `还差 ${n} 人`}`;
 }
 
-let cardCanvas: any = null;
-export function renderShareCard(d: GameDetail): string | undefined {
+/** 转发卡片：5:4 的图在画布上现画，query 带牌局短码。 */
+export function shareToChat(app: App, d: GameDetail) {
+  wx.shareAppMessage(sharePayload(app, d));
+}
+
+/** 「发到微信」和右上角「···」转发共用。 */
+export function sharePayload(app: App, d: GameDetail): { title: string; imageUrl?: string; query: string } {
+  return { title: shareTitle(d), imageUrl: renderShareCard(app, d), query: `g=${encodeURIComponent(d.game.short_code)}` };
+}
+
+/**
+ * 画转发卡片图，返回临时文件路径。
+ * 小游戏的离屏画布在真机上导不出图片（imageUrl 变空，微信就去截当前屏幕的上半截），
+ * 所以画在主画布左上角、按 5:4 裁出来，再立刻把当前页面重画回去：同一个 tick 里完成，用户看不到。
+ * 版面按转发卡片的 5:4 来排，地点长了就换行、缩字号，不截断。
+ */
+export function renderShareCard(app: App, d: GameDetail): string | undefined {
+  const W = 500, H = 400;
+  const canvas = app.canvas, ctx: Ctx = app.ctx;
+  const px = Math.min(canvas.width, 1000);
+  const k = px / W;
   try {
-    const W = 500, H = 400;
-    if (!cardCanvas) cardCanvas = wx.createCanvas();
-    cardCanvas.width = W;
-    cardCanvas.height = H;
-    const ctx: Ctx = cardCanvas.getContext("2d");
-    const g = d.game;
-    ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
-    fillRR(ctx, 24, 24, W - 48, H - 48, 28, C.redDeep);
-    strokeRR(ctx, 30, 30, W - 60, H - 60, 24, C.redInk, 8);
-    strokeRR(ctx, 50, 50, W - 100, H - 100, 18, "rgba(233,196,106,0.5)", 2, [6, 5]);
-    text(ctx, `${dayShort(g.starts_at)} ${weekday(g.starts_at)}`, W / 2, 96, font(26, "700"), C.gold, "center");
-    text(ctx, timeHM(g.starts_at), W / 2, 158, font(72, "900", true), C.cream, "center");
-    text(ctx, ellipsize(ctx, `${g.area} · ${g.venue}`, W - 140, font(24, "600")), W / 2, 222, font(24, "600"), C.cream, "center");
-    const seated = [...d.seats].sort((a, b) => a.seat_no - b.seat_no);
-    for (let i = 0; i < 4; i++) {
-      const cx = W / 2 - 105 + i * 70, cy = 296;
-      const s = seated[i];
-      if (s) {
-        circle(ctx, cx, cy, 27, s.user.id === d.host.id ? C.redTint : C.beige);
-        text(ctx, initial(s.user.nickname), cx, cy + 2, font(26, "900", true), s.user.id === d.host.id ? C.red : C.ink, "center");
-      } else circle(ctx, cx, cy, 26, null, "rgba(255,247,236,0.6)", 3, [7, 6]);
-    }
-    return cardCanvas.toTempFilePathSync({ x: 0, y: 0, width: W, height: H, destWidth: W, destHeight: H });
+    ctx.save();
+    ctx.setTransform(k, 0, 0, k, 0, 0);
+    drawShareCard(ctx, d, W, H);
+    ctx.restore();
+    return canvas.toTempFilePathSync({ x: 0, y: 0, width: px, height: Math.round(px * H / W), destWidth: 750, destHeight: 600, fileType: "png" });
   } catch {
     return undefined;
+  } finally {
+    app.repaint();
   }
+}
+
+export function drawShareCard(ctx: Ctx, d: GameDetail, W = 500, H = 400) {
+  const g = d.game;
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
+  fillRR(ctx, 16, 16, W - 32, H - 32, 28, C.redDeep);
+  strokeRR(ctx, 22, 22, W - 44, H - 44, 24, C.redInk, 8);
+  strokeRR(ctx, 38, 38, W - 76, H - 76, 18, "rgba(233,196,106,0.45)", 2, [6, 5]);
+  text(ctx, `${dayShort(g.starts_at)} · ${weekday(g.starts_at)} ${slashDate(g.starts_at)}`, W / 2, 70, font(24, "700"), C.gold, "center");
+  text(ctx, timeHM(g.starts_at), W / 2, 130, font(70, "900", true), C.cream, "center");
+  // 地点：最多两行，放不下先缩字号
+  let fs = 26, lines = wrap(ctx, g.venue, W - 100, font(fs, "700"));
+  while (lines.length > 2 && fs > 18) { fs -= 2; lines = wrap(ctx, g.venue, W - 100, font(fs, "700")); }
+  if (lines.length > 2) lines = [lines[0], ellipsize(ctx, lines.slice(1).join(""), W - 100, font(fs, "700"))];
+  let y = 188;
+  for (const ln of lines) { text(ctx, ln, W / 2, y, font(fs, "700"), C.cream, "center"); y += fs + 8; }
+  text(ctx, `${g.area} · ${kindLabel(g.kind)} · 局头 ${d.host.nickname}`, W / 2, y + 6, font(18), "rgba(255,247,236,0.8)", "center");
+  // 座位 + 还差几人
+  const seated = [...d.seats].sort((a, b) => a.seat_no - b.seat_no);
+  const cy = H - 72;
+  for (let i = 0; i < 4; i++) {
+    const cx = 70 + i * 52;
+    const st = seated[i];
+    if (st) {
+      const host = st.user.id === d.host.id;
+      circle(ctx, cx, cy, 22, host ? C.redTint : C.beige);
+      text(ctx, initial(st.user.nickname), cx, cy + 2, font(20, "900", true), host ? C.red : C.ink, "center");
+    } else circle(ctx, cx, cy, 21, null, "rgba(255,247,236,0.65)", 2.5, [6, 5]);
+  }
+  const full = g.status === "full" || d.missing <= 0;
+  const label = g.status === "cancelled" ? "已取消" : full ? "已满 · 可排候补" : `还差 ${d.missing} 人`;
+  // 座位占到 x≈248，标签放在右边剩下的地方，放不下就缩字号
+  const room = W - 48 - 262;
+  let ls = 22, lf = font(ls, "900");
+  while (measure(ctx, label, lf) + 32 > room && ls > 14) lf = font(--ls, "900");
+  const lw = Math.min(room, measure(ctx, label, lf) + 32);
+  fillRR(ctx, W - 48 - lw, cy - 22, lw, 44, 22, C.gold);
+  text(ctx, label, W - 48 - lw / 2, cy + 1, lf, C.redInk, "center");
 }
 
 // ── 选牌友（08「邀请谁」，#115）──
