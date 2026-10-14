@@ -172,7 +172,7 @@ describe("详情页的实时", () => {
     expect(getGets()).toBe(2);
   });
 
-  it("presence（在看人数）不是牌局变化，不重新拉", async () => {
+  it("presence（在看人数）不是牌局变化，不重新拉详情；seat.taken 照样拉", async () => {
     const { container, getGets } = await renderDetail(detail(oneSeat));
     await vi.waitFor(() => expect(container.textContent).toContain("Pacific Place"));
     expect(getGets()).toBe(1);
@@ -255,5 +255,40 @@ describe("首页的实时", () => {
     socket.receive({ topic: "feed:SCBD", type: "feed.game_added", v: 1 });
 
     await vi.waitFor(() => expect(getLists()).toBe(2));
+  });
+});
+
+describe("useRealtime 的 presence", () => {
+  beforeEach(() => {
+    installFakeSocket();
+  });
+  afterEach(() => {
+    document.body.innerHTML = "";
+    vi.unstubAllGlobals();
+  });
+
+  it("presence 只交给 onPresence，不交给 onEvent", async () => {
+    vi.resetModules();
+    const { useRealtime } = await import("./useRealtime");
+    const events: string[] = [];
+    const viewers: [string, number][] = [];
+    function Probe() {
+      useRealtime({
+        topics: ["game:8K2QXM"],
+        onEvent: (ev) => events.push(ev.type),
+        onPresence: (topic, n) => viewers.push([topic, n]),
+      });
+      return null;
+    }
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    render(<Probe />, container);
+
+    const socket = await vi.waitFor(() => lastSocket());
+    socket.open();
+    socket.receive({ topic: "game:8K2QXM", type: "presence", data: { viewers: 3 } });
+    socket.receive({ topic: "game:8K2QXM", type: "seat.taken", v: 2 });
+    await vi.waitFor(() => expect(events).toEqual(["seat.taken"]));
+    expect(viewers).toEqual([["game:8K2QXM", 3]]);
   });
 });

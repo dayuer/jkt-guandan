@@ -69,14 +69,11 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
 
   // 这一局的实时（#49）：座位有人坐上、有人退出、局头改了时间……服务端都发到 game:{code} 上，
   // 我们只当「有事发生」的信号，一律重新拉 REST。座位的落座动画由 GameTable 比对前后座位自己播，
-  // 所以这里不需要关心事件里带的是什么。例外是 presence（「N 人正在看」，#46）：它不是牌局变化，
-  // 不能触发重新拉，否则人数一变，每个在看的人都去拉一次 REST。
+  // 所以这里不需要关心事件里带的是什么。
   useRealtime({
     topics: [`game:${code}`],
     poll: true,
-    onEvent: (ev) => {
-      if (ev.type !== "presence") void load();
-    },
+    onEvent: () => void load(),
     refresh: () => void load(),
   });
 
