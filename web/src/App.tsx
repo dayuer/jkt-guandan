@@ -168,7 +168,7 @@ export function App() {
       )}
 
       {!ready ? (
-        <p class="empty">正在打开…</p>
+        <p class="empty-state">正在打开…</p>
       ) : route.name === "detail" ? (
         <Detail
           code={route.code}

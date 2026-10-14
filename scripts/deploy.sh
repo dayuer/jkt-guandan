@@ -78,7 +78,12 @@ else
 fi
 
 log "上传静态文件到 $WEB_ROOT/$SHA/"
-tar -C "$work/dist" -czf - . | ssh "$SSH_HOST" "set -eu
+# macOS 的 bsdtar 会带上扩展属性（LIBARCHIVE.xattr.com.apple.provenance 等），服务器上的 GNU tar
+# 解包时会报一串 warning。COPYFILE_DISABLE 去掉 ._ 文件，--no-xattrs（本机 tar 支持时）去掉扩展属性。
+tar_flags=""
+if tar --no-xattrs -cf /dev/null -T /dev/null 2>/dev/null; then tar_flags="--no-xattrs"; fi
+# shellcheck disable=SC2086 # tar_flags 为空时不该变成一个空参数
+COPYFILE_DISABLE=1 tar $tar_flags -C "$work/dist" -czf - . | ssh "$SSH_HOST" "set -eu
   d='$WEB_ROOT/$SHA'
   if [ -d \"\$d\" ]; then cat >/dev/null; echo '[deploy] 静态目录已存在，跳过'; exit 0; fi
   rm -rf \"\$d.tmp\" && mkdir -p \"\$d.tmp\"

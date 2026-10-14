@@ -87,7 +87,7 @@ export function Privacy({ hasIdentity, toast, onBack, onDeleted }: Props) {
             </button>
           </div>
         ) : (
-          <p class="empty">现在这台设备没有身份，没有可以注销的数据。</p>
+          <p class="empty-state">现在这台设备没有身份，没有可以注销的数据。</p>
         )}
 
         <p class="disclaimer">纯娱乐 · 不设彩头 · 不涉及任何金钱输赢</p>

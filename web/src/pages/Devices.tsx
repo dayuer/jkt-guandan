@@ -91,7 +91,7 @@ export function Devices({ me, toast, onBack, onSignedOut }: Props) {
 
       {me && <div class="small-title">这些设备都是「{me.nickname}」</div>}
 
-      {devices === null && <p class="empty">正在看…</p>}
+      {devices === null && <p class="empty-state">正在看…</p>}
       {error && <p class="error">{error}</p>}
 
       <div class="list">

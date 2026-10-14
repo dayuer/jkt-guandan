@@ -37,7 +37,7 @@ export function Me({ me, requireIdentity, onDevices, onPrivacy }: Props) {
         </div>
       ) : (
         <>
-          <p class="empty">
+          <p class="empty-state">
             还没有身份。
             <br />
             填个称呼就能报名、开一局。

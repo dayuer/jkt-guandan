@@ -69,6 +69,12 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
     void load();
   }, [load]);
 
+  // 从一局跳到另一局时组件是复用的（路由参数变了而已），弹层要跟着关掉，
+  // 不然会停在上一个局的分享面板上。
+  useEffect(() => {
+    setShareOpen(false);
+  }, [code]);
+
   // 这一局的实时（#49）：座位有人坐上、有人退出、局头改了时间……服务端都发到 game:{code} 上，
   // 我们只当「有事发生」的信号，一律重新拉 REST。座位的落座动画由 GameTable 比对前后座位自己播，
   // 所以这里不需要关心事件里带的是什么。
@@ -206,10 +212,11 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   }, [isHost, closed, me?.id, toast]);
 
   if (!detail) {
+    // 还没拿到数据时底部没有操作栏，不用留那一块空白。
     return (
       <div class="body">
         <Nav title="牌局详情" onBack={onBack} />
-        {error ? <p class="error">{error}</p> : <p class="empty">正在打开…</p>}
+        {error ? <p class="error">{error}</p> : <p class="empty-state">正在打开…</p>}
       </div>
     );
   }
@@ -219,7 +226,7 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
 
   return (
     <>
-      <div class="body">
+      <div class="body has-actionbar">
         <Nav title="牌局详情" onBack={onBack} />
 
         {myWait && !closed && (
