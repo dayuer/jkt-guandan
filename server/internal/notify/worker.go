@@ -60,7 +60,7 @@ func (w *Worker) Task(ctx context.Context, beat func()) error {
 		if err != nil {
 			slog.Error("推送发送失败", "err", err)
 		} else if res != (Result{}) {
-			slog.Info("推送", "sent", res.Sent, "dropped", res.Dropped, "retry", res.Retried, "gone_subscriptions", res.GoneSubscriptions)
+			slog.Info("推送", "sent", res.Sent, "wx_sent", res.WxSent, "dropped", res.Dropped, "retry", res.Retried, "gone_subscriptions", res.GoneSubscriptions)
 		}
 		beat()
 		select {
@@ -74,6 +74,8 @@ func (w *Worker) Task(ctx context.Context, beat func()) error {
 // Result 是一轮做了什么。
 type Result struct {
 	Sent, Dropped, Retried, GoneSubscriptions int
+	// WxSent 是其中经订阅消息送达的条数（已计入 Sent）。
+	WxSent int
 }
 
 type due struct {
@@ -140,9 +142,15 @@ func (w *Worker) RunOnce(ctx context.Context) (Result, error) {
 		wg       sync.WaitGroup
 		sem      = make(chan struct{}, Concurrency)
 	)
+	var wxDue []due
 	for _, d := range toSend {
 		list := subs[d.userID]
 		if len(list) == 0 {
+			// 没有 Web Push 订阅（小游戏用户）：这类提醒有订阅消息模板的话，改走订阅消息（#137）。
+			if _, ok := w.svc.wx.template(d.kind); ok {
+				wxDue = append(wxDue, d)
+				continue
+			}
 			decisions[d.id] = decision{outcomeDropped, "没有推送订阅"}
 			continue
 		}
@@ -160,7 +168,15 @@ func (w *Worker) RunOnce(ctx context.Context) (Result, error) {
 			}(d.id, sub)
 		}
 	}
+	// 订阅消息和 Web Push 并行发；它自己先写一个短事务占次数（见 sendWx）。
+	wxRes, err := w.sendWx(ctx, now, wxDue)
 	wg.Wait()
+	if err != nil {
+		return Result{}, err
+	}
+	for id, dec := range wxRes.decisions {
+		decisions[id] = dec
+	}
 
 	// 汇总：任何一台设备送达就算发出；404/410 的订阅删掉，这条提醒也视为成功；
 	// 429、5xx、网络错误重试；其他 4xx（请求本身有问题）重试也没用，放弃。
@@ -210,7 +226,7 @@ func (w *Worker) RunOnce(ctx context.Context) (Result, error) {
 		}
 	}
 
-	res := Result{GoneSubscriptions: len(gone)}
+	res := Result{GoneSubscriptions: len(gone), WxSent: wxRes.sent}
 	attemptsOf := make(map[int64]int, len(batch))
 	for _, d := range batch {
 		attemptsOf[d.id] = d.attempts
@@ -223,22 +239,38 @@ func (w *Worker) RunOnce(ctx context.Context) (Result, error) {
 			case outcomeSent:
 				_, err = tx.ExecContext(ctx, `UPDATE outbox SET sent_at = ?, last_error = NULL WHERE id = ?`, unix, id)
 			case outcomeDropped:
-				_, err = tx.ExecContext(ctx, `UPDATE outbox SET dropped_at = ?, last_error = ? WHERE id = ?`, unix, dec.reason, id)
+				// sent_at 置空：订阅消息发送前预占时写过它（sendWx）。
+				_, err = tx.ExecContext(ctx, `UPDATE outbox SET sent_at = NULL, dropped_at = ?, last_error = ? WHERE id = ?`, unix, dec.reason, id)
 			case outcomeRetry:
 				n := attemptsOf[id] + 1
 				if n >= MaxAttempts {
 					_, err = tx.ExecContext(ctx,
-						`UPDATE outbox SET attempts = ?, dropped_at = ?, last_error = ? WHERE id = ?`,
+						`UPDATE outbox SET sent_at = NULL, attempts = ?, dropped_at = ?, last_error = ? WHERE id = ?`,
 						n, unix, "重试 8 次仍失败："+dec.reason, id)
 					dec.outcome = outcomeDropped
 					decisions[id] = dec
 				} else {
 					_, err = tx.ExecContext(ctx,
-						`UPDATE outbox SET attempts = ?, next_try = ?, last_error = ? WHERE id = ?`,
+						`UPDATE outbox SET sent_at = NULL, attempts = ?, next_try = ?, last_error = ? WHERE id = ?`,
 						n, now.Add(backoff(n)).Unix(), dec.reason, id)
 				}
 			}
 			if err != nil {
+				return err
+			}
+		}
+		// 订阅消息：没发出去的退回预占的次数；微信说用户没订阅（43101）的，这个模板的次数清零。
+		for _, q := range wxRes.refund {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE wx_subscribe_quota SET remaining = min(remaining + 1, ?), updated_at = ? WHERE user_id = ? AND template_id = ?`,
+				MaxWxQuota, unix, q.userID, q.templateID); err != nil {
+				return err
+			}
+		}
+		for _, q := range wxRes.exhausted {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE wx_subscribe_quota SET remaining = 0, updated_at = ? WHERE user_id = ? AND template_id = ?`,
+				unix, q.userID, q.templateID); err != nil {
 				return err
 			}
 		}

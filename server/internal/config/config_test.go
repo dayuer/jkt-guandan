@@ -16,6 +16,7 @@ func clearEnv(t *testing.T) {
 		"GUANDAN_BACKUP_KEY", "ANTHROPIC_API_KEY",
 		"GUANDAN_GROUP_WECHAT_ID", "GUANDAN_GROUP_WHATSAPP_URL",
 		"GUANDAN_WX_APPID", "GUANDAN_WX_SECRET",
+		"GUANDAN_WX_TMPL_FULL", "GUANDAN_WX_TMPL_FULL_KEYS", "GUANDAN_WX_TMPL_REMIND", "GUANDAN_WX_TMPL_REMIND_KEYS",
 		"AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
 	} {
 		t.Setenv(k, "")
@@ -266,5 +267,49 @@ func TestLoadWxCredentials(t *testing.T) {
 	c, err := config.Load()
 	if err != nil || !c.WxEnabled() || c.WxAppID != "wx123" || c.WxSecret != "s3cret" {
 		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+// 订阅消息模板（#137）：字段名默认 thing1,time2,thing3；写错了启动就报错；没配 AppID / Secret 时通道关闭。
+func TestLoadWxTemplates(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("GUANDAN_DEV", "1")
+	t.Setenv("GUANDAN_WX_TMPL_REMIND", "abc_DEF-123")
+	t.Setenv("GUANDAN_WX_TMPL_FULL", "xyz")
+	t.Setenv("GUANDAN_WX_TMPL_FULL_KEYS", " thing4, date5 ,phrase6")
+	c, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.WxTmplRemind.ID != "abc_DEF-123" || c.WxTmplRemind.Keys != [3]string{"thing1", "time2", "thing3"} {
+		t.Fatalf("remind %+v", c.WxTmplRemind)
+	}
+	if c.WxTmplFull.Keys != [3]string{"thing4", "date5", "phrase6"} {
+		t.Fatalf("full %+v", c.WxTmplFull)
+	}
+	if len(c.WxSubscribeTemplates()) != 2 {
+		t.Fatal("开发模式没配 AppID / Secret 时也开（发送只记日志）")
+	}
+	c.Dev = false
+	if len(c.WxSubscribeTemplates()) != 0 {
+		t.Fatal("非开发模式没配 AppID / Secret 时通道应关闭")
+	}
+	t.Setenv("GUANDAN_WX_APPID", "wxapp")
+	t.Setenv("GUANDAN_WX_SECRET", "sec")
+	c, _ = config.Load()
+	if got := c.WxSubscribeTemplates(); len(got) != 2 || got[config.WxTmplFull].ID != "xyz" {
+		t.Fatalf("%+v", got)
+	}
+
+	for k, v := range map[string]string{
+		"GUANDAN_WX_TMPL_FULL_KEYS": "thing1,time2",
+		"GUANDAN_WX_TMPL_REMIND":    `a"b`,
+	} {
+		t.Run(k, func(t *testing.T) {
+			t.Setenv(k, v)
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("%s=%q 应报错", k, v)
+			}
+		})
 	}
 }

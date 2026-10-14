@@ -7,6 +7,7 @@ import { API_BASE } from "./lib/api";
 import { flush as flushTelemetry } from "./lib/telemetry";
 import { realtime, reconnectRealtime } from "./lib/realtime";
 import { boot, currentUser, onSessionChange } from "./lib/session";
+import { loadSubscribeTemplates } from "./lib/subscribe";
 import { Create } from "./scenes/create";
 import { Detail } from "./scenes/detail";
 import { Friends } from "./scenes/friends";
@@ -89,6 +90,8 @@ onSessionChange(() => {
   app.redraw();
 });
 void boot();
+// 订阅消息的模板 ID 要在用户点「报名占座」之前拿好（#137）。
+void loadSubscribeTemplates();
 
 // 从转发卡片进来：query 带牌局短码 g（冷启动和热启动都要处理）
 // 切回前台时 onShow 还会带着上一次的 query，同一个短码只进一次。

@@ -129,6 +129,7 @@ func TestRouteTable(t *testing.T) {
 		{"GET /api/push/key", "anonymous", "notify.(*handler).key"},
 		{"POST /api/push/subscribe", "user", "notify.(*handler).subscribe"},
 		{"DELETE /api/push/subscribe", "user", "notify.(*handler).unsubscribe"},
+		{"POST /api/wx/subscribe", "user", "notify.(*handler).wxSubscribe"},
 		{"GET /api/friends", "user", "friends.(*handler).list"},
 		{"PUT /api/follows/{user_id}", "user", "friends.(*handler).star"},
 		{"DELETE /api/follows/{user_id}", "user", "friends.(*handler).unstar"},
@@ -199,7 +200,7 @@ func TestAuthorizationMatrix(t *testing.T) {
 				}
 
 				status, errCode, raw := a.probe(client, rt, code)
-				// 5xx 不算放行：授权之外的地方坏了，矩阵也该发现（没配 key 的蛋蛋、没配 AppID 的小游戏登录是预期的 503）。
+				// 5xx 不算放行：授权之外的地方坏了，矩阵也该发现（没配 key 的蛋蛋、没配 AppID 的小游戏登录和订阅消息是预期的 503）。
 				if status >= 500 && errCode != "agent_disabled" && errCode != "wx_disabled" {
 					t.Fatalf("意外的 %d：%s", status, raw)
 				}
@@ -325,6 +326,8 @@ func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string, s
 		body = map[string]string{"user_id": "someone"}
 	case "POST /api/games/{code}/invites":
 		body = map[string]any{"user_ids": []string{"someone"}}
+	case "POST /api/wx/subscribe":
+		body = map[string]any{"accepted": []string{"tmpl"}}
 	case "POST /api/push/subscribe":
 		body = map[string]any{"endpoint": "https://fcm.googleapis.com/fcm/send/x", "keys": map[string]string{"p256dh": "x", "auth": "y"}}
 	case "DELETE /api/push/subscribe":

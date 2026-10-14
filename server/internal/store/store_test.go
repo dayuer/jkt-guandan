@@ -61,7 +61,7 @@ func TestMigrationsCreateDesignTables(t *testing.T) {
 	want := []string{
 		"claim_tokens", "devices", "events", "follows", "game_bans", "games",
 		"idempotency_keys", "invites", "kv", "outbox", "push_subscriptions",
-		"schema_migrations", "seats", "user_links", "users", "waitlist",
+		"schema_migrations", "seats", "user_links", "users", "waitlist", "wx_subscribe_quota",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("表数量不对，实际 %v", got)

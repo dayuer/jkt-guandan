@@ -42,5 +42,5 @@ H5 的 `format.ts` 依赖 `Intl` 时区，安卓微信不保证支持，打包�
 - 右上角是微信胶囊：标题区和导航栏都让开它；设计稿里右上角的按钮挪到左上或底部操作栏。
 - 分享：「发到微信」用转发卡片（画布现画的 5:4 图，`query` 带牌局短码）；WhatsApp 只能复制话术后自己粘贴。
 - 日历：基础库有 `wx.addPhoneCalendar` 就直接加，否则复制链接去浏览器里加。
-- 提醒：小游戏收不到 Web Push。订阅消息要等服务端的 `wx_subscribe` 发送通道（单独的 issue），现在报名成功只给「加到日历」。
+- 提醒：小游戏收不到 Web Push，走微信订阅消息（#137，`src/lib/subscribe.ts`）。启动时从 `GET /api/config` 拿模板 ID；用户点「报名占座」的那次点按里**同步**调 `wx.requestSubscribeMessage`（没身份时改在称呼层「就用这个名字」那一下），同意了的经 `POST /api/wx/subscribe` 上报。同意了「开局提醒」，报名成功弹层显示「开局前 1 小时会提醒你」；没同意或服务端没配模板，仍给「加到日历」。开发版连本机服务时，服务端配上 `GUANDAN_WX_TMPL_FULL` / `GUANDAN_WX_TMPL_REMIND`（随便填）就会下发模板，发送只记日志。
 - 不做：加到主屏幕、跳出微信的引导；claim 链接改成「我在网页上报过名」输入 6 位认领码（`POST /api/wx/link`）。

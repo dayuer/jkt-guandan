@@ -30,7 +30,8 @@ type Service struct {
 	clk        clock.Clock
 	publicKey  string
 	privateKey string
-	subject    string // VAPID JWT 的 sub：mailto:管理员邮箱，或者本站地址
+	subject    string     // VAPID JWT 的 sub：mailto:管理员邮箱，或者本站地址
+	wx         *WxChannel // 小游戏订阅消息通道（#137），没开时为 nil
 }
 
 // New 读出 VAPID 密钥，第一次启动时生成并写进 kv 表（§5.3）。

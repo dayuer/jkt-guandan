@@ -64,14 +64,17 @@ export function Privacy({ hasIdentity, toast, onBack, onDeleted }: Props) {
           <div class="li">
             <div class="tx">
               拿来做什么
-              <small>只用来让你和牌友互相认出来、把局的提醒发给你。不卖给谁，也没有广告</small>
+              <small>
+                只用来让你和牌友互相认出来、把局的提醒发给你（网页里是浏览器推送；小游戏里是你同意过的微信订阅消息，
+                内容是成局、有人退出、开局前 1 小时、改时间这几类提醒）。不卖给谁，也没有广告
+              </small>
             </div>
           </div>
           <div class="li">
             <div class="tx">
               注销之后会怎样
               <small>
-                称呼、WhatsApp、设备和提醒都会被删除。已经结束的局里，你的座位会显示成「已注销牌友」，
+                称呼、WhatsApp、设备、提醒和微信订阅消息的记录都会被删除。已经结束的局里，你的座位会显示成「已注销牌友」，
                 这样那一局当时有几个人还是记得准的
               </small>
             </div>
