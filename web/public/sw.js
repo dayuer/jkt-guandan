@@ -74,8 +74,10 @@ async function openOrFocus(url) {
   const first = clients[0];
   if (first && "navigate" in first) {
     try {
-      const moved = await first.navigate(path);
-      await (moved || first).focus();
+      // 先 focus 再 navigate：浏览器只在点通知后很短的时间里允许 focus，而 navigate 要等
+      // 新页面加载完才 resolve，慢网下等完再 focus 会被拒（#80 预审建议 1）。
+      await first.focus();
+      await first.navigate(path);
       return;
     } catch {
       // 不受这个 worker 控制的窗口不能 navigate，退回新开。

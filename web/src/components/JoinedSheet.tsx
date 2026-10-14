@@ -41,7 +41,9 @@ function initialMode(support: PushSupport): Mode {
 /** 进不了引导屏时的说法（#70 合并前，或者调用方不需要引导）。 */
 function guideHint(support: PushSupport): string {
   if (support.kind === "in-app-browser") {
-    return support.app === "wechat" ? "微信里收不到网页提醒，换个方式" : "WhatsApp 里收不到网页提醒，换个方式";
+    // 只点名认得准的两个；Instagram / Facebook / LINE 这些（#70）统一说「聊天软件」，别叫错名字。
+    const name: Record<string, string> = { wechat: "微信", whatsapp: "WhatsApp" };
+    return `${name[support.app] ?? "聊天软件"}里收不到网页提醒，换个方式`;
   }
   return "iPhone 要先加到主屏幕才收得到提醒，先换个方式";
 }

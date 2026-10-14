@@ -159,6 +159,22 @@ describe("报名成功弹层（B4–B6）", () => {
     expect(push.subscribeCalls).toBe(0);
   });
 
+  it("没有引导屏可用时：微信里说「微信」，认不准的内置浏览器不乱点名", async () => {
+    push.support = { kind: "in-app-browser", app: "wechat" };
+    const { container } = mount(detail(3));
+    click(container, "提醒我");
+    await flush();
+    expect(container.textContent).toContain("微信里收不到网页提醒");
+
+    document.body.innerHTML = "";
+    push.support = { kind: "in-app-browser", app: "instagram" } as unknown as PushSupport;
+    const other = mount(detail(3)).container;
+    click(other, "提醒我");
+    await flush();
+    expect(other.textContent).toContain("聊天软件里收不到网页提醒");
+    expect(other.textContent).not.toContain("WhatsApp 里");
+  });
+
   it("这台设备已经订阅过：显示「提醒已经开着」", async () => {
     push.permission = "granted";
     push.subscribed = true;
