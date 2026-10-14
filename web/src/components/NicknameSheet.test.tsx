@@ -55,9 +55,16 @@ describe("称呼弹层（#130 第 3 条）", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("关掉浏览器的自动填充条，回车键显示「完成」", () => {
+  it("没有 autofocus：弹层是异步挂上的，程序化 focus 在 iOS / 微信 / XWeb 里只给红框不弹键盘（P0）", () => {
     const { input } = mount();
-    expect(input.getAttribute("autocomplete")).toBe("off");
+    expect(input.hasAttribute("autofocus")).toBe(false);
+    expect(document.activeElement).not.toBe(input);
+  });
+
+  it("输入框的属性：称呼自动填充、文字键盘、回车键显示「完成」", () => {
+    const { input } = mount();
+    expect(input.getAttribute("autocomplete")).toBe("nickname");
+    expect(input.getAttribute("inputmode")).toBe("text");
     expect(input.getAttribute("enterkeyhint")).toBe("done");
   });
 });

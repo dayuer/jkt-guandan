@@ -48,6 +48,14 @@ select {
   color: inherit;
 }
 
+/* 输入框至少 16px：iOS 上小于 16px 的输入框一聚焦就把整页放大（P0 键盘问题排查时一并修）。
+   body 是 15px，只靠 font: inherit 会掉到 15px。 */
+input,
+textarea,
+select {
+  font-size: var(--fs-h3);
+}
+
 button {
   cursor: pointer;
   border: 0;
@@ -1578,7 +1586,7 @@ html.lock-overscroll body {
   border: 1.5px solid var(--line-2);
   background: var(--card);
   color: var(--ink);
-  font-size: var(--fs-15);
+  font-size: var(--fs-h3); /* ≥16px，iOS 才不会聚焦时放大页面 */
 }
 
 .composer input:focus {

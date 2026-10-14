@@ -188,6 +188,27 @@ test("首页：第一张卡片完整露在固定头部下面，顶边和圆角�
   }
 });
 
+test("称呼弹层：不自动聚焦，点输入框才聚焦，打完字按回车就报上名（P0、#130）", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.goto(`/g/${codes[1]}`);
+  await page.getByRole("button", { name: "报名占座" }).click();
+
+  const sheet = page.locator("form.sheet");
+  const input = sheet.getByRole("textbox", { name: "称呼" });
+  await expect(input).toBeVisible();
+  // 程序化聚焦在 iOS / 微信里只给红框不弹键盘，所以一律不自动聚焦。
+  expect(await input.evaluate((el) => document.activeElement === el)).toBe(false);
+  expect(await input.evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
+
+  await input.click();
+  expect(await input.evaluate((el) => document.activeElement === el)).toBe(true);
+  await input.pressSequentially("E2E 回车");
+  await input.press("Enter");
+
+  await expect(sheet).toHaveCount(0);
+  await expect(page.locator(".disc.me")).toHaveCount(1);
+});
+
 test("首页空状态没有虚线框（#56）", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("tab", { name: "BSD" }).click();

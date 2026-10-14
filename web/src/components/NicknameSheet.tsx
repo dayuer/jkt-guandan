@@ -55,11 +55,13 @@ export function NicknameSheet({ onDone, onCancel }: Props) {
             }}
             placeholder="比如：老王"
             maxLength={12}
-            autoFocus
+            // 不要 autoFocus（P0）：弹层是点完按钮后异步挂上的，这时的程序化 focus 已经不在用户手势里。
+            // iOS Safari、微信的 WKWebView、安卓 XWeb 会把焦点给它（红框）却不弹键盘；
+            // 有的 WebView 里再点一下已经有焦点的输入框也不弹，用户就卡住了。让用户自己点。
             aria-label="称呼"
-            name="gd-nickname"
-            // 不要浏览器的自动填充条：它会盖住「就用这个名字」，而且填进来的多半是真名（#130）。
-            autoComplete="off"
+            name="nickname"
+            autoComplete="nickname"
+            inputMode="text"
             autoCapitalize="off"
             spellcheck={false}
             enterKeyHint="done"
