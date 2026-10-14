@@ -1,2 +1,4 @@
 node_modules/
 game.js
+.preview-*.png
+project.private.config.json
