@@ -131,23 +131,6 @@ func (s *Service) kickDeviceAfterCommit(tx *store.Tx, deviceID string) {
 // ErrBanned 表示用户或设备被封禁（guandan admin ban）。
 var ErrBanned = errors.New("identity: 已被封禁")
 
-// ForRealtime 是 WebSocket 握手时的身份识别（§5.5）：没有身份返回空字符串；被封禁返回 ErrBanned，
-// 握手随之 403。和心跳时的 StillValid 是同一套规则。
-func (s *Service) ForRealtime(r *http.Request) (userID, deviceID string, err error) {
-	ident := s.FromRequest(r)
-	if ident == nil {
-		return "", "", nil
-	}
-	banned, err := s.Banned(r.Context(), ident)
-	if err != nil {
-		return "", "", err
-	}
-	if banned {
-		return "", "", ErrBanned
-	}
-	return ident.User.ID, ident.Device.ID, nil
-}
-
 // StillValid 是实时连接每次心跳时的复查（#43 的兜底）：这台设备还在，并且（顺着合并关系）
 // 还属于握手时的那个用户，用户和设备都没有被封禁。读连接池上两次查询，开销很小。
 func (s *Service) StillValid(ctx context.Context, userID, deviceID string) bool {

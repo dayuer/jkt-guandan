@@ -348,3 +348,26 @@ func TestClaudeClient(t *testing.T) {
 		srv.Close()
 	}
 }
+
+// 忙不过来（agent_busy）时不扣设备额度（#65 复核建议 1）。
+func TestBusyDoesNotSpendQuota(t *testing.T) {
+	ok := []string{"好\n===\n" + `{"date":"2026-10-15","time":"19:30","area":"PIK","venue":"PIK Avenue"}`}
+	h := newTestHandler(&fakeModel{chunks: ok})
+	h.device = func(*http.Request) string { return "dev-1" }
+	for i := 0; i < MaxConcurrent; i++ {
+		h.slots <- struct{}{}
+	}
+	for i := 0; i < 5; i++ {
+		if rec := post(t, h, `{"text":"打一局"}`); errorCode(t, rec) != "agent_busy" {
+			t.Fatalf("%d %s", rec.Code, rec.Body)
+		}
+	}
+	for i := 0; i < MaxConcurrent; i++ {
+		<-h.slots
+	}
+	for i := 0; i < PerDevicePerDay; i++ {
+		if rec := post(t, h, `{"text":"打一局"}`); rec.Code != http.StatusOK {
+			t.Fatalf("第 %d 次：%d %s", i+1, rec.Code, rec.Body)
+		}
+	}
+}

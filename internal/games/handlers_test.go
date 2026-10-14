@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -51,13 +52,11 @@ func newServer(t *testing.T) *srvFixture {
 	gamesSvc := games.NewService(st, clk, nil)
 
 	srv := httptest.NewTLSServer(httpapi.New(httpapi.Options{
-		Config: config.Config{DataDir: t.TempDir(), Dev: true, PublicURL: testOrigin},
-		Store:  st,
-		Clock:  clk,
-		RegisterRoutes: func(mux *http.ServeMux) {
-			identity.Register(mux, identSvc)
-			games.Register(mux, gamesSvc, identSvc)
-		},
+		Config:   config.Config{DataDir: t.TempDir(), Dev: true, PublicURL: testOrigin},
+		Store:    st,
+		Clock:    clk,
+		Identity: identSvc,
+		Routes:   slices.Concat(identity.Routes(identSvc), games.Routes(gamesSvc)),
 	}))
 	t.Cleanup(srv.Close)
 
@@ -340,16 +339,16 @@ func TestCreateValidatesInput(t *testing.T) {
 // 每条路由都用访客和有身份的用户各打一次。没在路由表里声明权限的路由不会出现在这里，
 // 因为 Register 也是按这张表注册的。
 func TestAuthorizationMatrix(t *testing.T) {
-	for _, rt := range games.Routes {
+	for _, rt := range games.Routes(nil) { // 只列路由，不处理请求
 		rt := rt
-		for _, role := range []games.Role{games.RoleGuest, games.RoleUser} {
+		for _, role := range []string{"guest", "user"} {
 			role := role
-			t.Run(rt.Method+" "+rt.Pattern+" as "+string(role), func(t *testing.T) {
+			t.Run(rt.Method+" "+rt.Pattern+" as "+role, func(t *testing.T) {
 				f := newServer(t)
 
 				client := f.http
 				code := "ZZZZZZ" // 路由存在但这一局不存在：只关心授权结果
-				if role == games.RoleUser {
+				if role == "user" {
 					f.signUp(client, "局头")
 					code = f.createGame(client, nil)
 				}
@@ -357,7 +356,7 @@ func TestAuthorizationMatrix(t *testing.T) {
 				path := strings.ReplaceAll(rt.Pattern, "{code}", code)
 				status := f.probe(client, rt.Method, path).status
 
-				permitted := rt.Permitted[role]
+				permitted := role == "user" || rt.Access.AllowsGuest()
 				switch {
 				case permitted && (status == http.StatusUnauthorized || status == http.StatusForbidden):
 					t.Fatalf("路由已声明允许 %s，却返回 %d", role, status)

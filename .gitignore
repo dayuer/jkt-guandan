@@ -14,3 +14,7 @@ web/dist/*
 .DS_Store
 *.log
 .claude/worktrees/
+
+# Playwright 端到端测试的产物（#72）
+web/test-results/
+web/playwright-report/
