@@ -17,6 +17,7 @@ import { ShareSheet } from "../components/ShareSheet";
 import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
 import { dayLabel, kindLabel, timeHM } from "../format";
+import { gameTitle } from "../title";
 import { OfflineDot, useRealtime } from "../useRealtime";
 import { useRetrying } from "../useRetrying";
 
@@ -69,6 +70,11 @@ export function Detail({ code, me, requireIdentity, toast, onBack }: Props) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 标题和服务端注入的 OG 标题一致（#60）；局头改了时间 / 地点会跟着变。
+  useEffect(() => {
+    if (detail) document.title = gameTitle(detail);
+  }, [detail]);
 
   // 从一局跳到另一局时组件是复用的（路由参数变了而已），弹层要跟着关掉，
   // 不然会停在上一个局的分享面板上。

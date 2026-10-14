@@ -5,6 +5,7 @@ import { clearIdentityMarker, redeemClaimFromURL } from "./identity";
 import { CreateGame } from "./pages/CreateGame";
 import { Detail } from "./pages/Detail";
 import { Home } from "./pages/Home";
+import { APP_NAME } from "./title";
 
 type Route = { name: "home" } | { name: "detail"; code: string } | { name: "new" };
 
@@ -41,6 +42,12 @@ export function App() {
     window.history.pushState(null, "", path);
     setRoute(parseRoute());
   }, []);
+
+  // 标题（#60）：从分享链接落地时服务端注入的是这一局的标题，SPA 内跳回别的页面要换回应用名。
+  // 详情页的标题由 Detail 拿到数据后自己设。
+  useEffect(() => {
+    if (route.name !== "detail") document.title = APP_NAME;
+  }, [route]);
 
   useEffect(() => {
     const onPop = () => setRoute(parseRoute());
