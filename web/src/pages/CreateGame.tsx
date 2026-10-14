@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { ApiError, createGame, newIdempotencyKey, type UserRef } from "../api";
-import { weekday } from "../format";
+import { slashDate, timeHM, weekday } from "../format";
+import type { FormPrefill } from "./Agent";
 import { useRetrying } from "../useRetrying";
 
 /** 允许的片区，和 internal/games 里的白名单一致（§12.2：不接受任意字符串）。 */
@@ -21,12 +22,20 @@ function commonTime(offsetDays: number): { label: string; unix: number } {
   return { label: `${prefix} ${weekday(unix)} 19:30`, unix };
 }
 
+/** 蛋蛋给的时间不在三个常用时间里时，加成第一个选项并选中。 */
+function withDraftTime(presets: { label: string; unix: number }[], startsAt?: number) {
+  if (!startsAt || presets.some((p) => p.unix === startsAt)) return presets;
+  return [{ label: `${slashDate(startsAt)} ${weekday(startsAt)} ${timeHM(startsAt)}`, unix: startsAt }, ...presets];
+}
+
 interface Props {
   me: UserRef | null;
   requireIdentity: () => Promise<UserRef | null>;
   toast: (text: string) => void;
   onBack: () => void;
   onCreated: (code: string) => void;
+  /** 从 07 蛋蛋退回来时带的草稿（#11）。 */
+  prefill?: FormPrefill | null;
 }
 
 /**
@@ -35,13 +44,14 @@ interface Props {
  * 提交带 `Idempotency-Key`（§11.4）：微信里双击、或者超时后用户再点一次，
  * 都不会开出两个局。键在**这次提交开始时**生成一次并记住，重试复用同一个。
  */
-export function CreateGame({ me, requireIdentity, toast, onBack, onCreated }: Props) {
-  const presets = useRef([commonTime(0), commonTime(1), commonTime(2)]);
-  const [startsAt, setStartsAt] = useState(presets.current[0].unix);
-  const [area, setArea] = useState(AREAS[0]);
-  const [venue, setVenue] = useState("");
-  const [kind, setKind] = useState("classic");
-  const [note, setNote] = useState("");
+export function CreateGame({ me, requireIdentity, toast, onBack, onCreated, prefill }: Props) {
+  const draft = prefill?.draft ?? {};
+  const presets = useRef(withDraftTime([commonTime(0), commonTime(1), commonTime(2)], draft.starts_at));
+  const [startsAt, setStartsAt] = useState(draft.starts_at ?? presets.current[0].unix);
+  const [area, setArea] = useState(draft.area && AREAS.includes(draft.area) ? draft.area : AREAS[0]);
+  const [venue, setVenue] = useState(draft.venue ?? "");
+  const [kind, setKind] = useState(draft.kind && KINDS.some((k) => k.value === draft.kind) ? draft.kind : "classic");
+  const [note, setNote] = useState(draft.note ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // 命中敏感词时是哪个字段（§14）：提示要放在对应的输入框下面，而不是笼统地报一句错。
@@ -117,6 +127,13 @@ export function CreateGame({ me, requireIdentity, toast, onBack, onCreated }: Pr
         </div>
 
         <form onSubmit={submit}>
+          {(prefill?.problem || prefill?.said) && (
+            <div class="prefill-note">
+              {prefill.said && <p>你刚才说：「{prefill.said}」</p>}
+              {prefill.problem && <p class="problem">{prefill.problem}</p>}
+            </div>
+          )}
+
           <div class="field">
             <label>什么时候</label>
             <div class="choices">
