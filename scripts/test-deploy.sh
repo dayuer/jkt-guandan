@@ -14,8 +14,8 @@ set -eu
 # `No such container: guandan-deploytest-prev`，docker 那项随机误报。
 #
 # **端口也得每路自己的**：只改名字的话，两路会同时去绑 127.0.0.1:28480，只是把失败从
-# `No such container` 换成 `port is already allocated`。所以两个端口都用内核分配
-# （照 container-smoke.sh 的做法）。容器名、卷名、镜像标签同理。
+# `No such container` 换成 `port is already allocated`。所以两个端口都按 PID 推起点、
+# 再往上找空闲的（做法见下面的 port_from）。容器名、卷名、镜像标签同理。
 #
 # 生产 deploy.sh / deploy-remote.sh 的命名一个字不动 —— 线上就是 guandan，这里只改测试注入的变量。
 RUN=$$
@@ -23,25 +23,37 @@ NAME="guandan-deploytest-$RUN"
 VOLUME="guandan-deploytest-$RUN-data"
 REPO="guandan-deploytest-$RUN"
 
-# 两个**互不相同**的空闲端口：先都扣住再一起关，免得内核把同一个号给两次。
-if [ -n "${PORT:-}" ]; then
-  PORTS="$PORT $((PORT + 1))"   # 显式指定时保持原来的行为
-else
-  PORTS=$(python3 -c '
-import socket
-held, ports = [], []
-for _ in range(2):
+# 两个**互不相同**的空闲端口。
+#
+# 起点用 PID 推，而不是交给内核随便分配：内核会把刚释放的端口**立刻再发出去**，两次
+# 先后运行的测试就会拿到同一个号（实测过：A=54053/54054，B 也是 54053/54054）。
+# 并发时那两路就还是会抢同一个端口 —— 只是把 `No such container` 换成
+# `port is already allocated`。起点带上 PID，两路的起点就不同；万一被别的进程占了，
+# 再往上找第一个空闲的。
+port_from() { # $1 = 起始端口；往上找第一个能绑的，打印出来
+  python3 - "$1" <<'PY'
+import socket, sys
+start = int(sys.argv[1])
+for p in range(start, start + 200):
     s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    held.append(s)
-    ports.append(s.getsockname()[1])
-for s in held:
-    s.close()
-print(" ".join(str(p) for p in ports))
-')
+    try:
+        s.bind(("127.0.0.1", p))
+    except OSError:
+        s.close()
+        continue
+    s.close()          # 立刻交还给 docker；窗口极小
+    print(p)
+    break
+else:
+    sys.exit("从 %d 往上 200 个端口都被占了" % start)
+PY
+}
+if [ -n "${PORT:-}" ]; then
+  PORT_OLD=$((PORT + 1))   # 显式指定时保持原来的行为
+else
+  PORT=$(port_from $((20000 + RUN % 15000)))
+  PORT_OLD=$(port_from $((PORT + 1)))
 fi
-PORT=${PORTS%% *}
-PORT_OLD=${PORTS#* }
 export PORT PORT_OLD
 
 work=$(mktemp -d)
