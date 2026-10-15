@@ -102,7 +102,7 @@ func NewWxChannel(cfg config.Config, tokens wxapi.TokenSource) *WxChannel {
 		slog.Error("订阅消息：没有传 token 源，通道关闭（#159 要求与内容安全共用同一个）")
 		return nil
 	}
-	return &WxChannel{AppID: cfg.WxAppID, Templates: tmpls, Sender: &SubscribeClient{API: &wxapi.Client{Tokens: tokens}}}
+	return &WxChannel{AppID: cfg.WxAppID, Templates: tmpls, Sender: &SubscribeClient{API: &wxapi.Client{Tokens: tokens, Name: "订阅消息"}}}
 }
 
 // devWxAppID 要和 identity.DevWxAppID 一致（开发模式的小游戏登录把 openid 记在 wx_openid:dev 下）。

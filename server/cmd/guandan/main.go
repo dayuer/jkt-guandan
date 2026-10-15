@@ -164,7 +164,12 @@ func run() error {
 	// 直到各自过期重取。这里建一次，注入给两边。没配 AppID / Secret 时是 nil（两个功能都关）。
 	var wxTokens wxapi.TokenSource
 	if cfg.WxEnabled() {
-		wxTokens = &wxapi.StableToken{AppID: cfg.WxAppID, Secret: cfg.WxSecret, Clock: clk}
+		// Metrics 接上（#197）：强制刷新每天限 20 次，真刷了几次要能直接看到数，
+		// 不然额度用完了只能靠猜（内容安全和订阅消息都会跟着停）。
+		wxTokens = &wxapi.StableToken{
+			AppID: cfg.WxAppID, Secret: cfg.WxSecret, Clock: clk,
+			Metrics: wxapi.NewMetrics(reg.Registry),
+		}
 	}
 	// §14 微信内容安全检测（#146）：小游戏用户的称呼、地点、备注写入前送微信查。
 	if guard := newContentGuard(cfg, st, wxTokens, reg.Registry); guard != nil {
@@ -395,7 +400,7 @@ func newContentGuard(cfg config.Config, st *store.Store, tokens wxapi.TokenSourc
 			slog.Error("内容安全检测：没有传 token 源，检测关闭（#159 要求与订阅消息共用同一个）")
 			return nil
 		}
-		g.AppID, g.Checker = cfg.WxAppID, secheck.WxChecker{API: &wxapi.Client{Tokens: tokens}}
+		g.AppID, g.Checker = cfg.WxAppID, secheck.WxChecker{API: &wxapi.Client{Tokens: tokens, Name: "内容安全"}}
 		slog.Info("微信内容安全检测已开启")
 	case cfg.Dev:
 		g.AppID, g.Checker = identity.DevWxAppID, secheck.DevChecker{}
