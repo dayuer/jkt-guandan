@@ -30,18 +30,19 @@ func loadDetailFrom(ctx context.Context, q queryer, code, viewerID string) (*Det
 		d                   Detail
 		startsAt, createdAt int64
 		rescheduledAt       int64
+		hostSince           int64
 		hostName            string
 	)
 	err := q.QueryRowContext(ctx, `
 		SELECT g.id, g.short_code, g.host_id, g.starts_at, g.area, g.venue, g.kind,
 		       COALESCE(g.note, ''), g.status, g.version, g.created_at,
-		       COALESCE(g.rescheduled_at, 0), COALESCE(u.nickname, '')
+		       COALESCE(g.rescheduled_at, 0), COALESCE(g.host_since, 0), COALESCE(u.nickname, '')
 		  FROM games g
 		  LEFT JOIN users u ON u.id = g.host_id
 		 WHERE g.short_code = ?`, code).
 		Scan(&d.Game.ID, &d.Game.ShortCode, &d.Game.HostID, &startsAt, &d.Game.Area,
 			&d.Game.Venue, &d.Game.Kind, &d.Game.Note, &d.Game.Status, &d.Game.Version,
-			&createdAt, &rescheduledAt, &hostName)
+			&createdAt, &rescheduledAt, &hostSince, &hostName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -51,6 +52,7 @@ func loadDetailFrom(ctx context.Context, q queryer, code, viewerID string) (*Det
 	d.Game.StartsAt = time.Unix(startsAt, 0)
 	d.Game.CreatedAt = time.Unix(createdAt, 0)
 	d.Game.RescheduledAt = unixOrZero(rescheduledAt)
+	d.Game.HostSince = unixOrZero(hostSince)
 	d.HostName = hostName
 
 	seats, err := q.QueryContext(ctx, `
@@ -125,6 +127,11 @@ func loadDetailFrom(ctx context.Context, q queryer, code, viewerID string) (*Det
 				d.MyJoinedAt = entry.CreatedAt
 			}
 		}
+		// 我接手当上局头的时刻（#189）：HostSince 是空的就说明我还是开局那个人本人
+		// —— 「你成了局头」对他不是新闻。
+		if d.Game.HostID == viewerID && !d.Game.HostSince.IsZero() {
+			d.MyBecameHostAt = d.Game.HostSince
+		}
 		var inviter Seat
 		err := q.QueryRowContext(ctx, `
 			SELECT i.invited_by, COALESCE(u.nickname, '')
@@ -153,7 +160,7 @@ func loadGameByID(ctx context.Context, tx *store.Tx, id string) (Game, error) {
 const gameColumns = `
 	SELECT g.id, g.short_code, g.host_id, g.starts_at, g.area, g.venue, g.kind,
 	       COALESCE(g.note, ''), g.status, g.version, g.created_at,
-	       COALESCE(g.rescheduled_at, 0)
+	       COALESCE(g.rescheduled_at, 0), COALESCE(g.host_since, 0)
 	  FROM games g`
 
 // scanner 是 *sql.Row 和 *sql.Rows 共有的部分，让同一个扫描逻辑两处都能用。
@@ -172,15 +179,17 @@ func scanGameFrom(row scanner) (Game, error) {
 		g                   Game
 		startsAt, createdAt int64
 		rescheduledAt       int64
+		hostSince           int64
 	)
 	err := row.Scan(&g.ID, &g.ShortCode, &g.HostID, &startsAt, &g.Area, &g.Venue,
-		&g.Kind, &g.Note, &g.Status, &g.Version, &createdAt, &rescheduledAt)
+		&g.Kind, &g.Note, &g.Status, &g.Version, &createdAt, &rescheduledAt, &hostSince)
 	if err != nil {
 		return Game{}, err
 	}
 	g.StartsAt = time.Unix(startsAt, 0)
 	g.CreatedAt = time.Unix(createdAt, 0)
 	g.RescheduledAt = unixOrZero(rescheduledAt)
+	g.HostSince = unixOrZero(hostSince)
 	return g, nil
 }
 
