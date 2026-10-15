@@ -493,7 +493,13 @@ dirty_tree_action() {
 
 # 日志放哪：默认 `$TMPDIR/local-ci-logs`，跨运行留着（不是用完就删的临时文件）。
 # LOCAL_CI_LOG_DIR 可覆盖（自测里指到临时目录）。
-local_ci_log_dir() { printf '%s' "${LOCAL_CI_LOG_DIR:-${TMPDIR:-/tmp}/local-ci-logs}"; }
+# ⚠️ 斜杠要收拾：macOS 的 `$TMPDIR` 结尾**自带一个 `/`**，直接拼就成了
+# `/var/…/T//local-ci-logs`。第一版只去了**结尾**的斜杠，没用 —— 双斜杠在**中间**。
+# 现在把连续的斜杠收成一个，再去结尾的（打印好看，status 描述只有 140 字也省一格）。
+local_ci_log_dir() {
+  local d="${LOCAL_CI_LOG_DIR:-${TMPDIR:-/tmp}/local-ci-logs}"
+  printf '%s' "$d" | sed -e 's|//*|/|g' -e 's|/$||'
+}
 
 # 保留最近几份。LOCAL_CI_KEEP_LOGS 可覆盖。
 local_ci_keep_logs() { printf '%s' "${LOCAL_CI_KEEP_LOGS:-20}"; }

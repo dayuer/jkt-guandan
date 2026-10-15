@@ -594,6 +594,13 @@ eq '日志名：别的 context 也一样' \
   "$(log_file_name ac6c1417 local-ci/test 20261016-061500)"
 eq '日志名：sha 短于 7 位也不炸' 'abc-x-t.log' "$(log_file_name abc x t)"
 
+# macOS 的 $TMPDIR 结尾**自带一个 `/`**，不去掉路径就成 `/var/…/T//local-ci-logs`：
+# 打印难看，而且 status 描述只有 140 字，白占一格。真跑红的那次就是这么发现的。
+eq '日志目录：$TMPDIR 结尾的斜杠要去掉' '/x/local-ci-logs' "$(TMPDIR=/x/ local_ci_log_dir)"
+eq '日志目录：LOCAL_CI_LOG_DIR 也去尾斜杠' '/y' "$(LOCAL_CI_LOG_DIR=/y/ local_ci_log_dir)"
+eq '日志目录：正常路径不动' '/z/local-ci-logs' "$(TMPDIR=/z local_ci_log_dir)"
+eq '日志目录：不设 TMPDIR 时退回 /tmp' '/tmp/local-ci-logs' "$(TMPDIR= local_ci_log_dir)"
+
 # 保留最近 N 份。
 PL=$(mktemp -d)
 for i in 1 2 3 4 5; do printf 'x\n' > "$PL/a-$i.log"; done
