@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
@@ -61,6 +62,9 @@ type WxExchanger interface {
 func (s *Service) SetWx(appID string, ex WxExchanger) {
 	s.wxAppID, s.wx = appID, ex
 }
+
+// SetContentGuard 接上微信内容安全检测（#146）：小游戏新建身份时的称呼先送微信查。nil 时不查。
+func (s *Service) SetContentGuard(g *secheck.Guard) { s.sec = g }
 
 // AllowWxLogin 检查这个 IP 现在能不能调小游戏登录（每 IP 每分钟 20 次）：每次都要调一次微信接口，
 // 微信那边对 code2Session 也有频率限制，不能让一个人把它用光。
@@ -224,11 +228,17 @@ func (s *Service) attachWxLinks(ctx context.Context, tx *store.Tx, userID string
 	return nil
 }
 
-// userBanned 查用户本人是否被封禁（§13.6）。
-func userBanned(ctx context.Context, tx *store.Tx, userID string) (bool, error) {
+// wxBanned 查这个用户还能不能从小游戏登录（§13.6）：用户本人被封禁，或者他名下有被封的小游戏设备，都不行。
+//
+// 只看 ua = wx-minigame 的设备（#145）：小游戏重新 wx.login 认回的是同一个用户，封掉的那台小游戏设备
+// 不拦的话，删掉小游戏再进就能拿到一台没被封的新设备。H5 设备被封不连带：那是按设备的处置，
+// 同一个人别的设备（包括小游戏）照常可用；H5 那边清掉 cookie 只能拿到新的匿名身份，本来就绕不回原用户。
+func wxBanned(ctx context.Context, tx *store.Tx, userID string) (bool, error) {
 	var banned bool
-	err := tx.QueryRowContext(ctx,
-		`SELECT banned_at IS NOT NULL FROM users WHERE id = ?`, userID).Scan(&banned)
+	err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM users   WHERE id = ? AND banned_at IS NOT NULL)
+		    OR EXISTS (SELECT 1 FROM devices WHERE user_id = ? AND ua = ? AND banned_at IS NOT NULL)`,
+		userID, userID, WxMinigameUA).Scan(&banned)
 	return banned, err
 }
 
@@ -241,7 +251,8 @@ type WxLoginResult struct {
 
 // WxLogin 是 POST /api/wx/login（#84 §A）。
 //
-//   - 这个微信身份已经关联了用户：给他新挂一台小游戏设备，补写缺的关联；
+//   - 这个微信身份已经关联了用户：给他新挂一台小游戏设备，补写缺的关联；用户被封、或者他名下有被封的
+//     小游戏设备时返回 ErrBanned，不新建设备（#145）；
 //   - 没关联、也没给称呼：NeedNickname；
 //   - 没关联、给了称呼（和 POST /api/me 同一套校验）：新建用户、设备和关联。
 //
@@ -260,6 +271,13 @@ func (s *Service) WxLogin(ctx context.Context, code, nickname string, allowCreat
 	if err != nil {
 		return WxLoginResult{}, err
 	}
+	// 称呼送微信内容安全检测（#146，场景 1 资料）。也在写事务之前：网络请求不占写连接。
+	// 小游戏只在拿到 need_nickname 之后才带称呼，所以带了称呼基本就是要新建身份；认回老用户时称呼用不上，查了也无妨。
+	if clean != "" {
+		if err := s.sec.CheckOpenID(ctx, sess.OpenID, secheck.SceneProfile, secheck.Field{Name: "nickname", Text: clean}); err != nil {
+			return WxLoginResult{}, err
+		}
+	}
 
 	deviceToken := newToken(DeviceTokenBytes)
 	now := s.clk.Now()
@@ -271,7 +289,7 @@ func (s *Service) WxLogin(ctx context.Context, code, nickname string, allowCreat
 		}
 
 		if userID != "" {
-			banned, err := userBanned(ctx, tx, userID)
+			banned, err := wxBanned(ctx, tx, userID)
 			if err != nil {
 				return err
 			}
@@ -359,12 +377,19 @@ func (s *Service) WxLink(ctx context.Context, claimCode, wxCode, clientNet strin
 			return &ClaimConflictError{OtherNickname: owner.Nickname}
 		}
 
-		banned, err := userBanned(ctx, tx, ownerID)
-		if err != nil {
-			return err
-		}
-		if banned {
-			return ErrBanned
+		// 认领码的主人、以及这个微信身份原来关联的人（切换认领时），任一边被封或有被封的小游戏设备都拒绝（#145）：
+		// 否则把被封的微信身份切到另一个号上，就又拿回一台没被封的小游戏设备。
+		for _, uid := range []string{ownerID, linked} {
+			if uid == "" {
+				continue
+			}
+			banned, err := wxBanned(ctx, tx, uid)
+			if err != nil {
+				return err
+			}
+			if banned {
+				return ErrBanned
+			}
 		}
 
 		if err := consumeClaimRow(ctx, tx, rowid, now); err != nil {

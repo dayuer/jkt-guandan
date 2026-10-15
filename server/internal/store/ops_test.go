@@ -183,7 +183,8 @@ func TestCleanupEndsStartedGames(t *testing.T) {
 
 // 超过一批（100 局）也要全部处理完。
 func TestCleanupEndsGamesAcrossBatches(t *testing.T) {
-	st := openTest(t)
+	// 这一个用例要在**一个**写事务里插 230 局 ×3 行，负载高时默认的 2 秒不够（#171）。
+	st := openTestSlow(t)
 	host, guest := seedUsers(t, st)
 	err := st.Write(context.Background(), func(ctx context.Context, tx *store.Tx) error {
 		for i := 0; i < 230; i++ {

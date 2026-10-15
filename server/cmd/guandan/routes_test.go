@@ -120,6 +120,10 @@ func TestRouteTable(t *testing.T) {
 		{"POST /api/games/{code}/cancel", "user", "games.(*handler).cancel"},
 		{"POST /api/games/{code}/kick", "user", "games.(*handler).kick"},
 		{"POST /api/games/{code}/invites", "user", "games.(*handler).invite"},
+		{"GET /api/games/{code}/score", "public", "games.(*handler).score"},
+		{"POST /api/games/{code}/score", "user", "games.(*handler).startScore"},
+		{"POST /api/games/{code}/score/rounds", "user", "games.(*handler).recordRound"},
+		{"PUT /api/games/{code}/score/rounds/{no}", "user", "games.(*handler).editRound"},
 		{"GET /ws", "public+deferidentity", "*realtime.handler"},
 		{"GET /g/{code}", "anonymous", "share.(*handler).ogPage"},
 		{"GET /g/{code}/og.png", "anonymous", "share.(*handler).ogImage"},
@@ -129,6 +133,7 @@ func TestRouteTable(t *testing.T) {
 		{"GET /api/push/key", "anonymous", "notify.(*handler).key"},
 		{"POST /api/push/subscribe", "user", "notify.(*handler).subscribe"},
 		{"DELETE /api/push/subscribe", "user", "notify.(*handler).unsubscribe"},
+		{"POST /api/wx/subscribe", "user", "notify.(*handler).wxSubscribe"},
 		{"GET /api/friends", "user", "friends.(*handler).list"},
 		{"PUT /api/follows/{user_id}", "user", "friends.(*handler).star"},
 		{"DELETE /api/follows/{user_id}", "user", "friends.(*handler).unstar"},
@@ -168,13 +173,18 @@ func handlerName(h http.Handler) string {
 //   - anonymous：谁来都不会被身份挡住（被封禁也不挡：不识别身份）；
 //   - public：访客和用户都能用，被封禁 403 banned；
 //   - user：访客 401 unauthorized，被封禁 403 banned；
-//   - 局头才能做的事（改局、取消、移出）：普通用户 403 not_host，局头放行。
+//   - 局头才能做的事（改局、取消、移出）：普通用户 403 not_host，局头放行；
+//   - 座位上的人才能做的事（记分）：不在座位上的普通用户 403 not_seated，局头（坐在 1 号）放行。
 //
 // 「放行」只看授权：业务上的 400/404/409/503 都算放行。
 func TestAuthorizationMatrix(t *testing.T) {
 	hostOnly := map[string]bool{
 		"PATCH /api/games/{code}": true, "POST /api/games/{code}/cancel": true, "POST /api/games/{code}/kick": true,
 		"POST /api/games/{code}/invites": true,
+	}
+	seatedOnly := map[string]bool{
+		"POST /api/games/{code}/score": true, "POST /api/games/{code}/score/rounds": true,
+		"PUT /api/games/{code}/score/rounds/{no}": true,
 	}
 	for _, rt := range httpapi.Table(newApp(t).options) {
 		for _, role := range []string{"guest", "device", "host", "banned"} {
@@ -199,7 +209,7 @@ func TestAuthorizationMatrix(t *testing.T) {
 				}
 
 				status, errCode, raw := a.probe(client, rt, code)
-				// 5xx 不算放行：授权之外的地方坏了，矩阵也该发现（没配 key 的蛋蛋、没配 AppID 的小游戏登录是预期的 503）。
+				// 5xx 不算放行：授权之外的地方坏了，矩阵也该发现（没配 key 的蛋蛋、没配 AppID 的小游戏登录和订阅消息是预期的 503）。
 				if status >= 500 && errCode != "agent_disabled" && errCode != "wx_disabled" {
 					t.Fatalf("意外的 %d：%s", status, raw)
 				}
@@ -212,6 +222,8 @@ func TestAuthorizationMatrix(t *testing.T) {
 					want = "unauthorized"
 				case role == "device" && hostOnly[rt.Key()]:
 					want = "not_host"
+				case role == "device" && seatedOnly[rt.Key()]:
+					want = "not_seated"
 				}
 				got := "pass"
 				switch {
@@ -301,7 +313,7 @@ func (a *app) gameBody() map[string]any {
 // probe 用一个格式合法的请求打这条路由，返回状态码和错误码。
 func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string, string) {
 	a.t.Helper()
-	path := strings.NewReplacer("{code}", code, "{id}", "nonexistent").Replace(rt.Pattern)
+	path := strings.NewReplacer("{code}", code, "{id}", "nonexistent", "{no}", "1").Replace(rt.Pattern)
 	method := rt.Method
 	if method == "" {
 		method, path = http.MethodGet, "/some/spa/page"
@@ -325,6 +337,14 @@ func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string, s
 		body = map[string]string{"user_id": "someone"}
 	case "POST /api/games/{code}/invites":
 		body = map[string]any{"user_ids": []string{"someone"}}
+	case "POST /api/games/{code}/score":
+		body = map[string]any{"a_fail_limit": 3}
+	case "POST /api/games/{code}/score/rounds":
+		body = map[string]any{"expected_round_no": 1, "head_seat": 1, "partner_place": 2}
+	case "PUT /api/games/{code}/score/rounds/{no}":
+		body = map[string]any{"head_seat": 1, "partner_place": 2}
+	case "POST /api/wx/subscribe":
+		body = map[string]any{"accepted": []string{"tmpl"}}
 	case "POST /api/push/subscribe":
 		body = map[string]any{"endpoint": "https://fcm.googleapis.com/fcm/send/x", "keys": map[string]string{"p256dh": "x", "auth": "y"}}
 	case "DELETE /api/push/subscribe":

@@ -2,7 +2,7 @@
 
 import type { App, Scene, Sheet } from "../core/app";
 import { C, Ctx, Scroller, circle, ellipsize, fillRR, font, initial, strokeRR, text } from "../core/ui";
-import { PAD, avatar, button, chevron, copy, disclaimer, emptyState, errorLine, nav, sheetHeader, textLink } from "../core/widgets";
+import { PAD, avatar, button, chevron, copy, disclaimer, emptyState, errorLine, icon, nav, sheetHeader, textLink } from "../core/widgets";
 import { ApiError, API_BASE, getGroupInfo, listFriends, setStar, type Friend, type GroupInfo } from "../lib/api";
 import { inviteText } from "../../../h5/src/invite";
 import { TAB_H } from "./home";
@@ -58,7 +58,8 @@ export class Friends implements Scene {
           const id = `inv-opt:${i}`;
           fillRR(ctx, 20, cy, w - 40, 64, 14, app.isPressed(id) ? C.beige : C.paper);
           circle(ctx, 50, cy + 32, 18, i === 1 ? "#dff5e6" : i === 2 ? C.redTint : C.card);
-          text(ctx, ic, 50, cy + 33, font(15, "700"), i === 1 ? "#1f8f4e" : i === 2 ? C.red : C.ink2, "center");
+          if (ic === "♥") icon.heart(ctx, 50, cy + 33, 16, C.red);
+          else text(ctx, ic, 50, cy + 33, font(15, "700"), i === 1 ? "#1f8f4e" : C.ink2, "center");
           text(ctx, t, 80, cy + 23, font(15, "600"), C.ink);
           text(ctx, ellipsize(ctx, sub, w - 140, font(12)), 80, cy + 43, font(12), C.ink3);
           chevron(ctx, w - 38, cy + 32, C.ink4);

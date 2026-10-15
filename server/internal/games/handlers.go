@@ -13,6 +13,7 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/identity"
 	"github.com/dayuer/jkt-guandan/server/internal/moderate"
 	"github.com/dayuer/jkt-guandan/server/internal/route"
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
@@ -31,6 +32,11 @@ func Routes(svc *Service) []route.Route {
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/cancel", Access: route.User, Handler: http.HandlerFunc(h.cancel)},
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/kick", Access: route.User, Handler: http.HandlerFunc(h.kick)},
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/invites", Access: route.User, Handler: http.HandlerFunc(h.invite)},
+		// 牌桌计分（#165，§5.6）：能看详情的人都能看；只有座位上的人能写，在 service 里判。
+		{Method: http.MethodGet, Pattern: "/api/games/{code}/score", Access: route.Public, Handler: http.HandlerFunc(h.score)},
+		{Method: http.MethodPost, Pattern: "/api/games/{code}/score", Access: route.User, Handler: http.HandlerFunc(h.startScore)},
+		{Method: http.MethodPost, Pattern: "/api/games/{code}/score/rounds", Access: route.User, Handler: http.HandlerFunc(h.recordRound)},
+		{Method: http.MethodPut, Pattern: "/api/games/{code}/score/rounds/{no}", Access: route.User, Handler: http.HandlerFunc(h.editRound)},
 	}
 }
 
@@ -275,6 +281,9 @@ type meJSON struct {
 	SeatNo    int          `json:"seat_no,omitempty"`
 	Position  int          `json:"position,omitempty"`
 	InvitedBy *userRefJSON `json:"invited_by,omitempty"` // #115：谁邀请了我，只有被邀请的人看得到
+	// #160：我加入这一局的时间、候补补位的时间（Unix 秒）；不在局里 / 不是补位上来的没有这一项。
+	JoinedAt   int64 `json:"joined_at,omitempty"`
+	PromotedAt int64 `json:"promoted_at,omitempty"`
 }
 
 func toDetailJSON(d *Detail) map[string]any {
@@ -286,7 +295,10 @@ func toDetailJSON(d *Detail) map[string]any {
 			User:   userRefJSON{ID: s.UserID, Nickname: s.Nickname},
 		})
 	}
-	me := meJSON{Role: d.Me, SeatNo: d.MySeatNo, Position: d.MyPosition}
+	me := meJSON{
+		Role: d.Me, SeatNo: d.MySeatNo, Position: d.MyPosition,
+		JoinedAt: unixSec(d.MyJoinedAt), PromotedAt: unixSec(d.MyPromotedAt),
+	}
 	if d.MyInviter != nil {
 		me.InvitedBy = &userRefJSON{ID: d.MyInviter.UserID, Nickname: d.MyInviter.Nickname}
 	}
@@ -342,6 +354,12 @@ func toSummariesJSON(items []Summary) []map[string]any {
 		if s.MyRole != "" {
 			item["my_role"] = s.MyRole
 			item["waitlist_pos"] = s.WaitlistPos
+			if at := unixSec(s.MyJoinedAt); at != 0 {
+				item["my_joined_at"] = at
+			}
+			if at := unixSec(s.MyPromotedAt); at != 0 {
+				item["my_promoted_at"] = at
+			}
 		}
 		out = append(out, item)
 	}
@@ -358,13 +376,39 @@ func unixSec(t time.Time) int64 {
 
 // writeGameError 把业务错误映射成状态码（§6）。
 func writeGameError(w http.ResponseWriter, err error) {
-	var conflict *VersionConflict
+	var (
+		conflict      *VersionConflict
+		roundConflict *RoundConflict
+		roundChanged  *RoundChanged
+	)
 	switch {
 	case errors.As(err, &conflict):
 		// 409 里带上最新的牌局，前端据此提示「局已被修改，请确认」。
 		body := toDetailJSON(&conflict.Latest)
 		body["error"] = map[string]string{"code": "version_conflict", "message": err.Error()}
 		writeJSON(w, http.StatusConflict, body)
+	case errors.As(err, &roundConflict):
+		// S12：两人同时记同一局。带上已经记下的那一局和最新的计分。
+		body := toScoreJSON(&roundConflict.Latest)
+		body["round"] = scoreRoundJSON(roundConflict.Existing)
+		body["error"] = map[string]string{"code": "round_taken", "message": err.Error()}
+		writeJSON(w, http.StatusConflict, body)
+	case errors.As(err, &roundChanged):
+		body := toScoreJSON(&roundChanged.Latest)
+		body["error"] = map[string]string{"code": "round_changed", "message": err.Error()}
+		writeJSON(w, http.StatusConflict, body)
+	case errors.Is(err, ErrNotSeated):
+		writeError(w, http.StatusForbidden, "not_seated", err.Error())
+	case errors.Is(err, ErrNotFull):
+		writeError(w, http.StatusConflict, "not_full", err.Error())
+	case errors.Is(err, ErrScoreTooEarly):
+		writeError(w, http.StatusConflict, "too_early", err.Error())
+	case errors.Is(err, ErrScoreNotStarted):
+		writeError(w, http.StatusConflict, "score_not_started", err.Error())
+	case errors.Is(err, ErrRoundNotFound):
+		writeError(w, http.StatusNotFound, "round_not_found", err.Error())
+	case errors.Is(err, ErrIdemKeyReused):
+		writeError(w, http.StatusUnprocessableEntity, "idempotency_key_reused", err.Error())
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, "game_not_found", "牌局不存在")
 	case errors.Is(err, ErrClosed):
@@ -392,6 +436,13 @@ func writeGameError(w http.ResponseWriter, err error) {
 				"message": "请勿涉及金钱：这里只约纯娱乐局",
 				"field":   hit.Field,
 			},
+		})
+	case errors.Is(err, secheck.ErrUnsafe):
+		// 微信内容安全检测判为 risky（#146）：同样是 422 sensitive_word + field，前端不用区分来源。
+		var unsafe *secheck.UnsafeError
+		errors.As(err, &unsafe)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": map[string]any{"code": "sensitive_word", "message": secheck.Message, "field": unsafe.Field},
 		})
 	case errors.Is(err, ErrQuota):
 		writeError(w, http.StatusConflict, "quota_exceeded", err.Error())

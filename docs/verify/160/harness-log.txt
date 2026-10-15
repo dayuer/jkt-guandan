@@ -1,0 +1,50 @@
+WS open
+HTTP GET /api/config → 200
+HTTP GET /api/games → 200
+HTTP POST /api/wx/login → 200
+WS open
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+A game CJPNB0
+HTTP GET /api/games → 200
+HTTP GET /api/games/CJPNB0/score → 200
+HTTP GET /api/games/CJPNB0 → 200
+PASS A：刚报名、还没人改时间 → 没有横幅
+换设备：清掉 1 个本机快照键
+A 改时间 PATCH → 200
+PASS A：局头改时间成功（实际 200）
+HTTP GET /api/games/CJPNB0/score → 200
+HTTP GET /api/games/CJPNB0 → 200
+PASS A：服务端给了 me.joined_at
+PASS A：rescheduled_at 晚于我加入的时间
+HTTP GET /api/games → 200
+HTTP GET /api/games/CJPNB0 → 200
+HTTP GET /api/games/CJPNB0/score → 200
+PASS A：**无快照** + 改过时间 → 出改时间横幅
+tap notice:rescheduled:x
+PASS A：关掉之后不再出现
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+B game WVJESX
+PASS B：阿杰先在候补（实际 waitlist）
+PASS B：还没补位，没有 promoted_at
+HTTP GET /api/games → 200
+HTTP POST /api/events → 200
+HTTP GET /api/games → 200
+PASS B：阿杰补上了座位（实际 seat）
+PASS B：服务端给了 promoted_at
+PASS B：joined_at 从排候补算，早于 promoted_at
+换设备：清掉 2 个本机快照键
+HTTP GET /api/games/WVJESX → 200
+HTTP GET /api/games/WVJESX/score → 200
+PASS B：**无快照** + 补过位 → 出「轮到你了」弹层
+tap sb:0
+PASS B：点「好的，到时见」之后弹层不再出现
+HTTP GET /api/games/WVJESX/score → 200
+HTTP GET /api/games/WVJESX → 200
+HTTP POST /api/events → 200
+PASS B：再进来不再出现

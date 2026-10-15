@@ -1,9 +1,9 @@
 // 08 · 开一局（一期约局直接开这个表单，不经过蛋蛋）。
 // 文字输入走 wx.showKeyboard：点字段 → 底部原生输入条，画布上同步显示。
 
-import type { App, Scene } from "../core/app";
-import { C, Ctx, Scroller, font, text } from "../core/ui";
-import { PAD, button, chip, chipsWrap, disclaimer, errorLine, field, nav } from "../core/widgets";
+import type { App, Scene, Sheet } from "../core/app";
+import { C, Ctx, Scroller, ease, font, text } from "../core/ui";
+import { PAD, button, chip, chipsWrap, disclaimer, errorLine, field, nav, sheetHeader } from "../core/widgets";
 import { ApiError, createGame, inviteError, inviteFriends, inviteSummary, newIdempotencyKey, subscribeRetry, type Friend } from "../lib/api";
 import { currentUser } from "../lib/session";
 import { wibAt, weekday } from "../lib/fmt";
@@ -36,7 +36,8 @@ export class Create implements Scene {
   private idemKey = newIdempotencyKey();
   private scroll = new Scroller();
   private unretry: (() => void) | null = null;
-  private fieldY: Record<string, number> = {};
+  /** 上一次为哪个字段、多高的键盘滚过：同一个组合只滚一次，之后不和手指抢 */
+  private scrolledFor = "";
 
   constructor(private app: App, private nav: Nav) {}
 
@@ -56,7 +57,8 @@ export class Create implements Scene {
     ctx.fillStyle = C.paper;
     ctx.fillRect(0, 0, W, a.H);
     const top = a.contentTop;
-    const bottom = a.H - (a.kbHeight ? a.kbHeight : BAR_H + a.safeBottom);
+    // 键盘弹起时操作栏收起，内容区延伸到可视底边（屏高 − 键盘 − 输入条）
+    const bottom = a.kbHeight ? a.visibleBottom : a.H - BAR_H - a.safeBottom;
     ctx.save();
     ctx.beginPath(); ctx.rect(0, top, W, bottom - top); ctx.clip();
     let y = top + 4 - this.scroll.pos;
@@ -71,7 +73,6 @@ export class Create implements Scene {
     label("哪个片区");
     y = chipsWrap(a, ctx, "area", PAD, y, fw, AREAS, (i) => AREAS[i] === this.area, (i) => { this.area = AREAS[i]; this.changed(); }) + 14;
     label("具体地点");
-    this.fieldY.venue = y + this.scroll.pos;
     y += field(a, ctx, PAD, y, fw, {
       key: "venue", value: this.venue, placeholder: "比如：Pacific Place · 鼎泰丰包间", maxLength: 40, confirmType: "next",
       error: this.badField === "venue" ? this.error : undefined,
@@ -83,7 +84,6 @@ export class Create implements Scene {
     for (const k of KINDS) x += chip(a, ctx, "kind:" + k.value, x, y, k.label, this.kind === k.value, () => { this.kind = k.value; this.changed(); }) + 8;
     y += 50;
     label("备注", "可不填");
-    this.fieldY.note = y + this.scroll.pos;
     y += field(a, ctx, PAD, y, fw, {
       key: "note", value: this.note, placeholder: "比如：新手也欢迎，慢慢打", maxLength: 200, multiple: true,
       error: this.badField === "note" ? this.error : undefined,
@@ -104,8 +104,10 @@ export class Create implements Scene {
     y += 12;
     ctx.restore();
     this.scroll.setMax(y + this.scroll.pos - bottom);
+    this.revealFocus(top, bottom);
 
-    nav(a, ctx, "开一局", () => this.nav.back());
+    // 新建流程：左上用文字「取消」，不用返回箭头（适配稿 1.3、M3）
+    nav(a, ctx, "开一局", undefined, { label: "取消", onTap: () => this.cancel() });
     if (!a.kbHeight) {
       const by = a.H - BAR_H - a.safeBottom;
       ctx.fillStyle = C.card; ctx.fillRect(0, by, W, BAR_H + a.safeBottom);
@@ -116,12 +118,46 @@ export class Create implements Scene {
   }
 
   private focus(key: "venue" | "note", multiple: boolean) {
-    const a = this.app;
-    a.edit({
+    this.app.edit({
       key, value: key === "venue" ? this.venue : this.note, multiple, maxLength: key === "venue" ? 40 : 200,
       onInput: (v) => { if (key === "venue") this.venue = v; else this.note = v; this.clearBad(key); this.changed(); },
     });
-    setTimeout(() => { this.scroll.scrollTo(this.fieldY[key] - a.contentTop - 60); a.redraw(); }, 250);
+  }
+
+  /**
+   * 激活的字段滚到可视底边上方 16（适配稿 2.2）。点字段、点「下一项」都走这里：
+   * 键盘高度到了、或换了字段，就滚一次；本来就在可视区里不滚。220ms ease-out。
+   */
+  private revealFocus(top: number, bottom: number) {
+    const a = this.app, f = a.focusRect;
+    const key = a.editing && a.kbHeight ? `${a.editing.key}@${a.kbHeight}` : "";
+    if (!key) { this.scrolledFor = ""; return; }
+    if (!f || this.scrolledFor === key) return;
+    this.scrolledFor = key;
+    let d = 0;
+    if (f.y + f.h > bottom - 16) d = f.y + f.h - (bottom - 16);
+    else if (f.y < top + 8) d = f.y - (top + 8);
+    if (!d) return;
+    const from = this.scroll.pos, to = Math.min(Math.max(0, from + d), this.scroll.max);
+    a.animate(220, (p) => { this.scroll.pos = from + (to - from) * ease.out(p); });
+  }
+
+  /** 地点或备注里有字就先确认；片区、时间这类选择项不算「填过」（适配稿 M4）。 */
+  private cancel() {
+    const a = this.app;
+    if (a.editing) wx.hideKeyboard({});
+    if (!this.venue.trim() && !this.note.trim()) { this.nav.back(); return; }
+    const s: Sheet = {
+      dialog: true,
+      draw: (ctx, y, w) => {
+        const cy = sheetHeader(ctx, y, w, "不开这一局了？", "填的地点和备注不会保存", true) + 4;
+        const bw = (w - 52) / 2;
+        button(a, ctx, "cancel-keep", 20, cy, bw, 50, "继续填", "soft", () => a.closeSheet(s));
+        button(a, ctx, "cancel-quit", 32 + bw, cy, bw, 50, "不开了", "danger", () => { a.closeSheet(s); this.nav.back(); });
+        return cy + 50 + 20 - y;
+      },
+    };
+    a.openSheet(s);
   }
 
   private clearBad(f: string) {

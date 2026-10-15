@@ -1,4 +1,5 @@
 import { render } from "preact";
+import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateGame, draftTimeLabel } from "./CreateGame";
 import { installFakeSocket } from "../fakeSocket";
@@ -40,10 +41,16 @@ function setup(keys: (string | undefined)[]) {
   return container;
 }
 
+/**
+ * 改场地。包在 act 里，让改内容触发的 effect（换新幂等键）当场跑完：Preact 的 useEffect 排在下一帧之后，
+ * 光等按钮可点不够，机器一忙 effect 就落到提交之后，键换早换晚都会让用例时好时坏（#167）。
+ */
 function fill(container: HTMLElement, value: string) {
   const input = container.querySelector("#venue") as HTMLInputElement;
-  input.value = value;
-  input.dispatchEvent(new Event("input", { bubbles: true }));
+  act(() => {
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 }
 
 function clickSubmit(container: HTMLElement) {

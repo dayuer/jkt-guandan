@@ -97,6 +97,17 @@ func mergeUsers(ctx context.Context, tx *store.Tx, a, b string) (string, error) 
 		`UPDATE devices SET user_id = ? WHERE user_id = ?`,
 		`UPDATE push_subscriptions SET user_id = ? WHERE user_id = ?`,
 		`UPDATE outbox SET user_id = ? WHERE user_id = ?`,
+		// 计分记录里的「谁开始的、谁记的、谁改的」（#165）。
+		`UPDATE score_matches SET started_by = ? WHERE started_by = ?`,
+		`UPDATE score_rounds SET recorded_by = ? WHERE recorded_by = ?`,
+		`UPDATE score_rounds SET edited_by = ? WHERE edited_by = ?`,
+		// 每局当时座位上的人（#172）。
+		`UPDATE score_rounds SET seat1_user = ? WHERE seat1_user = ?`,
+		`UPDATE score_rounds SET seat2_user = ? WHERE seat2_user = ?`,
+		`UPDATE score_rounds SET seat3_user = ? WHERE seat3_user = ?`,
+		`UPDATE score_rounds SET seat4_user = ? WHERE seat4_user = ?`,
+		// 「这个座号最后是谁离开的」（#168）：合并后由保留的身份回座。
+		`UPDATE score_seat_leavers SET user_id = ? WHERE user_id = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, stmt, primary, other); err != nil {
 			return "", err

@@ -87,6 +87,24 @@ type Seat struct {
 	UserID    string
 	Nickname  string
 	CreatedAt time.Time
+	// WaitlistedAt 是候补补位上来的人原来排候补的时间；直接报名坐下的是零值（#160）。
+	WaitlistedAt time.Time
+}
+
+// JoinedAt 是这个人加入这一局的时间：补位上来的从排候补算，其余就是坐下的时间（#160）。
+func (s Seat) JoinedAt() time.Time {
+	if !s.WaitlistedAt.IsZero() {
+		return s.WaitlistedAt
+	}
+	return s.CreatedAt
+}
+
+// PromotedAt 是候补补位的时间，也就是坐下的时间；不是补位上来的是零值（#160）。
+func (s Seat) PromotedAt() time.Time {
+	if s.WaitlistedAt.IsZero() {
+		return time.Time{}
+	}
+	return s.CreatedAt
 }
 
 // WaitEntry 是候补里的人。
@@ -112,6 +130,11 @@ type Detail struct {
 	MyPosition int
 	// MyInviter 是邀请当前用户来这一局的人（#115）；没被邀请为 nil。只给被邀请的人自己看。
 	MyInviter *Seat
+	// MyJoinedAt 是当前用户加入这一局的时间（座位或候补的；补位上来的从排候补算）；不在局里是零值。
+	// MyPromotedAt 是当前用户候补补位的时间；不是补位上来的是零值。换了设备、没有本机快照时，
+	// 客户端拿它们判断改时间横幅和「轮到你了」要不要出（#160）。
+	MyJoinedAt   time.Time
+	MyPromotedAt time.Time
 }
 
 // Summary 是 02 屏列表里的条目。
@@ -127,6 +150,9 @@ type Summary struct {
 	// 空串表示没有按身份算过（首页事件是广播，不带这两项）。
 	MyRole      string
 	WaitlistPos int
+	// MyJoinedAt / MyPromotedAt 同 Detail（#160）；MyRole 为空或 none 时是零值。
+	MyJoinedAt   time.Time
+	MyPromotedAt time.Time
 }
 
 // 业务错误。接口层把它们映射成 §6 的状态码。

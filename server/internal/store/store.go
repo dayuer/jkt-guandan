@@ -34,10 +34,23 @@ const pragmas = "?_pragma=journal_mode(WAL)" +
 const readOnly = "&_pragma=query_only(1)"
 
 // WriteTimeout 是单个写事务的总时限。超时返回 ErrBusy，HTTP 层映射成 503 + Retry-After（§11.1、§12.3）。
+// 生产一律用它；只有测试在机器重负载下才用 Options 调大（#171）。
 const WriteTimeout = 2 * time.Second
 
 // ErrBusy 表示等写锁超时。调用方用 errors.Is 判断。
 var ErrBusy = errors.New("写事务等待超时")
+
+// Options 是 Open 的可选参数。零值就是生产语义（§11.1）。
+type Options struct {
+	// WriteTimeout 覆盖单个写事务的总时限。0 表示用默认的 WriteTimeout。
+	//
+	// **只有测试该动它**：一个用例里几十个 goroutine 抢同一条写连接时（比如
+	// TestFiftyRaceForFourSeats、TestCleanupEndsGamesAcrossBatches），机器 load 高的时候
+	// 排队就会超过 2 秒，用例随机变红，而它想验的是并发的**结果**、不是等锁的耗时（#171）。
+	// 生产不传，保持 2 秒不变 —— 等锁超时给 503 是有意设计的行为，
+	// TestWriteReturnsBusyWhenLockHeldTooLong 钉的就是默认值。
+	WriteTimeout time.Duration
+}
 
 // Store 持有两个连接池：write 只有 1 条连接，read 有 4 条。
 type Store struct {
@@ -45,15 +58,29 @@ type Store struct {
 	read  *sql.DB
 	path  string
 	dsn   string
+	opts  Options
 
 	// onLockWait 收到每次写事务的拿锁等待时间，供 /metrics 使用（§13.7）。
 	onLockWait atomic.Pointer[func(time.Duration)]
+}
+
+// writeTimeout 是这个 Store 的写事务总时限。
+func (s *Store) writeTimeout() time.Duration {
+	if s.opts.WriteTimeout > 0 {
+		return s.opts.WriteTimeout
+	}
+	return WriteTimeout
 }
 
 // Open 打开（必要时创建）dataDir 下的数据库，但不执行迁移。
 // 启动顺序见 §12.1：调用方先锁数据目录、检查磁盘，Open 之后先 QuickCheck，再 Migrate。
 // 数据目录由调用方创建。
 func Open(dataDir string) (*Store, error) {
+	return OpenWith(dataDir, Options{})
+}
+
+// OpenWith 和 Open 一样，只是可以覆盖写事务总时限等选项。生产用 Open，语义不变。
+func OpenWith(dataDir string, opts Options) (*Store, error) {
 	path := filepath.Join(dataDir, "guandan.db")
 	dsn := "file:" + path + pragmas
 
@@ -75,7 +102,7 @@ func Open(dataDir string) (*Store, error) {
 	}
 	read.SetMaxOpenConns(4)
 
-	return &Store{write: write, read: read, path: path, dsn: dsn}, nil
+	return &Store{write: write, read: read, path: path, dsn: dsn, opts: opts}, nil
 }
 
 // Migrate 执行尚未应用的迁移（§12.1 第 5 步，在 QuickCheck 之后）。
@@ -174,7 +201,7 @@ func (t *Tx) Touch(gameID string) {
 }
 
 // Write 是唯一的写入口（§11.1）。它依次做四件事：
-//  1. 给 ctx 加 2 秒上限；等写锁超时返回 ErrBusy；
+//  1. 给 ctx 加写事务上限（默认 WriteTimeout，测试可用 Options 调大）；等写锁超时返回 ErrBusy；
 //  2. 开 BEGIN IMMEDIATE，调用业务函数；
 //  3. 提交前对登记过的牌局检查数据不变量，不通过就回滚；
 //  4. 提交成功后依次执行登记的回调。
@@ -184,7 +211,7 @@ func (t *Tx) Touch(gameID string) {
 //
 // 写事务里不要做任何 I/O（推送、LLM、出图、WebSocket），那些放到 AfterCommit 里。
 func (s *Store) Write(ctx context.Context, fn func(ctx context.Context, tx *Tx) error) (err error) {
-	ctx, cancel := context.WithTimeout(ctx, WriteTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.writeTimeout())
 	defer cancel()
 
 	start := time.Now()

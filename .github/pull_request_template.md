@@ -4,7 +4,7 @@
 ## 关联
 
 Fixes #
-<!-- 或 Refs #N；impl/ 与 audit/ 分支的 PR 必须至少关联一个 issue -->
+<!-- 或 Refs #N；所有 PR 都必须至少关联一个 issue -->
 
 ## 做了什么
 
@@ -12,7 +12,7 @@ Fixes #
 
 - [ ] 本地测试与构建全绿（附关键输出）
 - [ ] 涉及界面：附微信内置浏览器 / iOS Safari / Android Chrome 截图（design PR 附改动屏截图）
-- [ ] CI 首跑即绿（如靠重跑通过，在此说明原因）
+- [ ] 推送后跑过 `scripts/local-ci.sh`，head 上的 status 全绿（贴汇总；靠重跑通过的说明原因）
 
 ## 对计划或设计的偏离
 

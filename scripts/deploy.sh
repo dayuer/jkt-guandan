@@ -36,7 +36,7 @@ log() { printf '[deploy] %s\n' "$*"; }
 cd "$(git rev-parse --show-toplevel)"
 FULL=$(git rev-parse --verify "$REF^{commit}")
 SHA=$(git rev-parse --short=7 "$FULL")
-log "发布 $SHA（$FULL）到 $SSH_HOST"
+log "发布 ${SHA}（${FULL}）到 $SSH_HOST"
 
 case "$(ssh "$SSH_HOST" uname -m)" in
   x86_64 | amd64) PLATFORM=linux/amd64 ;;
@@ -53,7 +53,7 @@ cleanup() {
 trap cleanup EXIT
 git worktree add --detach "$src" "$FULL" >/dev/null
 
-log "构建镜像 guandan:$SHA（$PLATFORM）"
+log "构建镜像 guandan:${SHA}（${PLATFORM}）"
 docker build -q --platform "$PLATFORM" --build-arg BUILD="$FULL" -t "guandan:$SHA" "$src" >/dev/null
 
 log "构建前端产物"
@@ -65,9 +65,9 @@ docker rmi "guandan-web:$SHA" >/dev/null
 [ -f "$work/dist/index.html" ] || { log "前端产物里没有 index.html"; exit 1; }
 
 if ssh "$SSH_HOST" docker image inspect "guandan:$SHA" >/dev/null 2>&1; then
-  log "服务器上已有镜像 guandan:$SHA，跳过上传"
+  log "服务器上已有镜像 guandan:${SHA}，跳过上传"
 elif [ "$IMAGE_SOURCE" = ghcr ]; then
-  log "推送 $GHCR_REPO:$SHA，服务器从 GHCR 拉取"
+  log "推送 $GHCR_REPO:${SHA}，服务器从 GHCR 拉取"
   docker tag "guandan:$SHA" "$GHCR_REPO:$SHA"
   docker push -q "$GHCR_REPO:$SHA" >/dev/null
   # 服务器上统一叫 guandan:<短 SHA>，deploy-remote.sh 和清理旧版本都按这个名字找。

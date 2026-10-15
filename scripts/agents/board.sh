@@ -50,10 +50,10 @@ trap 'rm -f "$tmp"' EXIT
       short=$(printf '%.12s' "$sha")
       if [ "$verdict" = - ]; then state='待复审'
       elif [ "$verdict" = approve ] && [ "$sha" = "$head" ]; then state='✅ approve，与 head 一致'
-      elif [ "$verdict" = approve ]; then state="⚠️ approve 的是 $short，head 已变，需重新 REVIEW"
+      elif [ "$verdict" = approve ]; then state="⚠️ approve 的是 ${short}，head 已变，需重新 REVIEW"
       else state="❌ changes requested ($short)"
       fi
-      [ "$self" = self ] && state="$state；⚠️ 含作者自审，无效"
+      [ "$self" = self ] && state="${state}；⚠️ 含作者自审，无效"
       printf -- '- #%s `%s` head=`%.12s` — %s — %s\n' "$num" "$ref" "$head" "$state" "$title"
     done
   fi

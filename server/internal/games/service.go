@@ -14,6 +14,7 @@ import (
 
 	"github.com/dayuer/jkt-guandan/server/internal/clock"
 	"github.com/dayuer/jkt-guandan/server/internal/ratelimit"
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
@@ -45,7 +46,15 @@ type Service struct {
 
 	// 报名/退出：每用户每分钟 30 次（§12.3）。
 	joinLimiter *ratelimit.Limiter
+	// 计分（开始、记一局、改一局）：每用户每分钟 30 次。一局牌几分钟才打完一局，正常用不到。
+	scoreLimiter *ratelimit.Limiter
+
+	// 内容安全检测（#146）：小游戏用户写的地点、备注先送微信查。nil 时不查。
+	sec *secheck.Guard
 }
+
+// SetContentGuard 接上微信内容安全检测（#146）。
+func (s *Service) SetContentGuard(g *secheck.Guard) { s.sec = g }
 
 // NewService 建牌局服务。pub 为 nil 时用 NopPublisher（#18 的 Hub 还没合进来）。
 func NewService(st *store.Store, clk clock.Clock, pub Publisher) *Service {
@@ -56,10 +65,11 @@ func NewService(st *store.Store, clk clock.Clock, pub Publisher) *Service {
 		pub = NopPublisher{}
 	}
 	return &Service{
-		st:          st,
-		clk:         clk,
-		pub:         pub,
-		joinLimiter: ratelimit.New(30, 30, clk),
+		st:           st,
+		clk:          clk,
+		pub:          pub,
+		joinLimiter:  ratelimit.New(30, 30, clk),
+		scoreLimiter: ratelimit.New(30, 30, clk),
 	}
 }
 
@@ -169,6 +179,8 @@ func (s *Service) attachMyRole(ctx context.Context, viewerID string, items []Sum
 		for _, seat := range items[i].Seats {
 			if seat.UserID == viewerID {
 				items[i].MyRole = "seated"
+				items[i].MyJoinedAt = seat.JoinedAt()
+				items[i].MyPromotedAt = seat.PromotedAt()
 			}
 		}
 		if i > 0 {
@@ -180,7 +192,7 @@ func (s *Service) attachMyRole(ctx context.Context, viewerID string, items []Sum
 
 	// 位置和 loadDetailFrom 一致：先按 created_at，相同再按 rowid。
 	rows, err := s.st.Read().QueryContext(ctx, `
-		SELECT w.game_id,
+		SELECT w.game_id, w.created_at,
 		       (SELECT count(*) FROM waitlist o
 		         WHERE o.game_id = w.game_id
 		           AND (o.created_at < w.created_at
@@ -193,15 +205,17 @@ func (s *Service) attachMyRole(ctx context.Context, viewerID string, items []Sum
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			gameID string
-			pos    int
+			gameID   string
+			joinedAt int64
+			pos      int
 		)
-		if err := rows.Scan(&gameID, &pos); err != nil {
+		if err := rows.Scan(&gameID, &joinedAt, &pos); err != nil {
 			return err
 		}
 		if idx, ok := byID[gameID]; ok && items[idx].MyRole != "seated" {
 			items[idx].MyRole = "waitlist"
 			items[idx].WaitlistPos = pos
+			items[idx].MyJoinedAt = time.Unix(joinedAt, 0)
 		}
 	}
 	return rows.Err()
@@ -226,7 +240,8 @@ func (s *Service) attachSeats(ctx context.Context, items []Summary) error {
 	}
 
 	rows, err := s.st.Read().QueryContext(ctx, `
-		SELECT s.game_id, s.seat_no, s.user_id, COALESCE(u.nickname, ''), s.created_at
+		SELECT s.game_id, s.seat_no, s.user_id, COALESCE(u.nickname, ''), s.created_at,
+		       COALESCE(s.waitlisted_at, 0)
 		  FROM seats s LEFT JOIN users u ON u.id = s.user_id
 		 WHERE s.game_id IN (`+placeholders+`)
 		 ORDER BY s.game_id, s.seat_no`, args...)
@@ -237,14 +252,15 @@ func (s *Service) attachSeats(ctx context.Context, items []Summary) error {
 
 	for rows.Next() {
 		var (
-			gameID    string
-			seat      Seat
-			createdAt int64
+			gameID                  string
+			seat                    Seat
+			createdAt, waitlistedAt int64
 		)
-		if err := rows.Scan(&gameID, &seat.SeatNo, &seat.UserID, &seat.Nickname, &createdAt); err != nil {
+		if err := rows.Scan(&gameID, &seat.SeatNo, &seat.UserID, &seat.Nickname, &createdAt, &waitlistedAt); err != nil {
 			return err
 		}
 		seat.CreatedAt = time.Unix(createdAt, 0)
+		seat.WaitlistedAt = unixOrZero(waitlistedAt)
 		if idx, ok := byID[gameID]; ok {
 			items[idx].Seats = append(items[idx].Seats, seat)
 		}
@@ -268,31 +284,37 @@ func (s *Service) Create(ctx context.Context, hostID string, in CreateInput, ide
 	if err := in.Normalize(now); err != nil {
 		return nil, err
 	}
+	// 本地的长度和词表都过了才送微信（场景 3 论坛），在写事务之外。
+	if err := s.sec.CheckUser(ctx, hostID, secheck.SceneForum,
+		secheck.Field{Name: "venue", Text: in.Venue}, secheck.Field{Name: "note", Text: in.Note}); err != nil {
+		return nil, err
+	}
 
 	const route = "POST /api/games"
+	// 指纹用整理过的参数算：首尾空白、省略 kind 之类不算换了请求。
+	fp := idemFingerprint("starts_at", in.StartsAt.Unix(), "area", in.Area, "venue", in.Venue,
+		"kind", in.Kind, "note", in.Note)
 	var detail *Detail
 	err := s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		// 幂等键：查到了就返回第一次的结果，不再建局。
-		if idemKey != "" {
+		// 幂等键：同一个请求查到了就返回第一次的结果，不再建局；
+		// 键用在了别的接口上或者换了开局参数，返回 ErrIdemKeyReused（#175）。
+		if replay, err := idemReplay(ctx, tx, hostID, idemKey, route, fp); err != nil {
+			return err
+		} else if replay {
 			var saved []byte
-			err := tx.QueryRowContext(ctx,
+			if err := tx.QueryRowContext(ctx,
 				`SELECT response FROM idempotency_keys WHERE user_id = ? AND key = ?`,
-				hostID, idemKey).Scan(&saved)
-			switch {
-			case err == nil:
-				var prev struct {
-					ShortCode string `json:"short_code"`
-				}
-				if err := json.Unmarshal(saved, &prev); err != nil {
-					return err
-				}
-				detail, err = loadDetailTx(ctx, tx, prev.ShortCode, hostID)
-				return err
-			case errors.Is(err, sql.ErrNoRows):
-				// 第一次见到这个键，继续往下建局。
-			default:
+				hostID, idemKey).Scan(&saved); err != nil {
 				return err
 			}
+			var prev struct {
+				ShortCode string `json:"short_code"`
+			}
+			if err := json.Unmarshal(saved, &prev); err != nil {
+				return err
+			}
+			detail, err = loadDetailTx(ctx, tx, prev.ShortCode, hostID)
+			return err
 		}
 
 		// 配额：每人每天最多开 10 局（§10.8）。
@@ -329,17 +351,9 @@ func (s *Service) Create(ctx context.Context, hostID string, in CreateInput, ide
 		s.publishFeedAfterCommit(tx, code, in.Area, EventFeedAdded, 1)
 
 		// 记下这次的结果，下次同一个键直接用（§11.4）。
-		if idemKey != "" {
-			body, err := json.Marshal(map[string]string{"short_code": code})
-			if err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO idempotency_keys (key, user_id, route, status, response, created_at)
-				VALUES (?, ?, ?, 200, ?, ?)`,
-				idemKey, hostID, route, body, now.Unix()); err != nil {
-				return err
-			}
+		if err := idemSave(ctx, tx, hostID, idemKey, route, fp,
+			map[string]string{"short_code": code}, now); err != nil {
+			return err
 		}
 
 		detail, err = loadDetailTx(ctx, tx, code, hostID)
@@ -392,9 +406,17 @@ func (s *Service) Join(ctx context.Context, code, userID string) (*Detail, error
 			return err
 		}
 
+		// 记分开始以后，原来坐在某个座号上的人回到自己空出来的那个座号（#168）：
+		// 分队按座号定，回原座号不会换队；过了 JoinGrace 也能回，免得有人误点「退出」后
+		// 剩下三个人再也记不了分。只限本人、只限原座号，被移出的人上面已经挡掉了。
+		ownSeat, err := formerSeatNo(ctx, tx, game.ID, userID)
+		if err != nil {
+			return err
+		}
+
 		// 开局后还能补人到 JoinGrace：缺一个人的局到点了，正是要临时补人的时候。
 		// 再晚就没意义了。（放在「已经在局里」之后，是为了让重复提交仍然幂等。）
-		if now.After(game.StartsAt.Add(JoinGrace)) {
+		if ownSeat == 0 && now.After(game.StartsAt.Add(JoinGrace)) {
 			return ErrStarted
 		}
 
@@ -407,9 +429,11 @@ func (s *Service) Join(ctx context.Context, code, userID string) (*Detail, error
 			return fmt.Errorf("%w：同时最多占 %d 个位置", ErrQuota, MaxConcurrentHolds)
 		}
 
-		seatNo, err := freeSeatNo(ctx, tx, game.ID)
-		if err != nil {
-			return err
+		seatNo := ownSeat
+		if seatNo == 0 {
+			if seatNo, err = freeSeatNo(ctx, tx, game.ID); err != nil {
+				return err
+			}
 		}
 
 		if seatNo == 0 {
@@ -629,6 +653,14 @@ func (s *Service) leaveInTx(ctx context.Context, tx *store.Tx, game Game, userID
 		`DELETE FROM seats WHERE game_id = ? AND seat_no = ?`, game.ID, seatNo); err != nil {
 		return false, err
 	}
+	// 记分已经开始：记下这个座号最后是谁离开的，他以后还能回来（#168）。没开始记分不写（外键）。
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO score_seat_leavers (game_id, seat_no, user_id, left_at)
+		SELECT game_id, ?, ?, ? FROM score_matches WHERE game_id = ?
+		ON CONFLICT (game_id, seat_no) DO UPDATE SET user_id = excluded.user_id, left_at = excluded.left_at`,
+		seatNo, userID, now.Unix(), game.ID); err != nil {
+		return false, err
+	}
 	// 他不用来了，作废他的开局提醒。
 	if err := dropReminders(ctx, tx, game.ID, userID, ReminderTMinus1h, now); err != nil {
 		return false, err
@@ -682,10 +714,13 @@ func (s *Service) leaveInTx(ctx context.Context, tx *store.Tx, game Game, userID
 
 // promoteHead 把候补队首补到 seatNo 上，返回是否补到了人。
 func (s *Service) promoteHead(ctx context.Context, tx *store.Tx, game Game, seatNo int, version int64, now time.Time) (bool, error) {
-	var userID string
+	var (
+		userID       string
+		waitlistedAt int64
+	)
 	err := tx.QueryRowContext(ctx, `
-		SELECT user_id FROM waitlist
-		 WHERE game_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 1`, game.ID).Scan(&userID)
+		SELECT user_id, created_at FROM waitlist
+		 WHERE game_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 1`, game.ID).Scan(&userID, &waitlistedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -697,9 +732,10 @@ func (s *Service) promoteHead(ctx context.Context, tx *store.Tx, game Game, seat
 		`DELETE FROM waitlist WHERE game_id = ? AND user_id = ?`, game.ID, userID); err != nil {
 		return false, err
 	}
+	// 记下原来排候补的时间（#160）：加入时间从它算，这一行的 created_at 就是补位时间。
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO seats (game_id, seat_no, user_id, created_at) VALUES (?, ?, ?, ?)`,
-		game.ID, seatNo, userID, now.Unix()); err != nil {
+		INSERT INTO seats (game_id, seat_no, user_id, created_at, waitlisted_at) VALUES (?, ?, ?, ?, ?)`,
+		game.ID, seatNo, userID, now.Unix(), waitlistedAt); err != nil {
 		return false, err
 	}
 
@@ -872,6 +908,9 @@ func (s *Service) cancelInTx(ctx context.Context, tx *store.Tx, game Game, now t
 func (s *Service) Update(ctx context.Context, code, hostID string, patch Patch, ifVersion int64) (*Detail, error) {
 	now := s.clk.Now()
 	if err := patch.Normalize(now); err != nil {
+		return nil, err
+	}
+	if err := s.checkPatchContent(ctx, code, hostID, patch); err != nil {
 		return nil, err
 	}
 
@@ -1170,4 +1209,25 @@ func nullIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// checkPatchContent 把改局里的地点、备注送微信内容安全检测（#146）。先用读连接确认是局头：
+// 别人对任意一局发 PATCH 不该触发微信调用。是不是局头、版本号对不对，写事务里还会再判一次。
+func (s *Service) checkPatchContent(ctx context.Context, code, hostID string, p Patch) error {
+	if s.sec == nil || (p.Venue == nil && p.Note == nil) {
+		return nil
+	}
+	var host string
+	err := s.st.Read().QueryRowContext(ctx, `SELECT host_id FROM games WHERE short_code = ?`, code).Scan(&host)
+	if err != nil || host != hostID {
+		return nil // 交给写事务报 ErrNotFound / ErrNotHost
+	}
+	var fields []secheck.Field
+	if p.Venue != nil {
+		fields = append(fields, secheck.Field{Name: "venue", Text: *p.Venue})
+	}
+	if p.Note != nil {
+		fields = append(fields, secheck.Field{Name: "note", Text: *p.Note})
+	}
+	return s.sec.CheckUser(ctx, hostID, secheck.SceneForum, fields...)
 }

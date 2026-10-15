@@ -2,7 +2,7 @@
 
 import type { App, Scene } from "../core/app";
 import { C, Ctx, Scroller, fillRR, font, paragraph, strokeRR, text, wrap, ellipsize } from "../core/ui";
-import { PAD, button, nav, segmented } from "../core/widgets";
+import { PAD, button, icon, nav, segmented, suit } from "../core/widgets";
 import { LESSONS, LEVELS, doneLessons, lessonById, lessonsOf, markDone, nextLesson, type Level } from "../../../h5/src/learn";
 import { TAB_H } from "./home";
 import type { Nav } from "./nav";
@@ -63,7 +63,7 @@ export class Learn implements Scene {
       fillRR(ctx, x + 14, y + 14, 40, 52, 8, C.card);
       strokeRR(ctx, x + 14.5, y + 14.5, 39, 51, 8, C.line2, 1);
       text(ctx, String(n), x + 34, y + 32, font(16, "900", true), C.red, "center");
-      text(ctx, "♠", x + 34, y + 52, font(13), C.ink, "center");
+      icon.spade(ctx, x + 34, y + 52, 13, C.ink);
       text(ctx, ellipsize(ctx, l.title, w - 160, font(15, "700")), x + 68, y + 24, font(15, "700"), C.ink);
       sumLines.forEach((ln, i) => text(ctx, ln, x + 68, y + 44 + i * 17, font(12), C.ink3));
       text(ctx, `${l.minutes} 分钟 · 含 1 道练习题`, x + 68, y + h - 14, font(11), C.ink4);
@@ -121,7 +121,7 @@ export class LessonScene implements Scene {
         fillRR(ctx, x, y + 15 + (c.hot ? -6 : 0), cw * scale, ch * scale, 6, C.card);
         strokeRR(ctx, x + 0.5, y + 15.5 + (c.hot ? -6 : 0), cw * scale - 1, ch * scale - 1, 6, c.hot ? C.gold : C.line2, c.hot ? 2 : 1);
         text(ctx, c.rank, x + 7 * scale, y + 15 + 13 * scale + (c.hot ? -6 : 0), font(Math.round(14 * scale), "900", true), red ? C.red : C.ink);
-        text(ctx, c.suit, x + cw * scale / 2, y + 15 + ch * scale * 0.65 + (c.hot ? -6 : 0), font(Math.round(16 * scale)), red ? C.red : C.ink, "center");
+        suit(ctx, c.suit, x + cw * scale / 2, y + 15 + ch * scale * 0.65 + (c.hot ? -6 : 0), 16 * scale, red ? C.red : C.ink);
         x += (cw + gap) * scale;
       }
       if (l.handCaption) text(ctx, l.handCaption, W / 2, y + fh - 16, font(12), "rgba(255,247,236,0.85)", "center");

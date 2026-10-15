@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 )
 
 // 小游戏的两个接口（#84）。都是 route.Anonymous：请求里还没有凭证（小游戏没有 cookie，登录前也没有 Bearer），
@@ -104,6 +106,13 @@ func writeWxError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "wx_disabled", "小游戏登录未开启")
 	case errors.Is(err, ErrNicknameInvalid):
 		writeError(w, http.StatusBadRequest, "nickname_invalid", "称呼需要 1–12 个字符")
+	case errors.Is(err, secheck.ErrUnsafe):
+		// 422 + field，和地点、备注的敏感词同一个错误码（#146）：小游戏的表单和称呼弹层已经按它显示提示。
+		var unsafe *secheck.UnsafeError
+		errors.As(err, &unsafe)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": map[string]any{"code": "sensitive_word", "message": secheck.Message, "field": unsafe.Field},
+		})
 	case errors.Is(err, ErrWxCodeInvalid):
 		writeError(w, http.StatusBadRequest, "wx_code_invalid", "微信登录凭证无效，请重新登录")
 	case errors.Is(err, ErrWxUnavailable):

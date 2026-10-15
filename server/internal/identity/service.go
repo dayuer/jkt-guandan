@@ -14,6 +14,7 @@ import (
 
 	"github.com/dayuer/jkt-guandan/server/internal/clock"
 	"github.com/dayuer/jkt-guandan/server/internal/ratelimit"
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
@@ -88,6 +89,8 @@ type Service struct {
 	// 小游戏登录（#84，wx.go）。wx 为 nil 时关闭。
 	wxAppID string
 	wx      WxExchanger
+	// 内容安全检测（#146，secheck）：小游戏新建身份时的称呼。nil 时不查。
+	sec *secheck.Guard
 }
 
 // NewService 建身份服务。dev 决定 cookie 策略（§10.3）。
