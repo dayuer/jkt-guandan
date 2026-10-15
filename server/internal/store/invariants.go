@@ -96,6 +96,17 @@ func CheckInvariants(ctx context.Context, q Queryer, gameID string) error {
 		}
 	}
 
+	// 6. 计分的局号从 1 连续往下编（#165）：重算按局号顺序走，中间缺一局就算不对了。
+	var rounds, maxRound int
+	if err := q.QueryRowContext(ctx,
+		`SELECT count(*), COALESCE(max(round_no), 0) FROM score_rounds WHERE game_id = ?`, gameID).
+		Scan(&rounds, &maxRound); err != nil {
+		return err
+	}
+	if rounds != maxRound {
+		return fmt.Errorf("不变量 6：牌局 %s 记了 %d 局，最大局号却是 %d", gameID, rounds, maxRound)
+	}
+
 	return nil
 }
 

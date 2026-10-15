@@ -31,6 +31,9 @@ type srvFixture struct {
 	srv *httptest.Server
 	st  *store.Store
 	clk *clock.Fake
+	// ident、games 给要额外接线的测试用（比如 #146 的内容安全检测）。
+	ident *identity.Service
+	games *games.Service
 	// http 是「这台浏览器」，带自己的 cookie jar。
 	http *http.Client
 }
@@ -60,7 +63,7 @@ func newServer(t *testing.T) *srvFixture {
 	}))
 	t.Cleanup(srv.Close)
 
-	f := &srvFixture{t: t, srv: srv, st: st, clk: clk}
+	f := &srvFixture{t: t, srv: srv, st: st, clk: clk, ident: identSvc, games: gamesSvc}
 	f.http = f.newBrowser()
 	return f
 }

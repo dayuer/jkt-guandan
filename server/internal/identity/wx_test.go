@@ -16,6 +16,8 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/dayuer/jkt-guandan/server/internal/identity"
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
+	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
 // 小游戏身份（#84）。
@@ -428,6 +430,118 @@ func TestWxBannedUser(t *testing.T) {
 	}
 }
 
+// exec 直接改库，模拟测试里没有对应命令的运维操作（比如解封）。
+func (f *fixture) exec(q string, args ...any) {
+	f.t.Helper()
+	if err := f.st.Write(context.Background(), func(ctx context.Context, tx *store.Tx) error {
+		_, err := tx.ExecContext(ctx, q, args...)
+		return err
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// #145：封了小游戏设备，重新 wx.login 不能拿到一台没被封的新设备；解封后恢复；别的用户不受影响。
+func TestWxLoginBannedMinigameDevice(t *testing.T) {
+	f, wx := newWxFixture(t)
+	wx.add("c1", "open-1", "union-1")
+	login := f.wxLogin("c1", "阿强")
+	uid, dev := login.userField("id"), login.str("device_id")
+	wx.add("o1", "open-2", "")
+	other := f.wxLogin("o1", "老李")
+
+	if kind, err := f.st.Ban(context.Background(), dev, f.clk.Now()); err != nil || kind != "device" {
+		t.Fatalf("封设备：%q %v", kind, err)
+	}
+	devices := f.countRows(`SELECT count(*) FROM devices WHERE user_id = ?`, uid)
+	wx.add("c2", "open-1", "union-1")
+	if r := f.mini(http.MethodPost, "/api/wx/login", map[string]string{"code": "c2"}, nil); r.status != http.StatusForbidden || r.errCode() != "banned" {
+		t.Fatalf("有被封的小游戏设备，重新登录应 403：%d %s", r.status, r.raw)
+	}
+	if n := f.countRows(`SELECT count(*) FROM devices WHERE user_id = ?`, uid); n != devices {
+		t.Fatalf("被拒时不能新建设备：%d → %d", devices, n)
+	}
+
+	// 别的用户照常登录。
+	wx.add("o2", "open-2", "")
+	if again := f.wxLogin("o2", ""); again.userField("id") != other.userField("id") {
+		t.Fatalf("别的用户应不受影响：%s", again.raw)
+	}
+
+	// 解封（目前没有 admin unban，运维直接清 banned_at）后恢复。
+	f.exec(`UPDATE devices SET banned_at = NULL WHERE id = ?`, dev)
+	wx.add("c3", "open-1", "union-1")
+	if again := f.wxLogin("c3", ""); again.userField("id") != uid {
+		t.Fatalf("解封后应认回原用户：%s", again.raw)
+	}
+}
+
+// #145：被封的只是这个人的 H5 设备时，小游戏登录不受影响（按设备封禁不连带别的设备）。
+func TestWxLoginIgnoresBannedH5Device(t *testing.T) {
+	f, wx := newWxFixture(t)
+	h5 := f.createIdentity(f.http, "老王")
+	code := f.do(http.MethodPost, "/api/claim", nil).str("code")
+	wx.add("w1", "open-1", "")
+	if r := f.mini(http.MethodPost, "/api/wx/link", map[string]string{"code": code, "wx_code": "w1"}, nil); r.status != http.StatusOK {
+		t.Fatalf("关联：%d %s", r.status, r.raw)
+	}
+	var h5Dev string
+	if err := f.st.Read().QueryRow(`SELECT id FROM devices WHERE user_id = ? AND ua IS NOT ?`, h5, identity.WxMinigameUA).Scan(&h5Dev); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.Ban(context.Background(), h5Dev, f.clk.Now()); err != nil {
+		t.Fatal(err)
+	}
+	wx.add("w2", "open-1", "")
+	if login := f.wxLogin("w2", ""); login.userField("id") != h5 {
+		t.Fatalf("H5 设备被封不应挡住小游戏登录：%s", login.raw)
+	}
+}
+
+// #145：/api/wx/link 同理。认领码主人有被封的小游戏设备，或者这个微信身份原来关联的人有，都 403，码不消耗。
+func TestWxLinkBannedMinigameDevice(t *testing.T) {
+	f, wx := newWxFixture(t)
+
+	// 认领码主人 H5 用户有一台被封的小游戏设备：另一个微信身份来认领也不行。
+	h5 := f.createIdentity(f.http, "老王")
+	code := f.do(http.MethodPost, "/api/claim", nil).str("code")
+	wx.add("w1", "open-1", "")
+	first := f.mini(http.MethodPost, "/api/wx/link", map[string]string{"code": code, "wx_code": "w1"}, nil)
+	if first.status != http.StatusOK || first.userField("id") != h5 {
+		t.Fatalf("关联：%d %s", first.status, first.raw)
+	}
+	if _, err := f.st.Ban(context.Background(), first.str("device_id"), f.clk.Now()); err != nil {
+		t.Fatal(err)
+	}
+	code = f.do(http.MethodPost, "/api/claim", nil).str("code")
+	wx.add("w2", "open-2", "")
+	if r := f.mini(http.MethodPost, "/api/wx/link", map[string]string{"code": code, "wx_code": "w2"}, nil); r.status != http.StatusForbidden || r.errCode() != "banned" {
+		t.Fatalf("主人有被封的小游戏设备，认领应 403：%d %s", r.status, r.raw)
+	}
+	if n := f.countRows(`SELECT count(*) FROM claim_tokens WHERE code = ? AND used_at IS NULL`, code); n != 1 {
+		t.Fatal("被拒时认领码不能消耗")
+	}
+
+	// 被封的微信身份想切到另一个干净的号上：也不行。
+	clean := f.newBrowser()
+	f.createIdentity(clean, "小张")
+	cleanCode := f.doWith(clean, http.MethodPost, "/api/claim", nil).str("code")
+	wx.add("w3", "open-1", "")
+	if r := f.mini(http.MethodPost, "/api/wx/link", map[string]any{"code": cleanCode, "wx_code": "w3", "confirm": true}, nil); r.status != http.StatusForbidden || r.errCode() != "banned" {
+		t.Fatalf("被封的微信身份切换认领应 403：%d %s", r.status, r.raw)
+	}
+	if got := f.links(h5); got["wx_openid:"+testAppID] != "open-1" {
+		t.Fatalf("被拒时关联不能动：%v", got)
+	}
+
+	// 解封后同一个码可以用。
+	f.exec(`UPDATE devices SET banned_at = NULL WHERE id = ?`, first.str("device_id"))
+	wx.add("w4", "open-2", "")
+	if r := f.mini(http.MethodPost, "/api/wx/link", map[string]string{"code": code, "wx_code": "w4"}, nil); r.status != http.StatusOK || r.userField("id") != h5 {
+		t.Fatalf("解封后认领应成功：%d %s", r.status, r.raw)
+	}
+}
+
 // B2：H5 签发的认领码在小游戏里兑换，微信身份关联到 H5 的那个人。
 func TestWxLinkByClaimCode(t *testing.T) {
 	f, wx := newWxFixture(t)
@@ -535,4 +649,23 @@ func TestCode2SessionClient(t *testing.T) {
 	if _, err := c.Exchange(context.Background(), "busy"); !errors.Is(err, identity.ErrWxUnavailable) {
 		t.Fatalf("-1 应是暂时不可用：%v", err)
 	}
+}
+
+// #146：小游戏新建身份时的称呼送微信内容安全检测（场景 1）。risky 时 422 sensitive_word + field，不建用户。
+func TestWxLoginNicknameContentCheck(t *testing.T) {
+	f, wx := newWxFixture(t)
+	f.svc.SetContentGuard(&secheck.Guard{Checker: secheck.DevChecker{}, AppID: testAppID, Store: f.st})
+
+	wx.add("c1", "open-1", "")
+	r := f.mini(http.MethodPost, "/api/wx/login", map[string]string{"code": "c1", "nickname": "老王" + secheck.DevRiskyWord}, nil)
+	e, _ := r.body["error"].(map[string]any)
+	if r.status != http.StatusUnprocessableEntity || e["code"] != "sensitive_word" || e["field"] != "nickname" {
+		t.Fatalf("应 422 sensitive_word field=nickname：%d %s", r.status, r.raw)
+	}
+	if n := f.countRows(`SELECT COUNT(*) FROM users`); n != 0 {
+		t.Fatalf("被拦时不该建用户：%d", n)
+	}
+
+	wx.add("c2", "open-1", "")
+	f.wxLogin("c2", "老王")
 }

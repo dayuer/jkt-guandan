@@ -98,7 +98,8 @@ CREATE TABLE seats (
   game_id    TEXT NOT NULL REFERENCES games(id),
   seat_no    INTEGER NOT NULL CHECK (seat_no BETWEEN 1 AND 4),
   user_id    TEXT NOT NULL REFERENCES users(id),
-  created_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,             -- 坐下的时间；转交局头按它排
+  waitlisted_at INTEGER,                   -- 候补补位上来的人原来排候补的时间（0010_seat_waitlisted_at.sql，#160）；直接报名坐下的是空
   PRIMARY KEY (game_id, seat_no),
   UNIQUE (game_id, user_id)
 );
@@ -143,6 +144,7 @@ CREATE TABLE idempotency_keys (
   key        TEXT NOT NULL,
   user_id    TEXT NOT NULL,
   route      TEXT NOT NULL,
+  fingerprint TEXT,                        -- 0009：请求业务参数的 sha256；同一个键配不同的请求返回 422（§11.4）。为空不比对
   status     INTEGER NOT NULL,
   response   BLOB NOT NULL,
   created_at INTEGER NOT NULL,
@@ -191,6 +193,46 @@ CREATE TABLE user_links (
   PRIMARY KEY (provider, subject),
   UNIQUE (provider, user_id)               -- 一个用户在同一个 provider 下只有一条
 );
+-- 小游戏订阅消息的剩余次数（0007，#137，§5.3「订阅消息通道」）。openid 不存这里，发送时从 user_links 取
+CREATE TABLE wx_subscribe_quota (
+  user_id     TEXT NOT NULL REFERENCES users(id),
+  template_id TEXT NOT NULL,
+  remaining   INTEGER NOT NULL DEFAULT 0 CHECK (remaining >= 0),  -- 同意一次 +1（最多 50），发出一次 -1
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (user_id, template_id)
+);
+-- 牌桌计分（0008，#165，§5.6）。只存事实，级数等状态由 server/internal/scoring 从第 1 局重算，不落库。不涉及金钱
+CREATE TABLE score_matches (               -- 一局牌一行：开局约定。「再来一场」沿用，场次从各局推出来
+  game_id      TEXT PRIMARY KEY REFERENCES games(id),
+  kind         TEXT NOT NULL CHECK (kind IN ('classic','no-level')),  -- 开始时按牌局的 kind 定，teaching 按 classic
+  a_fail_limit INTEGER NOT NULL CHECK (a_fail_limit IN (0, 3)),        -- 打自己的 A 第几次没过回到 2；0 = 不回 2
+  started_by   TEXT NOT NULL REFERENCES users(id),
+  started_at   INTEGER NOT NULL,
+  revision     INTEGER NOT NULL DEFAULT 1                             -- 开始、记一局、改一局各 +1，实时事件按它去重
+);
+CREATE TABLE score_rounds (
+  game_id       TEXT NOT NULL REFERENCES score_matches(game_id),
+  round_no      INTEGER NOT NULL CHECK (round_no >= 1),               -- 从 1 连续往下编，跨场不重来
+  head_seat     INTEGER NOT NULL CHECK (head_seat BETWEEN 1 AND 4),
+  partner_place INTEGER NOT NULL CHECK (partner_place BETWEEN 2 AND 4),  -- 2 二游（双上）/ 3 三游 / 4 末游
+  recorded_by   TEXT NOT NULL REFERENCES users(id),
+  created_at    INTEGER NOT NULL,
+  edited_by     TEXT REFERENCES users(id),                            -- 最近一次改这一局的人
+  edited_at     INTEGER,
+  seat1_user    TEXT REFERENCES users(id),                            -- 0009（#172）：这一局当时 1–4 号座上的人，记一局时抄下来，改一局不变
+  seat2_user    TEXT REFERENCES users(id),                            -- 0008 时记的局按迁移时的座位补，那时空着的座号为空
+  seat3_user    TEXT REFERENCES users(id),
+  seat4_user    TEXT REFERENCES users(id),
+  PRIMARY KEY (game_id, round_no)
+);
+-- 记分开始以后每个座号最后一个离开的人（0009，#168，§5.6「回原座位」）
+CREATE TABLE score_seat_leavers (
+  game_id TEXT NOT NULL REFERENCES score_matches(game_id),
+  seat_no INTEGER NOT NULL CHECK (seat_no BETWEEN 1 AND 4),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  left_at INTEGER NOT NULL,
+  PRIMARY KEY (game_id, seat_no)            -- 后离开的人覆盖先离开的
+);
 ```
 
 连接设置和并发规则见 §11。
@@ -201,6 +243,7 @@ CREATE TABLE user_links (
 3. 牌局状态为 `open` 或 `full` 时，局头一定坐在这一局的某个座位上。
 4. 同一个人在同一局里，不会同时出现在座位和候补中（触发器保证）。
 5. 牌局状态为 `cancelled` 或 `done` 时，没有未发送、且发送时间晚于结束时间的 `t_minus_1h` 提醒。
+6. 计分的局号从 1 连续：`count(score_rounds) = max(round_no)`（#165）。
 
 ## 5. 关键流程
 
@@ -212,15 +255,16 @@ CREATE TABLE user_links (
 
 1. 读出牌局。状态是 `cancelled` 或 `done` → 返回 409 `game_closed`；用户在 `game_bans` 里 → 返回 403 `banned`。
 2. 用户已经在座位上或候补里 → 直接返回当前状态（重复提交也安全）。
-3. 有空座：取最小的空座号插入，再给这个用户写一条 `t_minus_1h` 提醒，给局头写一条 `host_seat_taken`。插入后坐满 4 人：状态改为 `full`，给 4 人各写一条 `full`。
-4. 没有空座：插入候补，返回排队位置（「你是候补第 2 位」），给局头写一条 `host_waitlist`。
-5. 开局前不到 1 小时才报名的：不写 `t_minus_1h`，报名成功的页面上直接显示开局时间（§13.2）。
+3. 开局后超过 `JoinGrace`（2 小时）→ 409 `game_started`。例外：记分已经开始、这个人是某个空座号最后离开的人，可以回到那个座号（§5.6「回原座位」）。
+4. 有空座：取最小的空座号插入（回原座位时用他原来的座号），再给这个用户写一条 `t_minus_1h` 提醒，给局头写一条 `host_seat_taken`。插入后坐满 4 人：状态改为 `full`，给 4 人各写一条 `full`。
+5. 没有空座：插入候补，返回排队位置（「你是候补第 2 位」），给局头写一条 `host_waitlist`。
+6. 开局前不到 1 小时才报名的：不写 `t_minus_1h`，报名成功的页面上直接显示开局时间（§13.2）。
 
 **退出 `leave(game, user)`**
 
 1. 用户在候补里：删掉候补记录就结束。
 2. 用户在座位上：删除座位，作废他的 `t_minus_1h`（写上 `dropped_at`），然后：
-   - **候补补位**：候补不为空时，按 `created_at` 取队首，插入到刚空出的座号，删掉他的候补记录，给他写 `promoted`（「有人退出，你补上了」）和 `t_minus_1h`，状态保持 `full`；
+   - **候补补位**：候补不为空时，按 `created_at` 取队首，插入到刚空出的座号（`waitlisted_at` 记下他原来排候补的 `created_at`），删掉他的候补记录，给他写 `promoted`（「有人退出，你补上了」）和 `t_minus_1h`，状态保持 `full`；
    - 候补为空：状态从 `full` 回到 `open`，给剩下的人写 `seat_left`；
    - **局头转让**：如果退出的是局头，先补位，再把 `host_id` 转给座位上 `created_at` 最早的人，给新局头写 `host_transferred`，给其他人写 `host_changed`；
    - 局头退出后座位上已经没有人：把牌局改为 `cancelled`，给所有候补写 `cancelled`。
@@ -264,8 +308,8 @@ CREATE TABLE user_links (
 
   按这些限制估算：6 位码共 10⁶ 种，全站每 10 分钟最多大约 200 次失败尝试，而且攻击者必须和受害者在同一个网段，远程撞库几乎不可能成功。
 - **小游戏身份**（#84）。小游戏没有 cookie，凭证走 `Authorization: Bearer`（§10.3 的唯一例外）。两个接口都是 `route.Anonymous`（不读 cookie、不写 cookie），只认微信 code：
-  - `POST /api/wx/login {code, nickname?}`：服务端调 `code2Session` 换出 openid（绑了开放平台时还有 unionid），先按 `wx_unionid`、再按 `wx_openid:<appid>` 在 `user_links` 里找。找到：给这个人新挂一台 `ua = wx-minigame` 的设备，补写缺的关联（以前没有 unionid、这次有了）；没找到且没给称呼：`200 {"need_nickname":true}`；给了称呼（规则同 `POST /api/me`，也占用同一个每 IP 创建配额）：新建用户、设备和关联。成功返回 `200 {"user":{"id","nickname","created_at"},"device_token","device_id"}`。每 IP 每分钟 20 次。被封禁的用户 `403 banned`。
-  - `POST /api/wx/link {code, wx_code, confirm?}`：B2 兜底路径，H5 用 `POST /api/claim` 签发的 6 位认领码在小游戏里输入。防护和上面的凭码兑换完全一样（同网段、每 IP 每分钟 10 次且与 `/api/claim/redeem` 共用、全站失败预算、失败一律 `400 claim_invalid`）。这个微信已经关联了别人且没带 `confirm`：`409 claim_conflict` + `other_nickname`（认领码主人的称呼），码不消耗；确认时要重新 `wx.login` 拿新的 `wx_code`。成功后把 openid / unionid 关联都挂到认领码主人身上（原来关联的用户其他数据不动），新挂一台小游戏设备，返回同 `/api/wx/login`，并发 `claim.redeemed`。
+  - `POST /api/wx/login {code, nickname?}`：服务端调 `code2Session` 换出 openid（绑了开放平台时还有 unionid），先按 `wx_unionid`、再按 `wx_openid:<appid>` 在 `user_links` 里找。找到：给这个人新挂一台 `ua = wx-minigame` 的设备，补写缺的关联（以前没有 unionid、这次有了）；没找到且没给称呼：`200 {"need_nickname":true}`；给了称呼（规则同 `POST /api/me`，也占用同一个每 IP 创建配额）：新建用户、设备和关联。成功返回 `200 {"user":{"id","nickname","created_at"},"device_token","device_id"}`。每 IP 每分钟 20 次。被封禁的用户、或者名下有被封的小游戏设备的用户 `403 banned`，不新建设备（§13.6，#145）。
+  - `POST /api/wx/link {code, wx_code, confirm?}`：B2 兜底路径，H5 用 `POST /api/claim` 签发的 6 位认领码在小游戏里输入。防护和上面的凭码兑换完全一样（同网段、每 IP 每分钟 10 次且与 `/api/claim/redeem` 共用、全站失败预算、失败一律 `400 claim_invalid`）。这个微信已经关联了别人且没带 `confirm`：`409 claim_conflict` + `other_nickname`（认领码主人的称呼），码不消耗；确认时要重新 `wx.login` 拿新的 `wx_code`。成功后把 openid / unionid 关联都挂到认领码主人身上（原来关联的用户其他数据不动），新挂一台小游戏设备，返回同 `/api/wx/login`，并发 `claim.redeemed`。认领码主人、或这个微信原来关联的人被封禁或有被封的小游戏设备时 `403 banned`，码不消耗、关联不动（§13.6）。
   - 错误码：`503 wx_disabled`（没配 `GUANDAN_WX_APPID` / `GUANDAN_WX_SECRET`）、`400 wx_code_invalid`、`503 wx_unavailable`（微信接口失败）、`400 nickname_invalid`、`429 rate_limited`。开发模式且没配 AppID 时，接受 `dev:<任意>` 形式的 code，`<任意>` 当 openid、appid 记成 `dev`，方便小游戏开发者工具连本机。
   - openid / unionid 不出现在响应和日志里。`DELETE /api/me` 和 `guandan admin user delete` 都删掉这个人的 `user_links`，同一个微信再来会建新用户。
   - 还没做：B1（带参数的小游戏码、`POST /api/wx/link {token, wx_code}`）。
@@ -304,6 +348,30 @@ CREATE TABLE user_links (
 - **重复送达**：进程在「已发送」和「写回结果」之间崩溃，重启后同一条提醒会再发一次，这是至少送达一次的代价。为了不让用户看到两条通知，Web Push 请求带上 `Topic: <dedupe_key 的哈希>`，通知设置 `tag = dedupe_key`，同一条提醒在设备上只会显示一次。
 - VAPID 密钥：首次启动时生成并写进 `kv` 表，公钥通过 `GET /api/push/key` 下发。**密钥一旦更换，所有已有订阅都会失效**，所以必须包含在备份里（§13.3）。
 
+**订阅消息通道 `wx_subscribe`（#137）**
+
+小游戏里收不到 Web Push，提醒改走微信订阅消息（`subscribeMessage.send`），由同一个 worker 在同一轮里发。
+
+- **开关**：配了 `GUANDAN_WX_APPID` / `GUANDAN_WX_SECRET`，并且至少配了一个模板（`GUANDAN_WX_TMPL_FULL`、`GUANDAN_WX_TMPL_REMIND`，§7）才开；否则整个通道关闭，提醒只走 Web Push。开发模式没配 AppID 时，配了模板也开，但发送只记日志（和小游戏登录的 `dev:<openid>` 一样，给开发者工具连本机用）。
+- **走哪些提醒**：
+  | 模板 | 提醒类型 |
+  |---|---|
+  | `GUANDAN_WX_TMPL_FULL`（牌局状态） | `full`、`seat_left` |
+  | `GUANDAN_WX_TMPL_REMIND`（开局提醒） | `t_minus_1h`、`rescheduled` |
+
+  其他提醒类型没有模板，不走订阅消息。模板里填三个字段：事项（`message()` 生成的标题，最多 20 个字）、时间（`2026年10月14日 19:30`，雅加达时间）、地点；字段名按 `…_KEYS` 配置。点开消息回到小游戏这一局（`page = ?g=<短码>`）。
+- **收件人**：按 `(appid, openid)` 发，openid 从 `user_links` 的 `wx_openid:<appid>` 取。没有这条关联（H5 用户）就不发。openid 和 access_token 都不进日志，失败只记 errcode。
+- **一次性订阅的次数**：小游戏在用户点「报名占座」的那次点按里同步调 `wx.requestSubscribeMessage`（没身份时改在称呼层「就用这个名字」那次点按里），同意了的模板经 `POST /api/wx/subscribe {accepted:[模板 ID]}` 上报（`user` 鉴权，最多 10 个，不是本站配置的模板 ID 忽略，返回 `200 {"added":N}`；通道没开 `503 wx_disabled`）。每个模板次数 + 1，最多攒 50 次；发出一次 - 1，为 0 时不发。
+- **access_token**：在公共包 `server/internal/wxapi`（`TokenSource` 接口 + `StableToken` + 带 access_token 的 `Client.PostJSON`，errcode 映射成 `*wxapi.Error`；#146 的内容安全检查也用它）。调 `cgi-bin/stable_token`，缓存到过期前 5 分钟再换（不用 `cgi-bin/token`：它每次调用都让旧 token 失效，和其他共用 AppID 的服务互相踢）。发送返回 40001 / 42001 / 40014 时作废缓存，下一次带 `force_refresh` 重新拿。
+- **去重（和 Web Push 的选择）**：一条 outbox 提醒**只走一个通道**。用户有 Web Push 订阅就只走 Web Push（不限次数，设备上还能按 tag 去重），不动订阅消息的次数；没有 Web Push 订阅、且这类提醒有模板时才走订阅消息。同一个人在 H5 开了推送、又在小游戏里同意了订阅，每条提醒也只收到一次。
+- **至多送达一次**：订阅消息没有 Topic / tag 这种设备端去重，崩溃后重发用户就会看到两条，还多用一次次数。所以这一路**先预占再发**：一个短的写事务里扣 1 次并把提醒标成已发送（`sent_at`，`last_error = '订阅消息发送中'`），然后在事务外发送，再在写回事务里按结果处理。进程在预占和写回之间崩溃，这条提醒不再发——宁可漏一条，不发两条。
+- **发送结果**：
+  - `errcode 0`：成功；
+  - 网络错误、`-1`（系统繁忙）、`45009`（限频）、access_token 无效：退回次数、清掉 `sent_at`，和 Web Push 一样按指数退避重试，8 次后放弃；
+  - `43101`（用户没有订阅，以微信为准）：这个模板的次数清零，放弃这条；
+  - 其他错误（模板参数不对、openid 无效……）：退回次数，放弃这条。
+- **注销**：`DELETE /api/me` 和 `guandan admin user delete` 都删掉这个人的 `wx_subscribe_quota`（§14）。
+
 ### 5.4 分享
 
 - `GET /g/{code}`：读出 `index.html` 模板，把这一局的 `og:title`、`og:description`、`og:image` 写进去再返回。微信和 WhatsApp 的链接抓取器不执行 JS，只有这样才能拿到每局各自的预览卡片。
@@ -320,6 +388,7 @@ CREATE TABLE user_links (
 |---|---|---|
 | 03 牌局详情：别人报名或退出时，座位圆点实时「落座」或「离座」，「差 N 人」随之变化 | `game:{code}` | `seat.taken` · `seat.left` · `game.full` |
 | 03 牌局详情：局头改时间或地点时，顶部出现横幅「局头改到 20:00 了」 | `game:{code}` | `game.updated` |
+| 记分页：别人开始记分、记了一局、改了一局（#165，S11 翻牌） | `game:{code}` | `score.started` · `score.round` · `score.edited`（见 §5.6，不带 `v`，按 `data.revision` 去重） |
 | 03 牌局详情：「3 人正在看这局」 | `game:{code}` | `presence`（人数在服务端合并，同一局每 2 秒最多推一次，#46） |
 | 02 首页：列表里每局的「差 N 人」实时变化，有新开的局时出现「有 1 个新局」提示条 | `feed:{area}` | `feed.game_changed` · `feed.game_added` |
 | 12 跳出引导：在 Safari 或 Chrome 里认领成功后，微信里那一页自动变成「✓ 已在浏览器中打开」 | `user:{id}` | `claim.redeemed` |
@@ -377,6 +446,55 @@ CREATE TABLE user_links (
 
 **部署注意**：用内置 autocert 直接对外时不需要额外配置。如果放在反向代理后面，代理要透传 `Upgrade` 和 `Connection` 头，读超时设到 60 秒以上。
 
+### 5.6 牌桌计分（#165）
+
+四个人坐满后在同一局里接着记分（设计稿 `design/guandan-minigame/README.md` §7，截图 S1–S15）。**不涉及金钱**（#91）：没有分数、倍率、金额、结算。
+
+- **只存事实，状态重算**：库里只有开局约定（`score_matches`）和每局谁头游、搭档第几（`score_rounds`）。两队级数、打谁的级、A 没过几次、第几场、是否结束，每次读的时候由纯函数 `server/internal/scoring.Compute` 从第 1 局算到最后一局；改任意一局 = 替换这一局再算一遍，后面的局自动跟着变。前端只展示，不自己算。
+- **规则**（README §7.1，口径同学牌页）：1、3 号红方，2、4 号黑方；只有头游所在的队升级，搭档二游 +3、三游 +2、末游 +1；第 1 局打 2，之后打上一局赢的那一队的级；到 A 封顶；打**本队的** A 时本队头游且搭档不是末游 = 过 A，本场结束（打对方的级时在 A 上赢了只升级，不算过）；打本队 A 的局没过（含对方拿头游）计一次，到约定次数（3）回到 2、计数清零，约定「不回 2」（0）时不回；本队头游搭档末游恰好是第 3 次时，回到 2 优先，不再 +1。过 A 后再记的一局就是下一场：两队都从 2 开始、计数和统计清零，局号接着编。`no-level` 只记每队赢了几局、双上几次。
+- **权限**（README §7.6）：能看牌局详情的人都能读；开始、记一局、改一局只有**座位上**的人能做（局头没有额外权限），否则 403 `not_seated`。牌局必须是 `full`（有人中途退出、局回到 `open` 时 409 `not_full`，补齐了再记），`done` / `cancelled` 的局 409 `game_closed`，只读。开局前 30 分钟起才能开始记分（S1 的入口条同一时刻出现），更早 409 `too_early`；能不能点「开始」看响应里的 `can_start`，客户端不自己算时间；开始之后记一局、改一局不再看时间，直到清理任务把局标成 `done`（开局 6 小时后，§13.1）。
+- **回原座位**（#168）：记分开始以后有人退出、被移出或注销，局回到 `open`、记分暂停。`leave` 时把「这个座号最后是谁离开的」写进 `score_seat_leavers`（后离开的覆盖先离开的）。之后这个人报名（`POST /seat`）：他是某个**现在还空着**的座号最后离开的人，就回到那个座号，过了 `JoinGrace` 也行；分队按座号定，所以队伍不变，坐满后接着记。只限本人、只限原座号：别人、或者他想坐别的空座号，过了 `JoinGrace` 照旧 409 `game_started`；他的座号在 `JoinGrace` 之内被别人补上了，就是补上的人的座号了；有候补时，`leave` 当场就让候补补进空出的座号（见上面的「候补补位」），这个座号不会空着，原来的人回不来。被移出的人仍在 `game_bans` 里，报名先查它，403 `banned`，回不来。还没开始记分的局不写这张表，规则照旧。`JoinGrace` 之内回来的原座位的人也优先回原座号，而不是取最小空座号，免得两个空座时坐到对方队里。注销时删掉这个人的离座记录，admin 合并身份时搬到保留的身份上。
+- **并发**：写都在单个写事务里（§11.2）。记一局带 `expected_round_no`：正好是下一局才写；已经有人记了（两人同时记，S12）返回 409 `round_taken`，带上已经记下的那一局（`round`）和最新的全部计分，前端结果相同就静默合并，不同就让用户选；跳号是 400。改一局可以带 `was`（打开弹层时看到的原结果），库里已经不是它（别人刚改过）返回 409 `round_changed` 和最新计分；不带就直接覆盖。只比这一局，别人在此期间记了新的一局不算冲突。改成和现在一样的结果什么也不写。
+- **不动牌局版本号**：计分有自己的 `revision`，`games.version` 不变，局头在打牌期间改时间、备注不会被记分挤成 409。
+- **接口**（JSON；cookie 和小游戏的 `Authorization: Bearer` 都能用）：
+
+  | 接口 | 身份 | 说明 |
+  |---|---|---|
+  | `GET /api/games/{code}/score` | public | 没开始：`{"started":false,"can_record":…,"can_start":…}`；开始了：见下 |
+  | `POST /api/games/{code}/score` | user | 开始记分 `{"a_fail_limit":3}`（3 默认，或 0 = 不回 2）。已经开始了就原样返回，后到的约定不生效。接受 `Idempotency-Key`，同一个键换了 `a_fail_limit` 422 `idempotency_key_reused` |
+  | `POST /api/games/{code}/score/rounds` | user | 记一局 `{"expected_round_no":7,"head_seat":1,"partner_place":3}`。本场已结束时这一局就是下一场的第 1 局（「再来一场」不需要单独的接口；「结束记分」只是前端离开记分页）。接受 `Idempotency-Key`：同一次提交重发返回现在的计分，不报 `round_taken`；同一个键用在别的请求上（别的接口、别的局，或者 `expected_round_no` / `head_seat` / `partner_place` 不同）422 `idempotency_key_reused`，什么也不记 |
+  | `PUT /api/games/{code}/score/rounds/{no}` | user | 改一局 `{"head_seat":2,"partner_place":2,"was":{"head_seat":1,"partner_place":2}}`，`was` 可省 |
+
+  四个接口成功时都返回同一个形状：
+  ```json
+  {"started":true,"can_record":true,"can_start":false,
+   "settings":{"kind":"classic","a_fail_limit":3},
+   "started_by":{"id":"01J…","nickname":"Lily"},"started_at":1791980000,"revision":7,
+   "rounds":[{"round_no":1,"match":1,"head_seat":1,"partner_place":2,
+              "playing":"","playing_level":2,"winner":"red","double_up":true,
+              "upgrade":3,"level_before":2,"level_after":5,"passed_a":false,
+              "recorded_by":{"id":"01J…","nickname":"Lily"},"recorded_at":1791980900,
+              "seats":[{"id":"01J…","nickname":"Lily"},{"id":"01J…","nickname":"老王"},{…},{…}]}, …],
+   "state":{"match":1,"match_rounds":6,"playing":"red","playing_level":11,
+            "red":{"level":11,"a_fails":0,"wins":4,"double_ups":2},
+            "black":{"level":7,"a_fails":0,"wins":2,"double_ups":1},
+            "match_over":false}}
+  ```
+  - `can_record`：当前身份在座位上、牌局 `full`（访客、旁观、缺人时为假）。`can_start`：`can_record` 为真、还没开始记分、而且已经到了开局前 30 分钟，这时 `POST /score` 才会成功；开始以后恒为假。小游戏的 S1 入口条按 `can_start` 显示。
+  - 级数是整数 2–14（11 = J、12 = Q、13 = K、14 = A）；队是 `red` / `black`，`playing` 为空串表示一场的第 1 局（打 2，不算哪队的）。
+  - `rounds` 按局号从小到大（S9 新的在上由前端倒过来）。每局还可能有：`failed_a`（这一局哪队打自己的 A 没过）、`a_fails`（它记完后的次数）、`reset_to_2`、`edited_by`、`edited_at`（改过的局，S9 的「已改」）。`seats` 是这一局**当时** 1–4 号座上的人（#172，下标 0 是 1 号）：中途换人后，换人前的局仍显示原来的人，S9、S12、S15 按每局自己的 `seats` 显示称呼；改一局只改结果，`seats` 不变。0009 迁移前记的局按迁移时的座位补上，那时空着的座号为 `null`，客户端退回用现在的座位。`level_before` → `level_after` 是赢的一队实际的变化，封顶和回到 2 都算进去；不升级玩法里这三项是 0。
+  - `state` 是记完最后一局之后、下一局要看的：`match_over` 为真时 `winner` 是过 A 的一队，`playing` / `playing_level` 已经是下一场第 1 局的值（空串、2），两队的 `level` 和统计仍是这一场结束时的（S8「停在 Q」）。`wins`、`double_ups` 是本场的（S8、S15「红方双上 4 次」）；`a_fails` 用于「打 A · 已没过 N 次」。
+  - 用时（S8）由前端从 `started_at` 和各局 `recorded_at` 算，服务端不另存。
+- **实时**：`score.started`、`score.round`、`score.edited` 推到 `game:{code}`（§5.5）。**不带顶层 `v`**（`v` 是牌局版本号，计分不动它），客户端按 `data.revision` 丢弃不比本地新的：
+  ```json
+  {"topic":"game:8K2","type":"score.round",
+   "data":{"revision":7,"by":{"id":"01J…","nickname":"Lily"},"rounds":6,
+           "settings":{…},"state":{…},"round":{ …和 rounds 里的一项相同… }}}
+  ```
+  `by` 是开始、记或改的人（S11「Lily 记了第 6 局」）；`round` 是这次记的或改的那一局（`score.started` 没有）；`rounds` 是现在一共几局。改一局时后面各局都可能变了，S10 要完整列表就重新拉 `GET /score`。收到 `score.round` 才翻牌（S11），REST 刷新和重连后的重绘不翻。
+- **限流**：开始、记一局、改一局合计每个用户每分钟 30 次，超出 429 `rate_limited`。
+- **注销与合并**：计分记录是这一局的历史，注销时不删，记录人的称呼随 `users` 变成「已注销牌友」；admin 合并身份时 `started_by`、`recorded_by`、`edited_by`、每局的 `seat1_user`–`seat4_user` 搬到保留的身份上（每局 `seats` 里注销的人同样显示「已注销牌友」）。
+
 ## 6. HTTP 接口
 
 ```
@@ -400,6 +518,10 @@ DELETE /api/games/{code}/seat         退出（座位或候补）
 POST /api/games/{code}/cancel         局头取消
 POST /api/games/{code}/kick           局头移出 {user_id}
 POST /api/games/{code}/invites        邀请 {user_ids}
+GET  /api/games/{code}/score          牌桌计分：开局约定、每局记录、重算后的状态（#165，§5.6）
+POST /api/games/{code}/score          开始记分 {a_fail_limit}
+POST /api/games/{code}/score/rounds   记一局 {expected_round_no, head_seat, partner_place}
+PUT  /api/games/{code}/score/rounds/{no}  改一局 {head_seat, partner_place, was?}
 PUT/DELETE /api/follows/{user_id}     星标牌友
 GET  /api/friends                     牌友列表（含一起打过几局）
 POST /api/events                      埋点批量上报（#117，见下面「埋点」）
@@ -407,6 +529,7 @@ POST /api/client-errors               前端错误上报（#117）
 DELETE /api/me                        注销并删除个人数据（§14）
 POST /api/push/subscribe              保存推送订阅（phase:2）
 DELETE /api/push/subscribe            取消订阅
+POST /api/wx/subscribe                小游戏上报同意了的订阅消息模板 {accepted:[模板 ID]}（#137，§5.3）
 POST /api/agent                       蛋蛋（phase:3）：只返回草稿，不写库
 GET  /ws                              WebSocket（见 §5.5）
 GET  /g/{code} · /g/{code}/og.png · /g/{code}/poster.png · /g/{code}/game.ics
@@ -420,9 +543,13 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `my_role` | `seated`（在座位上）/ `waitlist`（在候补里）/ `none`。访客没有身份，一律 `none` |
 | `waitlist_pos` | 候补第几位，从 1 开始；不在候补里是 0 |
 | `rescheduled_at` | 局头最近一次改时间或地点的时刻（Unix 秒）；没改过就没有这一项。改备注、片区或原样重发都不算 |
+| `my_joined_at` | 我加入这一局的时间（Unix 秒，#160）：座位上的是坐下的时间，候补里的是排候补的时间，补位上来的仍从排候补算。不在局里没有这一项 |
+| `my_promoted_at` | 我候补补位的时间（Unix 秒，#160）；不是补位上来的没有这一项 |
 
 - `GET /api/games/{code}` 的 `game` 对象里也有 `rescheduled_at`。改期横幅的做法：客户端把「上次看到这一局的 `rescheduled_at`」存在本机，服务端值更大且我在座位上（`my_role` 为 `seated`）就显示「局头把时间改到 X 了」，关掉时把本机的值更新成服务端的。
-- 这两个按身份算的字段只出现在 `GET /api/games` 里，首页事件（`feed:*`）是广播，不带 `my_role`、`waitlist_pos`，带 `rescheduled_at`。
+- 这些按身份算的字段（`my_role`、`waitlist_pos`、`my_joined_at`、`my_promoted_at`）只出现在 `GET /api/games` 里，首页事件（`feed:*`）是广播，不带它们，带 `rescheduled_at`。
+- `GET /api/games/{code}` 的 `me` 里对应有 `joined_at`、`promoted_at`，取值同上（#160）。
+- **换设备兜底**（#160，目前只有小游戏用）：客户端平时拿本机快照判断改时间横幅、「轮到你了」弹层（`app/h5/src/status.ts`）；本机没有这一局的快照时（换了手机、清了缓存、第一次在这台设备上打开），`rescheduled_at` 晚于加入时间且我不是局头 → 出改时间横幅；有补位时间且我在座位上 → 出「轮到你了」。关掉之后写下快照，之后回到快照那条路。
 
 **绑定 WhatsApp**（#116，「我的」页 G2）。号码只给自己看：只出现在自己的 `GET /api/me` 里，牌友列表、牌局详情里都没有。注销时清空。
 
@@ -461,9 +588,11 @@ GET  /*                               内嵌的前端页面（单页应用，未
 
 **`GET /api/config`**：前端用的公开配置，不识别身份，`Cache-Control: public, max-age=300`。
 ```json
-{"group":{"wechat_id":"jktguandan","whatsapp_group_url":"https://chat.whatsapp.com/AbCdEf"}}
+{"group":{"wechat_id":"jktguandan","whatsapp_group_url":"https://chat.whatsapp.com/AbCdEf"},
+ "wx_subscribe":{"full":"<模板 ID>","remind":"<模板 ID>"}}
 ```
 `group` 是 09 牌友顶部「雅加达掼蛋群」横幅用的，来自 `GUANDAN_GROUP_WECHAT_ID`、`GUANDAN_GROUP_WHATSAPP_URL`；没配置的那一项是空串，两项都空时前端不显示横幅。
+`wx_subscribe` 是小游戏订阅消息的模板 ID（#137），只给配置了的；订阅消息通道没开时是 `{}`，小游戏据此不问订阅。
 
 **埋点 `POST /api/events` 与前端错误 `POST /api/client-errors`**（#117）：都是 `public`，没有身份也能用（落地页、详情页在报名前就要埋点）；被封禁的身份 403。
 
@@ -541,7 +670,11 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `GUANDAN_GROUP_WECHAT_ID` | 空 | 09 牌友顶部「雅加达掼蛋群」横幅里的微信号（#108），经 `GET /api/config` 给前端 |
 | `GUANDAN_GROUP_WHATSAPP_URL` | 空 | 同上，WhatsApp 群链接；必须是 https 地址，否则启动时报错 |
 | `GUANDAN_WX_APPID` | 空 | 小游戏 AppID，`POST /api/wx/login` 调 `code2Session` 用（#84）。和下一项要么都设、要么都不设；都不设时小游戏登录返回 `503 wx_disabled`，开发模式下改为接受 `dev:<openid>` |
-| `GUANDAN_WX_SECRET` | 空 | 小游戏 AppSecret，只放环境变量，不写日志 |
+| `GUANDAN_WX_SECRET` | 空 | 小游戏 AppSecret，只放环境变量，不写日志。AppID 和 Secret 都配了才开微信内容安全检测（#146，§14） |
+| `GUANDAN_WX_TMPL_FULL` | 空 | 订阅消息「牌局状态」模板 ID（#137）：成局（`full`）、有人退出（`seat_left`）。没配时这两类提醒不走订阅消息 |
+| `GUANDAN_WX_TMPL_FULL_KEYS` | `thing1,time2,thing3` | 上面那个模板里「事项、时间、地点」三个字段的名字，按小游戏后台模板详情填 |
+| `GUANDAN_WX_TMPL_REMIND` | 空 | 订阅消息「开局提醒」模板 ID（#137）：开局前 1 小时（`t_minus_1h`）、改时间（`rescheduled`） |
+| `GUANDAN_WX_TMPL_REMIND_KEYS` | `thing1,time2,thing3` | 同上，开局提醒模板的三个字段名 |
 
 ## 8. 打包与部署
 
@@ -732,7 +865,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
   4. 出现脚本批量注册时，再在「创建身份」这一步加人机验证。
 
   第 4 步先不做：人机验证在微信内置浏览器里的兼容性需要单独验证，而且会损害「填个称呼就行」的体验。
-- 敏感词过滤，防止涉及金钱（§14）。
+- 敏感词过滤，防止涉及金钱（§14）。小游戏用户的称呼、地点、备注另送微信内容安全检测（§14，#146）。
 
 ### 10.9 防遍历与隐私
 
@@ -794,6 +927,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 
 - 微信内置浏览器里经常出现「点两下」和「超时后用户再点一次」。`POST /api/games`（开局）本身不幂等，重复执行会开出两个一样的局。
 - 前端每次提交都生成一个 `Idempotency-Key`。服务端在**同一个写事务**里先查 `idempotency_keys`：查到了，直接返回保存的响应；没查到，执行业务，再把响应写进表里。保存 24 小时，由清理任务删除。
+- 开局（`POST /api/games`）和计分的两个 POST（§5.6）另外存**请求指纹**（`fingerprint`，业务参数的 sha256，从解析、整理后的参数算，和 JSON 字段顺序、空白无关；开局取 `starts_at`、`area`、`venue`、`kind`、`note`）：同一个键用在别的接口上、或者配了不同的请求时返回 422 `idempotency_key_reused`，不当成重放静默返回 200（#175）。`fingerprint` 为空的旧记录只比路由。
 - 报名、退出、取消本身就是幂等的（重复执行结果不变），但也一并接受幂等键，保证重复请求拿到的响应也完全一样。
 
 ### 11.5 进程内的 goroutine
@@ -843,6 +977,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 | 创建身份 `POST /api/me` | 每个 IP 每小时 20 次 |
 | 开局 | 每个用户每天 10 次 |
 | 报名、退出 | 每个用户每分钟 30 次 |
+| 牌桌计分（开始、记一局、改一局） | 每个用户每分钟 30 次 |
 | 认领码兑换 | 每个 IP 每分钟 10 次 |
 | WebSocket | 每个 IP 最多 20 条连接，新连接每秒最多 5 条（防止部署后所有客户端同时重连） |
 | 蛋蛋 | 每台设备每天 30 次，每个 IP 每天 60 次（没有身份时只按 IP 算）；同时最多 4 个请求在调模型 |
@@ -930,22 +1065,44 @@ guandan admin stats [--since 7d]          查看 §8 指标（来自 events 表�
 guandan restore <快照>                    从备份恢复（§13.3）
 ```
 
+**小游戏用户的封禁（#145）**。H5 封了设备的人清掉 cookie，只能拿到一个新的匿名身份，回不到原用户，所以按设备封禁对 H5 有效。小游戏不一样：删掉小游戏再进、或换一台手机，`wx.login` 认回的还是**同一个**用户，再挂一台新设备。所以：
+
+- `/api/wx/login`、`/api/wx/link` 发现这个用户名下有被封的 `ua = wx-minigame` 设备时拒绝登录，返回 `403 banned`，不再新建设备。`/api/wx/link` 两边都查：认领码主人，以及这个微信原来关联的人（防止把被封的微信切到另一个号上）。
+- 只看小游戏设备，不看这个用户被封的 H5 设备。封 H5 设备是按设备的处置，同一个人别的设备照常可用，和 H5 那边一致；小游戏设备背后就是这个微信身份，封它等于封这个微信。
+- 已经登录着的其他设备不受影响（和 H5 一样只拦被封的那台）。要彻底封一个小游戏用户，直接 `admin ban <用户 id>`。
+- 被封的设备也按 §13.1 在 180 天没活动后被清理，清理之后这层拦截随之失效。要长期封，用 `admin ban <用户 id>`。
+- 没有解封命令；解封是把那台设备的 `banned_at` 清空，之后小游戏登录恢复。
+
 执行方式：`docker exec guandan /guandan admin …`。这些命令和服务共用同一个数据库，写操作同样通过 `store.Write`，不会与正在运行的服务冲突。
 
 ### 13.7 监控
 
 - 外部定时探测 `/readyz`（任何免费的探活服务都可以），失败时通知仓库所有者。
 - 日志：`slog` 输出 JSON。每个请求带 `request_id`、路由、状态码、耗时、写锁等待时间。写锁等待超过 100 毫秒、`503 busy`、panic 都记为 warn 及以上级别。
-- `/metrics` 只允许内网或 localhost 访问，内容包括：请求数和延迟、写锁等待时间、WebSocket 连接数、outbox 积压量和发送失败数、备份时间。
+- `/metrics` 只允许内网或 localhost 访问，内容包括：请求数和延迟、写锁等待时间、WebSocket 连接数、outbox 积压量和发送失败数、备份时间、微信内容安全检测的次数（按结论）和耗时（§14）。
 
 ## 14. 合规（印尼）
 
 - **个人数据保护法（UU PDP，2024 年 10 月起全面执行）**：
   - 采集的个人数据只有称呼、可选的 WhatsApp 号码、设备信息、埋点数据，以及小游戏用户的微信标识（openid / unionid，只用来识别同一个人，#84），不额外收集其他信息；
   - 提供隐私说明页面 `/privacy`，写明收集什么、用来做什么、保存多久、怎样删除；
-  - `DELETE /api/me` 用于注销：删除称呼、WhatsApp 号码、设备、推送订阅和微信关联（`user_links`）；座位记录改成「已注销牌友」，这样历史局的人数统计不会出错；
+  - `DELETE /api/me` 用于注销：删除称呼、WhatsApp 号码、设备、推送订阅、微信关联（`user_links`）和订阅消息次数（`wx_subscribe_quota`）；座位记录改成「已注销牌友」，这样历史局的人数统计不会出错；
   - 保留期限：设备 180 天未活跃就删除（§13.1）；埋点数据 1 年后删除；备份 30 天。
 - **赌博监管**：页面上已经写明「不涉及金钱输赢」。服务端对牌局备注和地点做敏感词过滤（赌、钱、筹码、judi、taruhan……），命中就拒绝提交，并提示「请勿涉及金钱」。词表放在仓库里，可以随时更新。
+- **微信内容安全检测（#146，`internal/secheck`）**：微信要求有用户生成内容的小游戏接入内容安全检测。
+  - **接口**：游戏专用版 `POST https://api.weixin.qq.com/wxa/game/content_spam/msg_sec_check`，请求体 `{openid, version: 2, scene, content}`，看 `result.suggest`（`risky` 拦，`pass` / `review` 放行）和 `result.label`。access_token 走 `internal/wxapi`（和订阅消息同一套）。单次超时 1 秒。
+  - **范围**：服务端写入前同步检查，客户端不调。只查**小游戏用户**：请求者在 `user_links` 里有 `wx_openid:<appid>` 才查，没有（H5 测试用户）就跳过；H5 是测试版，小游戏上线后废弃，届时自然全覆盖。凭认领码关联过小游戏的 H5 用户也有 openid，他在 H5 上开局、改局同样会查。
+    | 入口 | 字段 | scene |
+    |---|---|---|
+    | `POST /api/wx/login {nickname}` | 称呼（带了称呼就查，用的是刚换出来的 openid） | 1 资料 |
+    | `POST /api/games` | 地点、备注 | 3 论坛 |
+    | `PATCH /api/games/{code}` | 改到的地点、备注（先确认是局头，别人发 PATCH 不触发调用） | 3 论坛 |
+
+    `POST /api/me` 只给 H5 新建身份（没有 openid），已有身份时不改称呼；`/api/wx/link` 不收任何用户文本（只是把微信挂到已有的 H5 身份上）；目前没有改称呼的接口。以后加了改称呼、或者 B1（#140）要在 `/api/wx/link` 里新建身份，都要接上 scene 1 的检查。
+  - **结果**：`risky` 返回 `422`，错误码**复用 `sensitive_word`**，带 `field`（`nickname` / `venue` / `note`），提示「这段内容不适合发布，请修改后再试」，不告诉用户命中了哪一类。复用是为了让小游戏和 H5 现有的按字段提示直接生效，前端不用区分是本地词表还是微信拦的。本地词表（上一条）先查，过了才送微信。
+  - **失败策略：放行**。微信出错、超时、`suggest` 不认识、查 openid 出错，都当作通过，记指标 `guandan_wx_sec_check_total{outcome}`（`pass` / `risky` / `review` / `error` / `timeout` / `no_openid`）和耗时 `guandan_wx_sec_check_duration_seconds`，并打 warn 日志。理由：这是约局工具，内容只在牌友之间传播；微信抖一下就让人开不了局，代价比偶尔漏过一条大；本地词表仍兜着金钱和赌博。`error` / `timeout` 比例明显升高时看日志里的 errcode。
+  - **隐私**：送给微信的只有这段文本和 openid。日志只记场景、字段名、结论、label、耗时、errcode，**不记原文，也不记 openid**；微信的 errmsg 也不记（不保证不回显内容）。小游戏「隐私与数据」里写明了称呼、地点、备注会发给微信做内容安全检测。
+  - **开关**：没配 `GUANDAN_WX_APPID` / `GUANDAN_WX_SECRET` 时整体关闭。开发模式用假检测器：文本里含「内容安全测试」判 `risky`（label 21000），其余通过，查的是 `wx_openid:dev`，方便在开发者工具里测前端提示。
 - **域名**：`.id` 域名通常需要印尼身份证或本地公司才能注册，所以建议主域名用 `.com` 之类的通用后缀（见 #12）。
 - **电子系统运营商登记（PSE）**：面向印尼用户的服务原则上需要向 Komdigi 登记。这个规模下被查的概率低，但已记入风险清单，用户量明显增长后再评估。
 

@@ -34,13 +34,16 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/server/internal/identity"
 	"github.com/dayuer/jkt-guandan/server/internal/janitor"
+	"github.com/dayuer/jkt-guandan/server/internal/metrics"
 	"github.com/dayuer/jkt-guandan/server/internal/notify"
 	"github.com/dayuer/jkt-guandan/server/internal/realtime"
 	"github.com/dayuer/jkt-guandan/server/internal/route"
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 	"github.com/dayuer/jkt-guandan/server/internal/share"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 	"github.com/dayuer/jkt-guandan/server/internal/supervise"
 	"github.com/dayuer/jkt-guandan/server/internal/telemetry"
+	"github.com/dayuer/jkt-guandan/server/internal/wxapi"
 )
 
 // minFreeBytes 是启动时要求的数据目录剩余空间（§12.1 第 3 步）。
@@ -156,6 +159,11 @@ func run() error {
 		Build: buildinfo.Get(),
 	})
 	gamesSvc := games.NewService(st, clk, gamesPublisher{hub})
+	// §14 微信内容安全检测（#146）：小游戏用户的称呼、地点、备注写入前送微信查。
+	if guard := newContentGuard(cfg, st, clk, reg.Registry); guard != nil {
+		identitySvc.SetContentGuard(guard)
+		gamesSvc.SetContentGuard(guard)
+	}
 	// 注销（§14）要同时清身份侧和牌局侧的数据，两边在各自的包里，这里接起来。
 	identitySvc.SetGameCleaner(gamesSvc)
 
@@ -168,6 +176,8 @@ func run() error {
 	}
 	// 发送 worker 每 15 秒一轮；心跳周期报 2 分钟：一轮最多 100 条、每条 10 秒超时、8 个并发，
 	// 慢的时候一轮要一两分钟，按 15 秒算会被 /readyz 误判为卡死。
+	// §5.3 订阅消息（#137）：配了 AppID / Secret 和至少一个模板才开。
+	setupWxSubscribe(notifySvc, cfg, clk)
 	group.Go(bgCtx, "push", 2*time.Minute, notify.NewWorker(notifySvc, notifySvc.NewSender(), clk).Task)
 
 	// §12.4 第 1 步：开始关闭后 /readyz 立刻返回 503。
@@ -361,6 +371,45 @@ func setupWx(svc *identity.Service, cfg config.Config) {
 	default:
 		slog.Info("没有配置 GUANDAN_WX_APPID / GUANDAN_WX_SECRET，小游戏登录关闭")
 	}
+}
+
+// newContentGuard 建微信内容安全检测（#146）。配了 AppID / Secret 用真接口；没配时开发模式用假检测器
+// （含 secheck.DevRiskyWord 判 risky），生产则返回 nil：整体关闭。
+func newContentGuard(cfg config.Config, st *store.Store, clk clock.Clock, reg *metrics.Registry) *secheck.Guard {
+	g := &secheck.Guard{Store: st}
+	switch {
+	case cfg.WxEnabled():
+		tokens := &wxapi.StableToken{AppID: cfg.WxAppID, Secret: cfg.WxSecret, Clock: clk}
+		g.AppID, g.Checker = cfg.WxAppID, secheck.WxChecker{API: &wxapi.Client{Tokens: tokens}}
+		slog.Info("微信内容安全检测已开启")
+	case cfg.Dev:
+		g.AppID, g.Checker = identity.DevWxAppID, secheck.DevChecker{}
+		slog.Info("开发模式：内容安全检测用假检测器", "risky_word", secheck.DevRiskyWord)
+	default:
+		slog.Info("没有配置 GUANDAN_WX_APPID / GUANDAN_WX_SECRET，内容安全检测关闭")
+		return nil
+	}
+	g.Metrics = secheck.NewMetrics(reg)
+	return g
+}
+
+// setupWxSubscribe 接上小游戏订阅消息通道（#137）。没配 AppID / Secret 或模板时关闭，提醒只走 Web Push。
+func setupWxSubscribe(svc *notify.Service, cfg config.Config, clk clock.Clock) {
+	ch := notify.NewWxChannel(cfg, clk)
+	if ch == nil {
+		if cfg.WxTmplFull.ID != "" || cfg.WxTmplRemind.ID != "" {
+			slog.Warn("配了订阅消息模板但没配 GUANDAN_WX_APPID / GUANDAN_WX_SECRET，订阅消息关闭")
+		} else {
+			slog.Info("没有配置订阅消息模板，订阅消息关闭")
+		}
+		return
+	}
+	svc.SetWx(ch)
+	if !cfg.WxEnabled() {
+		slog.Info("开发模式：订阅消息已开启，发送只记日志", "templates", len(ch.Templates))
+		return
+	}
+	slog.Info("订阅消息已开启", "templates", len(ch.Templates))
 }
 
 // setupLogging 见 §7：开发模式用文本日志，生产用 JSON 到 stdout。

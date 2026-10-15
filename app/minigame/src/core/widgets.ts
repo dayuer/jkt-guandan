@@ -2,9 +2,75 @@
 // 每个控件当帧画、当帧登记热区；位置由调用方从上往下排，函数返回占用的高度。
 
 import type { App, Sheet } from "./app";
-import { C, Ctx, card, circle, ellipsize, fillRR, font, measure, paragraph, strokeRR, text, wrap } from "./ui";
+import { C, Ctx, Scroller, card, circle, ellipsize, fillRR, font, measure, paragraph, strokeRR, text, wrap } from "./ui";
 
 export const PAD = 16;
+
+// ── 路径图标（适配稿 4.2）：颜色要随状态变的、或不是每台机器字体里都有的符号，一律画路径。
+// iOS 可能把 ♠ ♥ 画成彩色 emoji，fillStyle 就不起作用了。形状照搬 design/guandan-minigame/prototype.html。
+function strokeIcon(ctx: Ctx, c: string, lw: number) {
+  ctx.strokeStyle = c;
+  ctx.lineWidth = lw;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.stroke();
+}
+export type Suit = "spade" | "heart" | "club" | "diamond";
+export const icon = {
+  back(ctx: Ctx, x: number, cy: number, c: string) {
+    ctx.beginPath(); ctx.moveTo(x + 9, cy - 9); ctx.lineTo(x, cy); ctx.lineTo(x + 9, cy + 9); strokeIcon(ctx, c, 2.4);
+  },
+  check(ctx: Ctx, cx: number, cy: number, c: string) {
+    ctx.beginPath(); ctx.moveTo(cx - 5, cy); ctx.lineTo(cx - 1.5, cy + 4); ctx.lineTo(cx + 6, cy - 5); strokeIcon(ctx, c, 2.2);
+  },
+  /** 实心圆感叹号，直径 14 */
+  alert(ctx: Ctx, cx: number, cy: number, c: string) {
+    circle(ctx, cx, cy, 7, c);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(cx - 1, cy - 4.2, 2, 5);
+    ctx.fillRect(cx - 1, cy + 2.2, 2, 2);
+  },
+  /** 方框 + 向上箭头，替代「⇪」 */
+  share(ctx: Ctx, cx: number, cy: number, c: string) {
+    ctx.beginPath();
+    ctx.moveTo(cx - 6, cy - 1); ctx.lineTo(cx - 6, cy + 7); ctx.lineTo(cx + 6, cy + 7); ctx.lineTo(cx + 6, cy - 1);
+    ctx.moveTo(cx, cy + 2); ctx.lineTo(cx, cy - 8);
+    ctx.moveTo(cx - 4, cy - 4.5); ctx.lineTo(cx, cy - 8.5); ctx.lineTo(cx + 4, cy - 4.5);
+    strokeIcon(ctx, c, 1.8);
+  },
+  heart(ctx: Ctx, cx: number, cy: number, s: number, c: string) {
+    ctx.beginPath(); ctx.moveTo(cx, cy + s * 0.42);
+    ctx.bezierCurveTo(cx - s * 0.95, cy - s * 0.12, cx - s * 0.5, cy - s * 0.78, cx, cy - s * 0.28);
+    ctx.bezierCurveTo(cx + s * 0.5, cy - s * 0.78, cx + s * 0.95, cy - s * 0.12, cx, cy + s * 0.42);
+    ctx.fillStyle = c; ctx.fill();
+  },
+  spade(ctx: Ctx, cx: number, cy: number, s: number, c: string) {
+    ctx.beginPath(); ctx.moveTo(cx, cy - s * 0.5);
+    ctx.bezierCurveTo(cx - s * 0.95, cy + s * 0.05, cx - s * 0.5, cy + s * 0.62, cx, cy + s * 0.18);
+    ctx.bezierCurveTo(cx + s * 0.5, cy + s * 0.62, cx + s * 0.95, cy + s * 0.05, cx, cy - s * 0.5);
+    ctx.fillStyle = c; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx, cy + s * 0.12); ctx.lineTo(cx - s * 0.2, cy + s * 0.5); ctx.lineTo(cx + s * 0.2, cy + s * 0.5); ctx.closePath(); ctx.fill();
+  },
+  diamond(ctx: Ctx, cx: number, cy: number, s: number, c: string) {
+    ctx.beginPath(); ctx.moveTo(cx, cy - s * 0.5);
+    ctx.quadraticCurveTo(cx + s * 0.12, cy - s * 0.12, cx + s * 0.38, cy); ctx.quadraticCurveTo(cx + s * 0.12, cy + s * 0.12, cx, cy + s * 0.5);
+    ctx.quadraticCurveTo(cx - s * 0.12, cy + s * 0.12, cx - s * 0.38, cy); ctx.quadraticCurveTo(cx - s * 0.12, cy - s * 0.12, cx, cy - s * 0.5);
+    ctx.fillStyle = c; ctx.fill();
+  },
+  club(ctx: Ctx, cx: number, cy: number, s: number, c: string) {
+    const r = s * 0.2;
+    circle(ctx, cx, cy - s * 0.24, r, c); circle(ctx, cx - s * 0.22, cy + s * 0.06, r, c); circle(ctx, cx + s * 0.22, cy + s * 0.06, r, c);
+    ctx.beginPath(); ctx.moveTo(cx, cy - s * 0.05); ctx.lineTo(cx - s * 0.18, cy + s * 0.5); ctx.lineTo(cx + s * 0.18, cy + s * 0.5); ctx.closePath();
+    ctx.fillStyle = c; ctx.fill();
+  },
+};
+const SUITS: Record<string, Suit> = { "♠": "spade", "♥": "heart", "♣": "club", "♦": "diamond" };
+/** 花色字符（课程数据里写的是字符）换成路径。 */
+export function suit(ctx: Ctx, ch: string, cx: number, cy: number, s: number, c: string) {
+  const k = SUITS[ch];
+  if (k) icon[k](ctx, cx, cy, s, c);
+  else text(ctx, ch, cx, cy, font(s), c, "center");
+}
 
 // ── 导航栏：和右上角胶囊同一行，右边留给胶囊 ──
 export function nav(app: App, ctx: Ctx, title: string, onBack?: () => void, left?: { label: string; onTap: () => void }) {
@@ -12,16 +78,7 @@ export function nav(app: App, ctx: Ctx, title: string, onBack?: () => void, left
   ctx.fillRect(0, 0, app.W, app.contentTop);
   if (onBack) {
     if (app.isPressed("nav-back")) circle(ctx, 26, app.navY, 18, C.beige);
-    // 用路径画箭头，不依赖字体里有没有「‹」
-    ctx.beginPath();
-    ctx.moveTo(30, app.navY - 9);
-    ctx.lineTo(21, app.navY);
-    ctx.lineTo(30, app.navY + 9);
-    ctx.strokeStyle = C.ink;
-    ctx.lineWidth = 2.4;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.stroke();
+    icon.back(ctx, 21, app.navY, C.ink);
     app.hit("nav-back", 0, app.navY - 22, 60, 44, onBack);
   } else if (left) {
     text(ctx, left.label, PAD + 2, app.navY, font(15, "600"), app.isPressed("nav-left") ? C.ink : C.ink3);
@@ -37,7 +94,8 @@ export type BtnStyle = "primary" | "ghost" | "soft" | "danger" | "dark" | "green
 
 export function button(
   app: App, ctx: Ctx, id: string, x: number, y: number, w: number, h: number,
-  label: string, style: BtnStyle, onTap: (() => void) | null, opts: { disabled?: boolean; size?: number; radius?: number } = {},
+  label: string, style: BtnStyle, onTap: (() => void) | null,
+  opts: { disabled?: boolean; size?: number; radius?: number; icon?: (ctx: Ctx, cx: number, cy: number, c: string) => void } = {},
 ) {
   const pressed = app.isPressed(id) && !opts.disabled;
   const r = opts.radius ?? Math.min(16, h / 2);
@@ -54,7 +112,13 @@ export function button(
   fillRR(ctx, x, y, w, h, r, bg);
   if (border) strokeRR(ctx, x + 0.75, y + 0.75, w - 1.5, h - 1.5, r, border, style === "dark" ? 1.5 : 1);
   const f = font(opts.size ?? 16, "700");
-  text(ctx, ellipsize(ctx, label, w - 20, f), x + w / 2, y + h / 2 + 0.5, f, fg, "center");
+  if (opts.icon) {
+    // 图标 14 宽 + 间距 8，和文字一起居中
+    const s = ellipsize(ctx, label, w - 42, f);
+    const left = x + w / 2 - (measure(ctx, s, f) + 22) / 2;
+    opts.icon(ctx, left + 7, y + h / 2, fg);
+    text(ctx, s, left + 22, y + h / 2 + 0.5, f, fg);
+  } else text(ctx, ellipsize(ctx, label, w - 20, f), x + w / 2, y + h / 2 + 0.5, f, fg, "center");
   app.hit(id, x, y, w, h, opts.disabled ? null : onTap);
 }
 
@@ -90,6 +154,68 @@ export function chipsWrap(app: App, ctx: Ctx, idPrefix: string, x: number, y: nu
   return y + 36;
 }
 
+// ── 时间胶囊行（适配稿第三节）：左边固定标签，右边单行横滑，伸到屏幕右边缘 ──
+export const ROW_X0 = 20 + 48; // 标签列：左边距 20，宽 48
+const ROW_H = 36, ROW_GAP = 8;
+function rowChipW(ctx: Ctx, label: string, on: boolean): number {
+  return measure(ctx, label, font(14, on ? "700" : "normal")) + 28;
+}
+/** 选中项落在可视区左起约 1/3 处的滚动量（不小于 0，不超过最大值）。 */
+export function chipRowScrollFor(app: App, ctx: Ctx, items: string[], on: number): number {
+  let x = 0, total = 0;
+  items.forEach((it, i) => {
+    const w = rowChipW(ctx, it, i === on) + ROW_GAP;
+    if (i < on) x += w;
+    total += w;
+  });
+  const view = app.W - ROW_X0;
+  return Math.max(0, Math.min(x - view / 3, total - ROW_GAP + 20 - view));
+}
+function rgba(hex: string, a: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+}
+/**
+ * 一行胶囊：可视区从 x = 68 到屏幕右边缘；右侧 32 渐隐，滑过之后左侧 20 渐隐。
+ * 不可选的胶囊画虚线边、--khaki 字，没有热区。返回下一行的 y（行距 10）。
+ */
+export function chipRow(
+  app: App, ctx: Ctx, id: string, y: number, label: string, items: string[], on: number, onPick: (i: number) => void,
+  o: { scroll: Scroller; disabled?: (i: number) => boolean; bg?: string },
+): number {
+  const W = app.W, bg = o.bg ?? C.card, x0 = ROW_X0;
+  text(ctx, label, 20, y + ROW_H / 2, font(13, "700"), C.ink2);
+  let total = 0;
+  const ws = items.map((it, i) => { const w = rowChipW(ctx, it, i === on); total += w + ROW_GAP; return w; });
+  o.scroll.setMax(total - ROW_GAP + 20 - (W - x0));
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0, y - 4, W - x0, ROW_H + 8); ctx.clip();
+  let x = x0 - o.scroll.pos;
+  items.forEach((it, i) => {
+    const w = ws[i], sel = i === on, off = !sel && !!o.disabled?.(i), cid = `${id}:${i}`;
+    if (x + w > x0 && x < W) {
+      fillRR(ctx, x, y, w, ROW_H, ROW_H / 2, sel ? C.red : app.isPressed(cid) ? C.beige : C.card);
+      if (!sel) strokeRR(ctx, x + 0.5, y + 0.5, w - 1, ROW_H - 1, ROW_H / 2, C.line, 1, off ? [3, 3] : undefined);
+      text(ctx, it, x + w / 2, y + ROW_H / 2, font(14, sel ? "700" : "normal"), sel ? C.cream : off ? C.khaki : C.ink2, "center");
+      // 热区只登记看得见的部分，免得点到标签列下面藏着的胶囊
+      const hx = Math.max(x, x0), hw = Math.min(x + w, W) - hx;
+      if (!off && hw > 0) app.hit(cid, hx, y, hw, ROW_H, () => onPick(i));
+    }
+    x += w + ROW_GAP;
+  });
+  ctx.restore();
+  const fade = (fx: number, w: number, toRight: boolean) => {
+    const g = ctx.createLinearGradient(fx, 0, fx + w, 0);
+    g.addColorStop(0, rgba(bg, toRight ? 0 : 1));
+    g.addColorStop(1, rgba(bg, toRight ? 1 : 0));
+    ctx.fillStyle = g;
+    ctx.fillRect(fx, y - 2, w, ROW_H + 4);
+  };
+  if (x - ROW_GAP > W + 0.5) fade(W - 32, 32, true);
+  if (o.scroll.pos > 0.5) fade(x0, 20, false);
+  return y + ROW_H + 10;
+}
+
 export function segmented(app: App, ctx: Ctx, id: string, x: number, y: number, w: number, items: string[], active: number, onPick: (i: number) => void, h = 44) {
   fillRR(ctx, x, y, w, h, 16, C.beige);
   const cw = (w - 8) / items.length;
@@ -121,13 +247,23 @@ export function field(app: App, ctx: Ctx, x: number, y: number, w: number, o: Fi
   const f = font(fs);
   const lh = fs + 8;
   const focused = app.isEditing(o.key);
-  const lines = o.value ? wrap(ctx, o.value, w - 32, f) : [o.placeholder];
+  // 激活且到上限的 80% 起，右侧显示字数，文字区让出 44（适配稿 2.1）
+  const max = o.maxLength ?? 40;
+  const count = Array.from(o.value).length;
+  const showCount = focused && count >= max * 0.8;
+  const tw = w - 32 - (showCount ? 44 : 0);
+  const lines = o.value ? wrap(ctx, o.value, tw, f) : [o.placeholder];
   const h = o.multiple ? Math.max(84, 28 + lines.length * lh) : 52;
+  if (focused) {
+    fillRR(ctx, x - 4, y - 4, w + 8, h + 8, 16, C.redRing); // 4px 焦点环（--sh-focus）
+    app.focusRect = { y, h };
+  }
   fillRR(ctx, x, y, w, h, 12, o.error ? C.errTint : C.card);
   strokeRR(ctx, x + 0.5, y + 0.5, w - 1, h - 1, 12, o.error || focused ? C.red : C.line, focused ? 1.5 : 1);
   const ty = o.multiple ? y + 14 + lh / 2 : y + h / 2;
-  const shown = o.multiple ? lines : [ellipsizeStart(ctx, lines.join(""), w - 34, f)];
+  const shown = o.multiple ? lines : [ellipsizeStart(ctx, lines.join(""), tw - 2, f)];
   shown.forEach((ln, i) => text(ctx, ln, x + 16, ty + i * lh, f, o.value ? C.ink : C.ink4));
+  if (showCount) text(ctx, `${count}/${max}`, x + w - 14, o.multiple ? y + h - 14 : y + h / 2, font(11), C.ink4, "right");
   if (focused && Date.now() % 1000 < 550) {
     const last = o.value ? shown[shown.length - 1] : "";
     const cx = x + 16 + measure(ctx, last, f) + 1;
@@ -141,7 +277,11 @@ export function field(app: App, ctx: Ctx, x: number, y: number, w: number, o: Fi
     }),
   );
   let used = h;
-  if (o.error) used += 6 + paragraph(ctx, "⚠ " + o.error, x + 2, y + h + 6, w - 4, font(12), C.red, 18);
+  if (o.error) {
+    // 感叹号画路径（直径 14），不用「⚠」字符；说明可能折行
+    icon.alert(ctx, x + 9, y + h + 15, C.red);
+    used += 6 + paragraph(ctx, o.error, x + 22, y + h + 6, w - 24, font(12), C.red, 18);
+  }
   return used;
 }
 

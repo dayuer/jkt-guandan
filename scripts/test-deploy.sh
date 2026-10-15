@@ -4,14 +4,78 @@
 # 在本机或 CI 上验证 scripts/deploy-remote.sh（服务器端的发布逻辑），不需要 nginx 和 ssh：
 # 用一个临时目录当 /var/www/guandan，用容器自己的端口当 SITE_URL。
 # 用法：scripts/test-deploy.sh <已经 build 好的镜像，如 guandan:ci>
+#       scripts/test-deploy.sh --print-names   只打印本次运行用的名字和端口（给自测/排障看）
 # 在仓库根目录执行：场景 6 要用当前提交的源码另外构建一个带额外迁移的镜像。
 set -eu
-GOOD=${1:?"用法：scripts/test-deploy.sh <镜像>"}
-PORT=${PORT:-28480}
-REPO=guandan-deploytest
+
+# 每次运行一套自己的名字和端口（#181）。本机经常同时跑好几个 local-ci/docker —— impl 自测、
+# auditor 复审、coord 的 pre-merge-check。原来名字写死成 guandan-deploytest*：另一路进程的
+# cleanup 会把这一路正在用的容器删掉，这一路接着 rename 就报
+# `No such container: guandan-deploytest-prev`，docker 那项随机误报。
+#
+# **端口也得每路自己的**：只改名字的话，两路会同时去绑 127.0.0.1:28480，只是把失败从
+# `No such container` 换成 `port is already allocated`。所以两个端口都按 PID 推起点、
+# 再往上找空闲的（做法见下面的 port_from）。容器名、卷名、镜像标签同理。
+#
+# 生产 deploy.sh / deploy-remote.sh 的命名一个字不动 —— 线上就是 guandan，这里只改测试注入的变量。
+# DEPLOYTEST_RUN 只给自测用：固定「本次运行的编号」，好造出两次运行编号相邻的场景
+# （并发起的两路 PID 就是相邻的，那是最容易撞的一种）。生产/日常跑不设它。
+RUN=${DEPLOYTEST_RUN:-$$}
+NAME="guandan-deploytest-$RUN"
+VOLUME="guandan-deploytest-$RUN-data"
+REPO="guandan-deploytest-$RUN"
+
+# 每次运行占**一对相邻**端口：PORT 给场景 1–6，PORT+1 留给场景 7。
+#
+# 每次运行独占一个 8 个口宽的**窗口**，窗口起点按编号推：[20000 + (RUN % 1250) * 8, +8)。
+# 窗口里挑第一组连着的 2 个空闲端口。三条约束，缺一不可：
+#
+#  1. 起点按编号推，不能交给内核（bind 到 0）—— 内核会把刚释放的端口立刻再发出去，
+#     先后两次运行会拿到同一个号。
+#  2. 挪的时候**只在窗口里挪，步长就是这一组的宽度**。允许挪出窗口的话，挪一步正好落进
+#     下一个编号的窗口，而并发起的两路 PID 就是相邻的 —— 还是要撞（auditor 实测：占住
+#     28485 时自测就红了）。窗口比这一组宽，挪完还是自己的地盘。
+#  3. 一组里的每个口都要先探过是空的：场景 7 要等好几分钟才用第二个，光探第一个不够。
+#
+# 窗口里凑不出来就**报错退出**，不去抢别人的窗口 —— 那是本机这一段端口占用异常，
+# 说清楚比撞上强。（restore-drill.sh 用 30000–39999，两个脚本的窗口不会撞。）
+WINDOW=8
+port_group() { # $1=窗口起点 $2=要几个；在窗口内打印一组，找不到就退出非 0
+  python3 - "$1" "$2" "$WINDOW" <<'PY'
+import socket, sys
+start, k, window = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+for p in range(start, start + window - k + 1):
+    held = []
+    for q in range(p, p + k):
+        s = socket.socket()
+        try:
+            s.bind(("127.0.0.1", q))
+        except OSError:
+            break
+        held.append(s)
+    for s in held:
+        s.close()          # 立刻交还给 docker；窗口极小
+    if len(held) == k:
+        print(" ".join(str(p + i) for i in range(k)))
+        sys.exit(0)
+sys.exit("本机 %d–%d 这一段端口凑不出 %d 个连着的空闲端口（有别的进程占着？）；"
+         "过一会儿或换台机器再跑" % (start, start + window - 1, k))
+PY
+}
+if [ -n "${PORT:-}" ]; then
+  # 显式指定时保持原来的行为（调试、或外部脚本要固定端口）。
+  # 并发跑 CI 时**不要**设它：那样两路就又用回同一组固定端口了，正是 #181 要修的。
+  printf '注意：环境里给了 PORT=%s，本次运行就用它（并发跑 CI 时不要设，见 #181）\n' "$PORT"
+  PORT_OLD=$((PORT + 1))
+else
+  PAIR=$(port_group $((20000 + (RUN % 1250) * 8)) 2)
+  PORT=${PAIR%% *}
+  PORT_OLD=${PAIR#* }
+fi
+export PORT PORT_OLD
 
 work=$(mktemp -d)
-export NAME=guandan-deploytest VOLUME=guandan-deploytest-data IMAGE_REPO=$REPO PORT \
+export NAME VOLUME IMAGE_REPO=$REPO \
   WEB_ROOT="$work/www" ENV_FILE="$work/none.env" PUBLIC_URL="http://127.0.0.1:$PORT" \
   READY_TIMEOUT=30
 cleanup() {
@@ -25,6 +89,20 @@ cleanup() {
 trap cleanup EXIT
 docker rm -f "$NAME" "$NAME-prev" >/dev/null 2>&1 || true
 docker volume rm "$VOLUME" >/dev/null 2>&1 || true
+
+# 打印本次的名字和端口就退出 —— 上面那两行 rm 已经跑过了，退出时 trap 里的 cleanup 也会照常
+# 执行：配合 test-deploy-names.sh 的假 docker，正好能看出「这一次运行碰了哪些资源」。
+if [ "${1:-}" = '--print-names' ]; then
+  printf 'RUN=%s\nNAME=%s\nVOLUME=%s\nREPO=%s\nPORT=%s\nPORT_OLD=%s\n' \
+    "$RUN" "$NAME" "$VOLUME" "$REPO" "$PORT" "$PORT_OLD"
+  exit 0
+fi
+
+GOOD=${1:?"用法：scripts/test-deploy.sh <镜像> | --print-names"}
+
+# 并发隔离自测（#181）：毫秒级，放在前面 —— 名字或端口一旦退回去写死，先在这里就红，
+# 不用等后面几分钟的场景跑完。
+"$(dirname "$0")"/test-deploy-names.sh || { echo "失败：并发隔离自测没过"; exit 1; }
 
 # 三个好版本，加两个坏版本。
 for t in good1 good2 good3; do docker tag "$GOOD" "$REPO:$t"; done
@@ -124,8 +202,9 @@ docker build -q -t "$REPO:prod" "$prod" >/dev/null
 stage prod
 (
   # 子 shell：换一套容器名、数据卷和端口，不影响上面的场景。
+  # 端口用另一个本次运行自己找的空闲端口（原来是 PORT+1，并发时不一定是空的）。
   # 注意 ( … ) || 里 set -e 不生效，每一步都要自己判失败。
-  NAME="$NAME-old" VOLUME="$VOLUME-old" PORT=$((PORT + 1))
+  NAME="$NAME-old" VOLUME="$VOLUME-old" PORT="$PORT_OLD"
   PUBLIC_URL="http://127.0.0.1:$PORT" SITE_URL="http://127.0.0.1:$PORT"
   export NAME VOLUME PORT PUBLIC_URL SITE_URL
   # 0e45b18 的镜像没有 backup 子命令：默认拒绝发布；空数据卷上首次发布它要显式允许不备份。

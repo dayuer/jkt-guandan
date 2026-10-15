@@ -581,6 +581,35 @@ func TestPublicConfig(t *testing.T) {
 	}
 }
 
+// GET /api/config 下发订阅消息模板 ID（#137）：只给配置了的；没配 AppID / Secret 时通道关闭，一个都不给。
+func TestPublicConfigWxSubscribe(t *testing.T) {
+	wx := config.Config{WxAppID: "wxapp", WxSecret: "sec"}
+	only := wx
+	only.WxTmplRemind = config.WxTemplate{ID: "TMPL_R"}
+	both := only
+	both.WxTmplFull = config.WxTemplate{ID: "TMPL_F"}
+	noSecret := config.Config{WxTmplFull: config.WxTemplate{ID: "TMPL_F"}}
+	for _, tc := range []struct {
+		cfg  config.Config
+		want string
+	}{
+		{config.Config{}, `{}`},
+		{wx, `{}`},
+		{noSecret, `{}`},
+		{only, `{"remind":"TMPL_R"}`},
+		{both, `{"full":"TMPL_F","remind":"TMPL_R"}`},
+	} {
+		f := newFixture(t, tc.cfg, nil)
+		_, body := f.get(t, "/api/config")
+		var got struct {
+			Wx json.RawMessage `json:"wx_subscribe"`
+		}
+		if err := json.Unmarshal([]byte(body), &got); err != nil || string(got.Wx) != tc.want {
+			t.Fatalf("wx_subscribe = %s，期望 %s", got.Wx, tc.want)
+		}
+	}
+}
+
 // #119：/api 下没有匹配的路径返回 404 JSON，不回落到前端页面；路径存在、方法不对的仍是 405。
 func TestUnknownAPIPathIs404JSON(t *testing.T) {
 	f := newFixture(t, config.Config{PublicURL: "https://guandan.id"}, func(mux *routeRecorder) {

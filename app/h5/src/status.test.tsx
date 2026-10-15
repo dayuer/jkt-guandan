@@ -10,8 +10,10 @@ import { acknowledge, fromDetail, fromSummary, noticesFor, observe, snapshotKey 
 /** #114：改时间横幅（A3 / R1）、首页标签（W4）、候补转正（W3）、局头转交（K2）。 */
 
 const ME = { id: "u2", nickname: "阿明" };
-const T0 = 1791986400; // 某天 19:30 WIB
-const T1 = T0 + 30 * 60; // 改到 20:00
+const T0 = 1791986400; // 某天 21:00 WIB
+const T1 = T0 + 30 * 60; // 改到 21:30
+// 时钟冻在开局前几个小时（#167）：快照开局一天后自动清掉，不冻的话这些写死的时间一过期，用例就全挂。
+const NOW = T0 - 6 * 3600;
 
 function detail(over: { starts_at?: number; venue?: string; role?: "seat" | "waitlist" | "none"; hostID?: string; version?: number } = {}): GameDetail {
   const hostID = over.hostID ?? "u1";
@@ -81,9 +83,15 @@ function mountDetail(responses: () => GameDetail, extra: (url: string, init?: Re
   return { c, calls };
 }
 
-beforeEach(() => installFakeSocket());
+beforeEach(() => {
+  // 只假 Date：vi.waitFor、socket 等还走真定时器。
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW * 1000);
+  installFakeSocket();
+});
 
 afterEach(() => {
+  vi.useRealTimers();
   document.body.innerHTML = "";
   localStorage.clear();
   vi.unstubAllGlobals();

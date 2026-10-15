@@ -1,0 +1,2851 @@
+{
+ "_comment": [
+  "牌桌计分规则的共用对照用例（#174）。Go（server/internal/scoring/vectors_test.go）和",
+  "vitest（app/minigame/src/lib/scoring.vectors.test.ts）都读这一份，逐字段比对，锁住两边一致。",
+  "input：settings + 每局事实 rounds（+ 可选 edit：把第 round_no 局换成这个结果再整段重算，S10）；",
+  "expect：Compute 的输出（rounds 每局结果，state 最后一局之后的状态），字段同 GET /score。",
+  "改规则时先改这里的 input，再跑 go test ./server/internal/scoring/ -run TestVectors -update 重新生成 expect，逐条核对 diff。"
+ ],
+ "vectors": [
+  {
+   "name": "还没有局",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [],
+   "expect": {
+    "rounds": [],
+    "state": {
+     "match": 1,
+     "match_rounds": 0,
+     "playing": "",
+     "playing_level": 2,
+     "red": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "black": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "设计稿例子（README §7 / S9）：6 局，红 J 黑 7，下一局打红方的 J",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 4,
+     "partner_place": 3
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 3
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 4,
+      "partner_place": 3,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 2,
+      "level_after": 4,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 4,
+      "playing": "black",
+      "playing_level": 4,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 5,
+      "level_after": 6,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 6,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 6,
+      "level_after": 9,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 9,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 4,
+      "level_after": 7,
+      "passed_a": false
+     },
+     {
+      "round_no": 6,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 3,
+      "playing": "black",
+      "playing_level": 7,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 9,
+      "level_after": 11,
+      "passed_a": false
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 6,
+     "playing": "red",
+     "playing_level": 11,
+     "red": {
+      "level": 11,
+      "a_fails": 0,
+      "wins": 4,
+      "double_ups": 2
+     },
+     "black": {
+      "level": 7,
+      "a_fails": 0,
+      "wins": 2,
+      "double_ups": 1
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "设计稿例子改第 4 局为头游＋三游（S10）：后面 2 局重算，红方 10",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 4,
+     "partner_place": 3
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 3
+    }
+   ],
+   "edit": {
+    "round_no": 4,
+    "head_seat": 1,
+    "partner_place": 3
+   },
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 4,
+      "partner_place": 3,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 2,
+      "level_after": 4,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 4,
+      "playing": "black",
+      "playing_level": 4,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 5,
+      "level_after": 6,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 3,
+      "playing": "red",
+      "playing_level": 6,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 6,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 4,
+      "level_after": 7,
+      "passed_a": false
+     },
+     {
+      "round_no": 6,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 3,
+      "playing": "black",
+      "playing_level": 7,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 8,
+      "level_after": 10,
+      "passed_a": false
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 6,
+     "playing": "red",
+     "playing_level": 10,
+     "red": {
+      "level": 10,
+      "a_fails": 0,
+      "wins": 4,
+      "double_ups": 1
+     },
+     "black": {
+      "level": 7,
+      "a_fails": 0,
+      "wins": 2,
+      "double_ups": 1
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "连升到 A 封顶：J 双上只到 A",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 2
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 4,
+     "playing": "red",
+     "playing_level": 14,
+     "red": {
+      "level": 14,
+      "a_fails": 0,
+      "wins": 4,
+      "double_ups": 4
+     },
+     "black": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "打本队 A：头游＋二游过 A，本场结束",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": true
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 5,
+     "playing": "",
+     "playing_level": 2,
+     "red": {
+      "level": 14,
+      "a_fails": 0,
+      "wins": 5,
+      "double_ups": 5
+     },
+     "black": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "match_over": true,
+     "winner": "red"
+    }
+   }
+  },
+  {
+   "name": "打本队 A：头游＋三游也过 A",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 3
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 3,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": true
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 5,
+     "playing": "",
+     "playing_level": 2,
+     "red": {
+      "level": 14,
+      "a_fails": 0,
+      "wins": 5,
+      "double_ups": 4
+     },
+     "black": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "match_over": true,
+     "winner": "red"
+    }
+   }
+  },
+  {
+   "name": "打本队 A：本队头游搭档末游没过，还打 A，计 1 次",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 4
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 4,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false,
+      "failed_a": "red",
+      "a_fails": 1
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 5,
+     "playing": "red",
+     "playing_level": 14,
+     "red": {
+      "level": 14,
+      "a_fails": 1,
+      "wins": 5,
+      "double_ups": 4
+     },
+     "black": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "打本队 A：对方头游没过，计 1 次，改打对方的级",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 4,
+     "partner_place": 3
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 4,
+      "partner_place": 3,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 2,
+      "level_after": 4,
+      "passed_a": false,
+      "failed_a": "red",
+      "a_fails": 1
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 5,
+     "playing": "black",
+     "playing_level": 4,
+     "red": {
+      "level": 14,
+      "a_fails": 1,
+      "wins": 4,
+      "double_ups": 4
+     },
+     "black": {
+      "level": 4,
+      "a_fails": 0,
+      "wins": 1,
+      "double_ups": 0
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "对方在 A 上打我方的级赢了：只升级，不算过",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 4,
+     "partner_place": 2
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "black",
+      "playing_level": 5,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "black",
+      "playing_level": 8,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "black",
+      "playing_level": 11,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "black",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false,
+      "failed_a": "black",
+      "a_fails": 1
+     },
+     {
+      "round_no": 6,
+      "match": 1,
+      "head_seat": 4,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 6,
+     "playing": "black",
+     "playing_level": 14,
+     "red": {
+      "level": 5,
+      "a_fails": 0,
+      "wins": 1,
+      "double_ups": 1
+     },
+     "black": {
+      "level": 14,
+      "a_fails": 1,
+      "wins": 5,
+      "double_ups": 5
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "第 3 次没过回到 2（中间有一局在对方的级上赢了，不算过）",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 3
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 4
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 4,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false,
+      "failed_a": "red",
+      "a_fails": 1
+     },
+     {
+      "round_no": 6,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 4,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 2,
+      "level_after": 3,
+      "passed_a": false,
+      "failed_a": "red",
+      "a_fails": 2
+     },
+     {
+      "round_no": 7,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 3,
+      "playing": "black",
+      "playing_level": 3,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 8,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 4,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 14,
+      "level_after": 2,
+      "passed_a": false,
+      "failed_a": "red",
+      "a_fails": 3,
+      "reset_to_2": true
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 8,
+     "playing": "red",
+     "playing_level": 2,
+     "red": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 7,
+      "double_ups": 4
+     },
+     "black": {
+      "level": 3,
+      "a_fails": 0,
+      "wins": 1,
+      "double_ups": 0
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "第 3 次没过恰好是本队头游搭档末游：回到 2 优先，不再 +1",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 4,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 4
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "black",
+      "playing_level": 5,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "black",
+      "playing_level": 8,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "black",
+      "playing_level": 11,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 4,
+      "playing": "black",
+      "playing_level": 14,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false,
+      "failed_a": "black",
+      "a_fails": 1
+     },
+     {
+      "round_no": 6,
+      "match": 1,
+      "head_seat": 4,
+      "partner_place": 4,
+      "playing": "black",
+      "playing_level": 14,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false,
+      "failed_a": "black",
+      "a_fails": 2
+     },
+     {
+      "round_no": 7,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 4,
+      "playing": "black",
+      "playing_level": 14,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 14,
+      "level_after": 2,
+      "passed_a": false,
+      "failed_a": "black",
+      "a_fails": 3,
+      "reset_to_2": true
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 7,
+     "playing": "black",
+     "playing_level": 2,
+     "red": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "black": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 7,
+      "double_ups": 4
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "约定不回 2（0）：没过 4 次也不回",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 0
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 3
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 4
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 4,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false,
+      "failed_a": "red",
+      "a_fails": 1
+     },
+     {
+      "round_no": 6,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 4,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 2,
+      "level_after": 3,
+      "passed_a": false,
+      "failed_a": "red",
+      "a_fails": 2
+     },
+     {
+      "round_no": 7,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 3,
+      "playing": "black",
+      "playing_level": 3,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 8,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 4,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false,
+      "failed_a": "red",
+      "a_fails": 3
+     },
+     {
+      "round_no": 9,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 4,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false,
+      "failed_a": "red",
+      "a_fails": 4
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 9,
+     "playing": "red",
+     "playing_level": 14,
+     "red": {
+      "level": 14,
+      "a_fails": 4,
+      "wins": 8,
+      "double_ups": 4
+     },
+     "black": {
+      "level": 3,
+      "a_fails": 0,
+      "wins": 1,
+      "double_ups": 0
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "过 A 后再记的一局是下一场：两队从 2 开始，统计清零，局号接着编",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 3
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 4
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": true
+     },
+     {
+      "round_no": 6,
+      "match": 2,
+      "head_seat": 2,
+      "partner_place": 3,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 2,
+      "level_after": 4,
+      "passed_a": false
+     },
+     {
+      "round_no": 7,
+      "match": 2,
+      "head_seat": 1,
+      "partner_place": 4,
+      "playing": "black",
+      "playing_level": 4,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 2,
+      "level_after": 3,
+      "passed_a": false
+     }
+    ],
+    "state": {
+     "match": 2,
+     "match_rounds": 2,
+     "playing": "red",
+     "playing_level": 3,
+     "red": {
+      "level": 3,
+      "a_fails": 0,
+      "wins": 1,
+      "double_ups": 0
+     },
+     "black": {
+      "level": 4,
+      "a_fails": 0,
+      "wins": 1,
+      "double_ups": 0
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "两场都过 A：第 2 场黑方过 A",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 4,
+     "partner_place": 3
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": true
+     },
+     {
+      "round_no": 6,
+      "match": 2,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 7,
+      "match": 2,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "black",
+      "playing_level": 5,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 8,
+      "match": 2,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "black",
+      "playing_level": 8,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 9,
+      "match": 2,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "black",
+      "playing_level": 11,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 10,
+      "match": 2,
+      "head_seat": 4,
+      "partner_place": 3,
+      "playing": "black",
+      "playing_level": 14,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": true
+     }
+    ],
+    "state": {
+     "match": 2,
+     "match_rounds": 5,
+     "playing": "",
+     "playing_level": 2,
+     "red": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "black": {
+      "level": 14,
+      "a_fails": 0,
+      "wins": 5,
+      "double_ups": 4
+     },
+     "match_over": true,
+     "winner": "black"
+    }
+   }
+  },
+  {
+   "name": "改中间一局让后面的过 A 消失：所有局回到第 1 场",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 3
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    }
+   ],
+   "edit": {
+    "round_no": 1,
+    "head_seat": 2,
+    "partner_place": 2
+   },
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "black",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 3,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 11,
+      "level_after": 13,
+      "passed_a": false
+     },
+     {
+      "round_no": 6,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 13,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 6,
+     "playing": "black",
+     "playing_level": 8,
+     "red": {
+      "level": 13,
+      "a_fails": 0,
+      "wins": 4,
+      "double_ups": 3
+     },
+     "black": {
+      "level": 8,
+      "a_fails": 0,
+      "wins": 2,
+      "double_ups": 2
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "改一局改出过 A：后面的局变成下一场",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 3
+    }
+   ],
+   "edit": {
+    "round_no": 5,
+    "head_seat": 3,
+    "partner_place": 2
+   },
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": true
+     },
+     {
+      "round_no": 6,
+      "match": 2,
+      "head_seat": 2,
+      "partner_place": 3,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 2,
+      "level_after": 4,
+      "passed_a": false
+     }
+    ],
+    "state": {
+     "match": 2,
+     "match_rounds": 1,
+     "playing": "black",
+     "playing_level": 4,
+     "red": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "black": {
+      "level": 4,
+      "a_fails": 0,
+      "wins": 1,
+      "double_ups": 0
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "改一局：对方头游改成本队头游搭档末游，后面那局变成过 A、第 3 次没过不再发生",
+   "settings": {
+    "kind": "classic",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 3
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 4
+    }
+   ],
+   "edit": {
+    "round_no": 6,
+    "head_seat": 1,
+    "partner_place": 4
+   },
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 2,
+      "level_after": 5,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 5,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 5,
+      "level_after": 8,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 8,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 8,
+      "level_after": 11,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "red",
+      "playing_level": 11,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 3,
+      "level_before": 11,
+      "level_after": 14,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 4,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false,
+      "failed_a": "red",
+      "a_fails": 1
+     },
+     {
+      "round_no": 6,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 4,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": false,
+      "failed_a": "red",
+      "a_fails": 2
+     },
+     {
+      "round_no": 7,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 3,
+      "playing": "red",
+      "playing_level": 14,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 2,
+      "level_before": 14,
+      "level_after": 14,
+      "passed_a": true
+     },
+     {
+      "round_no": 8,
+      "match": 2,
+      "head_seat": 3,
+      "partner_place": 4,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 1,
+      "level_before": 2,
+      "level_after": 3,
+      "passed_a": false
+     }
+    ],
+    "state": {
+     "match": 2,
+     "match_rounds": 1,
+     "playing": "red",
+     "playing_level": 3,
+     "red": {
+      "level": 3,
+      "a_fails": 0,
+      "wins": 1,
+      "double_ups": 0
+     },
+     "black": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "不升级：只记每队赢几局、双上几次，级数不动",
+   "settings": {
+    "kind": "no-level",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 3
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 4
+    },
+    {
+     "head_seat": 4,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 3
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 2
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 3,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "black",
+      "double_up": false,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 4,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 4,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 3,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 6,
+      "match": 1,
+      "head_seat": 2,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "black",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 7,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 7,
+     "playing": "",
+     "playing_level": 2,
+     "red": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 4,
+      "double_ups": 2
+     },
+     "black": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 3,
+      "double_ups": 2
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "不升级：约定 0 也一样，连赢多局不会结束",
+   "settings": {
+    "kind": "no-level",
+    "a_fail_limit": 0
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    }
+   ],
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 4,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 5,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 6,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 6,
+     "playing": "",
+     "playing_level": 2,
+     "red": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 6,
+      "double_ups": 6
+     },
+     "black": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "match_over": false
+    }
+   }
+  },
+  {
+   "name": "不升级：改一局",
+   "settings": {
+    "kind": "no-level",
+    "a_fail_limit": 3
+   },
+   "rounds": [
+    {
+     "head_seat": 1,
+     "partner_place": 2
+    },
+    {
+     "head_seat": 2,
+     "partner_place": 3
+    },
+    {
+     "head_seat": 3,
+     "partner_place": 4
+    }
+   ],
+   "edit": {
+    "round_no": 2,
+    "head_seat": 1,
+    "partner_place": 2
+   },
+   "expect": {
+    "rounds": [
+     {
+      "round_no": 1,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 2,
+      "match": 1,
+      "head_seat": 1,
+      "partner_place": 2,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": true,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     },
+     {
+      "round_no": 3,
+      "match": 1,
+      "head_seat": 3,
+      "partner_place": 4,
+      "playing": "",
+      "playing_level": 2,
+      "winner": "red",
+      "double_up": false,
+      "upgrade": 0,
+      "level_before": 0,
+      "level_after": 0,
+      "passed_a": false
+     }
+    ],
+    "state": {
+     "match": 1,
+     "match_rounds": 3,
+     "playing": "",
+     "playing_level": 2,
+     "red": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 3,
+      "double_ups": 2
+     },
+     "black": {
+      "level": 2,
+      "a_fails": 0,
+      "wins": 0,
+      "double_ups": 0
+     },
+     "match_over": false
+    }
+   }
+  }
+ ]
+}

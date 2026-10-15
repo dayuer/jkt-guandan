@@ -141,13 +141,21 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 
 // publicConfig 返回前端要的、由部署方配置的公开信息（#108）：09 牌友顶部「雅加达掼蛋群」横幅的
 // 微信号和 WhatsApp 群链接，没配置就是空串，前端据此隐藏横幅。不识别身份，可以缓存一会儿。
+//
+// wx_subscribe 是小游戏订阅消息的模板 ID（#137），按用途（full、remind）给，只给配置了的；
+// 通道没开时是空对象，小游戏据此不弹订阅。
 func (s *Server) publicConfig(w http.ResponseWriter, _ *http.Request) {
+	tmpls := map[string]string{}
+	for use, t := range s.cfg.WxSubscribeTemplates() {
+		tmpls[use] = t.ID
+	}
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"group": map[string]string{
 			"wechat_id":          s.cfg.GroupWeChatID,
 			"whatsapp_group_url": s.cfg.GroupWhatsAppURL,
 		},
+		"wx_subscribe": tmpls,
 	})
 }
 

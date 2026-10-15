@@ -148,3 +148,58 @@ func TestMergeUsersMovesFollows(t *testing.T) {
 		t.Fatalf("合并后的星标 %v，期望 %v", got, want)
 	}
 }
+
+// 合并时计分记录里的「谁开始的、谁记的、谁改的」也搬到保留的身份上（#165）。
+func TestMergeUsersMovesScoreRecords(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+			_, err := tx.ExecContext(ctx, q, args...)
+			return err
+		}); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	exec(`INSERT INTO users (id, nickname, created_at) VALUES ('u-primary', '老王', 100), ('u-other', '老王', 200)`)
+	exec(`INSERT INTO games (id, short_code, host_id, starts_at, area, venue, kind, status, created_at)
+	      VALUES ('g1', 'c1', 'u-primary', 0, 'SCBD', 'Pacific Place', 'classic', 'done', 0)`)
+	exec(`INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at) VALUES ('g1', 'classic', 3, 'u-other', 0)`)
+	exec(`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at, edited_by, edited_at,
+	                                seat1_user, seat2_user, seat3_user, seat4_user)
+	      VALUES ('g1', 1, 1, 2, 'u-other', 0, 'u-other', 1, 'u-other', 'u-other', 'u-other', 'u-other')`)
+	exec(`INSERT INTO score_seat_leavers (game_id, seat_no, user_id, left_at) VALUES ('g1', 3, 'u-other', 2)`)
+	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		_, err := mergeUsers(ctx, tx, "u-other", "u-primary")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var startedBy, recordedBy, editedBy string
+	if err := st.Read().QueryRow(`SELECT m.started_by, r.recorded_by, r.edited_by
+		FROM score_matches m JOIN score_rounds r ON r.game_id = m.game_id`).Scan(&startedBy, &recordedBy, &editedBy); err != nil {
+		t.Fatal(err)
+	}
+	if startedBy != "u-primary" || recordedBy != "u-primary" || editedBy != "u-primary" {
+		t.Fatalf("计分记录没搬：%s %s %s", startedBy, recordedBy, editedBy)
+	}
+	// 每局当时座位上的人（#172）。
+	var n int
+	if err := st.Read().QueryRow(`SELECT count(*) FROM score_rounds
+		WHERE seat1_user = 'u-primary' AND seat2_user = 'u-primary' AND seat3_user = 'u-primary' AND seat4_user = 'u-primary'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("每局的座位没搬：%d %v", n, err)
+	}
+	// 离座记录也要搬，合并后由保留的身份回原座号（#168）。
+	var leaver string
+	if err := st.Read().QueryRow(`SELECT user_id FROM score_seat_leavers WHERE game_id = 'g1' AND seat_no = 3`).Scan(&leaver); err != nil || leaver != "u-primary" {
+		t.Fatalf("离座记录没搬：%q %v", leaver, err)
+	}
+}

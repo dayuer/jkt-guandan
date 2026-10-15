@@ -3,10 +3,12 @@ import "./shim";
 import { installSelftest, runSelftest } from "./selftest";
 import { App, type Scene } from "./core/app";
 import { C, Ctx, circle, font, text } from "./core/ui";
+import { icon, type Suit } from "./core/widgets";
 import { API_BASE } from "./lib/api";
 import { flush as flushTelemetry } from "./lib/telemetry";
 import { realtime, reconnectRealtime } from "./lib/realtime";
 import { boot, currentUser, onSessionChange } from "./lib/session";
+import { loadSubscribeTemplates } from "./lib/subscribe";
 import { Create } from "./scenes/create";
 import { Detail } from "./scenes/detail";
 import { sharePayload } from "./scenes/sheets";
@@ -14,6 +16,7 @@ import { Friends } from "./scenes/friends";
 import { Home, TAB_H } from "./scenes/home";
 import { Learn, LessonScene } from "./scenes/learn";
 import { Devices, Me, Privacy } from "./scenes/me";
+import { ScoreScene } from "./scenes/score";
 import type { Nav, TabName } from "./scenes/nav";
 
 if (__DEV__ && __SELFTEST__) installSelftest();
@@ -32,6 +35,10 @@ const nav: Nav = {
     if (app.top instanceof LessonScene) { app.stack[app.stack.length - 1] = s; app.redraw(); }
     else app.push(s);
   },
+  score: (code) => {
+    const top = app.top;
+    if (!(top instanceof ScoreScene && top.code === code)) app.push(new ScoreScene(app, code, nav));
+  },
   devices: () => app.push(new Devices(app, nav)),
   privacy: () => app.push(new Privacy(app, nav)),
   back: () => (app.stack.length > 1 ? app.pop() : nav.tab("games")),
@@ -45,8 +52,9 @@ function tabScene(name: TabName): Scene {
 }
 
 // ── 底部 Tab（#107）：牌局、学牌、约局（蛋）、牌友、我的 ──
-const TABS: [TabName | "create", string, string][] = [
-  ["games", "♠", "牌局"], ["learn", "♣", "学牌"], ["create", "", "约局"], ["friends", "♦", "牌友"], ["me", "♥", "我的"],
+// 花色画路径：iOS 可能把 ♠ ♥ 显示成彩色 emoji，选中变红就失效了（适配稿 4.2）
+const TABS: [TabName | "create", Suit | null, string][] = [
+  ["games", "spade", "牌局"], ["learn", "club", "学牌"], ["create", null, "约局"], ["friends", "diamond", "牌友"], ["me", "heart", "我的"],
 ];
 app.drawTabs = (ctx: Ctx, active: string) => {
   const W = app.W, y = app.H - TAB_H - app.safeBottom, tw = W / 5;
@@ -56,7 +64,7 @@ app.drawTabs = (ctx: Ctx, active: string) => {
   ctx.fillRect(0, y, W, 1);
   TABS.forEach(([key, ic, label], i) => {
     const cx = tw * i + tw / 2;
-    if (key === "create") {
+    if (!ic) {
       const cy = y + 6, pressed = app.isPressed("tab:create");
       circle(ctx, cx, cy, 31, C.card);
       circle(ctx, cx, cy, pressed ? 25 : 27, pressed ? C.redDeep : C.red);
@@ -67,7 +75,7 @@ app.drawTabs = (ctx: Ctx, active: string) => {
       return;
     }
     const on = active === key;
-    text(ctx, ic, cx, y + 20, font(22), on ? C.red : C.ink3, "center");
+    icon[ic](ctx, cx, y + 20, 22, on ? C.red : C.ink3);
     text(ctx, label, cx, y + 42, font(11, on ? "700" : "normal"), on ? C.red : C.ink3, "center");
     app.hit("tab:" + key, tw * i, y, tw, TAB_H, () => { if (!on) nav.tab(key as TabName); });
   });
@@ -90,6 +98,8 @@ onSessionChange(() => {
   app.redraw();
 });
 void boot();
+// 订阅消息的模板 ID 要在用户点「报名占座」之前拿好（#137）。
+void loadSubscribeTemplates();
 
 // 从转发卡片进来：query 带牌局短码 g（冷启动和热启动都要处理）
 // 切回前台时 onShow 还会带着上一次的 query，同一个短码只进一次。

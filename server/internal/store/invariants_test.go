@@ -240,3 +240,58 @@ func TestWriteWithoutTouchSkipsInvariantCheck(t *testing.T) {
 		t.Fatal("显式检查时应该报出不变量问题")
 	}
 }
+
+// 不变量 6：计分的局号要从 1 连续（#165）。
+func TestInvariantsScoreRoundsContiguous(t *testing.T) {
+	st := openTest(t)
+	host, _ := seedUsers(t, st)
+	newGame(t, st, "g1", host, "open")
+	seat(t, st, "g1", 1, host)
+	mustExec(t, st, `INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at)
+		VALUES ('g1', 'classic', 3, ?, 0)`, host)
+	round := func(no int) {
+		mustExec(t, st, `INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at)
+			VALUES ('g1', ?, 1, 2, ?, 0)`, no, host)
+	}
+	round(1)
+	round(2)
+	if err := check(t, st, "g1"); err != nil {
+		t.Fatalf("连续的局号不该违规：%v", err)
+	}
+	round(4)
+	if err := check(t, st, "g1"); err == nil || !strings.Contains(err.Error(), "不变量 6") {
+		t.Fatalf("应报不变量 6，实际 %v", err)
+	}
+}
+
+// 计分表的约束在数据库层挡住不合法的事实（#165）：座号、名次、开局约定、同一局号两条。
+func TestScoreTablesConstraints(t *testing.T) {
+	st := openTest(t)
+	host, _ := seedUsers(t, st)
+	newGame(t, st, "g1", host, "full")
+	for _, bad := range []string{
+		`INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at) VALUES ('g1', 'teaching', 3, 'u-host', 0)`,
+		`INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at) VALUES ('g1', 'classic', 2, 'u-host', 0)`,
+		// 没开始记分就不能记局（外键指向 score_matches）。
+		`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at) VALUES ('g1', 1, 1, 2, 'u-host', 0)`,
+	} {
+		if err := tryExec(t, st, bad); err == nil {
+			t.Fatalf("应当被拒绝：%s", bad)
+		}
+	}
+	mustExec(t, st, `INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at) VALUES ('g1', 'no-level', 0, 'u-host', 0)`)
+	for _, bad := range []string{
+		`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at) VALUES ('g1', 0, 1, 2, 'u-host', 0)`,
+		`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at) VALUES ('g1', 1, 5, 2, 'u-host', 0)`,
+		`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at) VALUES ('g1', 1, 1, 1, 'u-host', 0)`,
+		`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at) VALUES ('g1', 1, 1, 2, 'nobody', 0)`,
+	} {
+		if err := tryExec(t, st, bad); err == nil {
+			t.Fatalf("应当被拒绝：%s", bad)
+		}
+	}
+	mustExec(t, st, `INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at) VALUES ('g1', 1, 1, 2, 'u-host', 0)`)
+	if err := tryExec(t, st, `INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at) VALUES ('g1', 1, 2, 3, 'u-guest', 0)`); err == nil {
+		t.Fatal("同一局号不能记两条")
+	}
+}

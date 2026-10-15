@@ -1,8 +1,9 @@
 // 各页共用的弹层：填称呼、认领码认回、报名成功、候补转正、加日历、分享、选牌友。
 
 import type { App, Sheet } from "../core/app";
+// #144 的转发卡片用 measure（core/ui），main 上的补位弹层用 icon（core/widgets）—— 两边都留。
 import { C, Ctx, circle, ellipsize, fillRR, font, initial, measure, paragraph, strokeRR, text, wrap, Scroller } from "../core/ui";
-import { avatar, button, copy, field, sheetButtons, sheetHeader, simpleSheet, textLink } from "../core/widgets";
+import { avatar, button, copy, field, icon, sheetButtons, sheetHeader, simpleSheet, textLink } from "../core/widgets";
 import { ApiError, API_BASE, listFriends, posterURL, shareURL, type Friend, type GameDetail, type UserRef } from "../lib/api";
 import { dayShort, kindLabel, slashDate, timeHM, weekday } from "../lib/fmt";
 import { currentUser, linkWithCode, signUp } from "../lib/session";
@@ -10,8 +11,15 @@ import { track } from "../lib/telemetry";
 import { shareText } from "../../../h5/src/share";
 
 // ── 填称呼（B2）。返回填好的身份；用户关掉返回 null ──
+//
+// onSubmitTap 在用户点「就用这个名字」「认回我」的那次点按里同步调用：报名时没有身份，
+// 「报名占座」那一下要用来弹称呼层，订阅消息只能放在这一下里问（#137）。
 
-export function requireIdentity(app: App): Promise<UserRef | null> {
+export interface IdentityOpts {
+  onSubmitTap?: () => void;
+}
+
+export function requireIdentity(app: App, opts: IdentityOpts = {}): Promise<UserRef | null> {
   const now = currentUser();
   if (now) return Promise.resolve(now);
   return new Promise((resolve) => {
@@ -39,8 +47,11 @@ export function requireIdentity(app: App): Promise<UserRef | null> {
           onChange: (v) => { value = v; error = ""; }, onConfirm: () => void submit(),
         }) + 14;
         cy = sheetButtons(app, ctx, cy, w, [
-          { label: busy ? "正在保存…" : "就用这个名字", style: "primary", disabled: busy || !value.trim(), onTap: () => void submit() },
-          { label: "我在网页上报过名", style: "link", onTap: () => { app.closeSheet(s); linkSheet(app).then(finish); } },
+          {
+            label: busy ? "正在保存…" : "就用这个名字", style: "primary", disabled: busy || !value.trim(),
+            onTap: () => { if (!busy && value.trim()) opts.onSubmitTap?.(); void submit(); },
+          },
+          { label: "我在网页上报过名", style: "link", onTap: () => { app.closeSheet(s); linkSheet(app, opts).then(finish); } },
           { label: "先看看", style: "link", onTap: () => app.closeSheet(s) },
         ]);
         return cy - y + 8;
@@ -52,7 +63,7 @@ export function requireIdentity(app: App): Promise<UserRef | null> {
 
 // ── 我在网页上报过名：输入 H5「我的 › 在别的设备上登录」给的 6 位认领码（#84 B2）──
 
-export function linkSheet(app: App): Promise<UserRef | null> {
+export function linkSheet(app: App, opts: IdentityOpts = {}): Promise<UserRef | null> {
   return new Promise((resolve) => {
     let value = "", busy = false, error = "", settled = false;
     const finish = (u: UserRef | null) => { if (!settled) { settled = true; resolve(u); } };
@@ -96,7 +107,10 @@ export function linkSheet(app: App): Promise<UserRef | null> {
           onChange: (v) => { value = v; error = ""; }, onConfirm: () => void submit(),
         }) + 14;
         cy = sheetButtons(app, ctx, cy, w, [
-          { label: busy ? "正在认…" : "认回我", style: "primary", disabled: busy, onTap: () => void submit() },
+          {
+            label: busy ? "正在认…" : "认回我", style: "primary", disabled: busy,
+            onTap: () => { if (!busy && value.replace(/\D/g, "").length === 6) opts.onSubmitTap?.(); void submit(); },
+          },
           { label: "算了", style: "link", onTap: () => app.closeSheet(s) },
         ]);
         return cy - y + 8;
@@ -125,9 +139,9 @@ function miniRow(ctx: Ctx, d: GameDetail, meID: string | undefined, x: number, y
   return 64;
 }
 
-// ── 报名成功（B4–B6）：小游戏的提醒走订阅消息，服务端发送通道还没做，先给日历 ──
+// ── 报名成功（B4–B6）：同意了订阅消息的「开局提醒」就告诉他会提醒；没同意给「加到日历」（#137）──
 
-export function joinedSheet(app: App, d: GameDetail, onCalendar: () => void) {
+export function joinedSheet(app: App, d: GameDetail, onCalendar: () => void, reminded = false) {
   const full = d.game.status === "full" || d.missing <= 0;
   const s: Sheet = {
     draw(ctx, y, w) {
@@ -136,10 +150,10 @@ export function joinedSheet(app: App, d: GameDetail, onCalendar: () => void) {
       ctx.strokeStyle = C.green; ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.stroke();
       let cy = sheetHeader(ctx, y + 52, w, full ? `成局了！${d.game.capacity} 人到齐` : "占上了！", undefined, true);
       cy += miniRow(ctx, d, currentUser()?.id, 20, cy, w - 40) + 12;
-      text(ctx, "局头改了时间，这里和日历都会跟着更新", w / 2, cy + 8, font(12), C.ink3, "center");
+      text(ctx, reminded ? "开局前 1 小时会提醒你" : "局头改了时间，这里和日历都会跟着更新", w / 2, cy + 8, font(12), reminded ? C.green : C.ink3, "center");
       cy = sheetButtons(app, ctx, cy + 26, w, [
         { label: "好的，到时见", style: "primary", onTap: () => app.closeSheet(s) },
-        { label: "加到日历", style: "ghost", onTap: () => { app.closeSheet(s); onCalendar(); } },
+        ...(reminded ? [] : [{ label: "加到日历", style: "ghost" as const, onTap: () => { app.closeSheet(s); onCalendar(); } }]),
       ]);
       return cy - y + 8;
     },
@@ -155,7 +169,7 @@ export function promotedSheet(app: App, g: { starts_at: number; venue: string },
     onClose: () => { if (!decided) h.onOk(); },
     draw(ctx, y, w) {
       circle(ctx, w / 2, y + 46, 24, C.redTint);
-      text(ctx, "♥", w / 2, y + 47, font(24), C.red, "center");
+      icon.heart(ctx, w / 2, y + 47, 24, C.red);
       let cy = sheetHeader(ctx, y + 56, w, "有人退出，你补上了！", `${dayShort(g.starts_at)} ${timeHM(g.starts_at)} · ${g.venue}\n轮到你了，已经给你占上座`, true);
       cy = sheetButtons(app, ctx, cy + 4, w, [
         { label: "好的，到时见", style: "primary", onTap: () => app.closeSheet(s) },
@@ -384,7 +398,7 @@ export function friendPicker(
           text(ctx, ellipsize(ctx, f.user.nickname, w - 150, font(15, "600")), 70, ry + 21, font(15, "600"), already ? C.ink4 : C.ink);
           text(ctx, already ?? `一起打过 ${f.together_count} 局`, 70, ry + 40, font(12), C.ink3);
           const bx = w - 46, by = ry + rowH / 2;
-          if (on) { circle(ctx, bx, by, 12, C.red); text(ctx, "✓", bx, by + 1, font(14, "700"), C.cream, "center"); }
+          if (on) { circle(ctx, bx, by, 12, C.red); icon.check(ctx, bx, by, C.cream); }
           else circle(ctx, bx, by, 11.5, null, already ? C.line : C.khaki, 1.5);
           const vy = Math.max(ry, listTop), vh = Math.min(ry + rowH, listTop + listH) - vy;
           if (!already && vh > 0) app.hit(`pick:${f.user.id}`, 0, vy, w, vh, () => {

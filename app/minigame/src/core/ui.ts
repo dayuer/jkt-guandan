@@ -7,6 +7,7 @@ export const C = {
   paper: "#f6efe4", card: "#fffcf7", cream: "#fff7ec", sand: "#f1e4cc",
   beige: "#ede3d3", line: "#e8dccb", line2: "#e3d6c3", khaki: "#c9b79e",
   gold: "#e9c46a", green: "#3e7c4f", greenTint: "#e3efe5", errTint: "#fbefed",
+  redRing: "rgba(179,53,44,0.18)", // --red-ring：激活字段 4px 焦点环（--sh-focus）
 };
 
 const SANS = '"PingFang SC", "Noto Sans SC", "Hiragino Sans GB", sans-serif';
