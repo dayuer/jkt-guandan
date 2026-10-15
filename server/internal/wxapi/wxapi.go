@@ -187,16 +187,20 @@ func (s *StableToken) Token(ctx context.Context) (string, error) {
 			// 2. **把缓存里那个坏 token 丢掉**，让下一次重新取而不是直接把它返回出去。
 			//    只做第 1 件是不够的：缓存里那个坏 token 还在，下一次 `Token()` 会认为它
 			//    还有效、直接返回，调用方继续拿它去撞 40001，照样回不到普通模式。
+			// 注意 `cooled` 也走这里：那一次发的是**普通模式**的请求，失败也把冷却往后推
+			// 30 秒。可以接受 —— 取不到 token 的时候，本来也不该马上换一种姿势再撞一次。
 			s.lastForced = now
 			s.token, s.expires = "", time.Time{}
 		}
 		if code, ok := Code(err); ok && code == ErrCodeRateLimited {
-			// 当天强刷额度用完（45009「reach max api daily quota limit」，官方给的补救是
-			// clear_quota）。再带 force_refresh 只会继续报这个错，而且内容安全和订阅消息
-			// 的**每一次**调用都会跟着失败、一直到额度恢复或重启。清掉标记：下一次走普通
-			// 模式，拿到的那份 token 照常用。
+			// 45009 官方原文：「调用超过天级别频率限制。可调用 clear_quota 接口恢复调用额度。」
+			//
+			// **很可能是**强刷那每天 20 次的额度用完了 —— 但这是推断，不是官方说法：错误表里
+			// 45009 只写了「天级别频率限制」，没有和强刷次数对应起来，50 万次的日总额度用完
+			// 报的也是它。不管是哪一种，继续带 force_refresh 都只会继续撞，所以清掉标记、
+			// 下一次走普通模式去取。
 			s.force = false
-			slog.Warn("微信 access_token 强刷额度用完（45009），退回普通模式",
+			slog.Warn("微信 access_token 强刷撞上 45009（很可能是当天强刷额度用完），退回普通模式",
 				"consumer", from.consumer, "code", code)
 		}
 		return "", err

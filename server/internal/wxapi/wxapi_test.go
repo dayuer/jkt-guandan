@@ -572,3 +572,98 @@ func TestFailedForceRefreshDoesNotForceForever(t *testing.T) {
 		t.Errorf("一次普通模式都没走（force 发了 %d 次），说明还在无脑强刷", forceSent.Load())
 	}
 }
+
+// #201 的第 (1) 件：强刷**失败**之后，30 秒内不能再出现 `force_refresh=true`。
+//
+// 为什么要单独测一条：上面那条用的是 45009，而 45009 那个分支本来就会清掉 `force` ——
+// 冷却根本没机会起作用，于是把「失败也记 lastForced」整行删掉，上面那条测试照样绿
+// （auditor 验过）。真正需要冷却兜住的是**临时错误**：`-1`（系统繁忙）、网络抖动这种，
+// 它们不清 force，只有冷却能让下一个请求别再强刷。
+func TestFailedForceRefreshRespectsCooldown(t *testing.T) {
+	var forceSent, normalSent atomic.Int32
+	var current atomic.Value
+	var busy atomic.Bool // 强刷时回 -1（系统繁忙）；普通模式正常给 token
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cgi-bin/stable_token" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["force_refresh"] == true {
+				forceSent.Add(1)
+				if busy.Load() {
+					fmt.Fprint(w, `{"errcode":-1,"errmsg":"system error"}`)
+					return
+				}
+			} else {
+				normalSent.Add(1)
+			}
+			tok := fmt.Sprintf("tok-secret-%d", normalSent.Load()+forceSent.Load())
+			current.Store(tok)
+			fmt.Fprintf(w, `{"access_token":%q,"expires_in":7200}`, tok)
+			return
+		}
+		if got := r.URL.Query().Get("access_token"); got != current.Load() {
+			fmt.Fprint(w, `{"errcode":40001,"errmsg":"invalid credential"}`)
+			return
+		}
+		fmt.Fprint(w, `{"errcode":0}`)
+	}))
+	defer srv.Close()
+
+	clk := clock.NewFake(time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
+	tokens := &StableToken{AppID: "wxapp", Secret: "sec", BaseURL: srv.URL, Clock: clk}
+	c := &Client{BaseURL: srv.URL, Tokens: tokens, Name: "内容安全"}
+	ctx := context.Background()
+
+	// ① 正常拿一个 token
+	if err := c.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	// ② 它失效了 → 40001 → 作废
+	current.Store("")
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+	// ③ 强刷撞上临时错误 -1
+	busy.Store(true)
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("强刷撞 -1 应该报错")
+	}
+	if forceSent.Load() != 1 {
+		t.Fatalf("这会儿应该只强刷过一次，实际 %d", forceSent.Load())
+	}
+
+	// ④ 之后每秒调一次、共 4 次：**30 秒冷却之内不该再强刷**。
+	//    删掉「失败也记 lastForced」这一行的话，这里每次都会强刷、每次都是 -1 —— 0/4。
+	okN := 0
+	for i := 0; i < 4; i++ {
+		clk.Advance(time.Second)
+		if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+			okN++
+		}
+	}
+	if okN != 4 {
+		t.Errorf("强刷失败后 30 秒内该走普通模式、每次都成，实际只成了 %d/4", okN)
+	}
+	if f := forceSent.Load(); f != 1 {
+		t.Errorf("30 秒内不该再强刷（临时错误也要受冷却约束），实际强刷了 %d 次", f)
+	}
+	if normalSent.Load() == 0 {
+		t.Error("一次普通模式都没走")
+	}
+
+	// ⑤ 隔够 30 秒再失败一次：那次该重新强刷（冷却不是永久的）
+	busy.Store(false)
+	current.Store("")
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+	busy.Store(true)
+	clk.Advance(31 * time.Second)
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("这次强刷撞 -1 应该报错")
+	}
+	if f := forceSent.Load(); f != 2 {
+		t.Errorf("隔够 30 秒之后该重新强刷，实际一共 %d 次", f)
+	}
+}
