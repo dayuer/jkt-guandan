@@ -285,29 +285,30 @@ func (s *Service) Create(ctx context.Context, hostID string, in CreateInput, ide
 	}
 
 	const route = "POST /api/games"
+	// 指纹用整理过的参数算：首尾空白、省略 kind 之类不算换了请求。
+	fp := idemFingerprint("starts_at", in.StartsAt.Unix(), "area", in.Area, "venue", in.Venue,
+		"kind", in.Kind, "note", in.Note)
 	var detail *Detail
 	err := s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		// 幂等键：查到了就返回第一次的结果，不再建局。
-		if idemKey != "" {
+		// 幂等键：同一个请求查到了就返回第一次的结果，不再建局；
+		// 键用在了别的接口上或者换了开局参数，返回 ErrIdemKeyReused（#175）。
+		if replay, err := idemReplay(ctx, tx, hostID, idemKey, route, fp); err != nil {
+			return err
+		} else if replay {
 			var saved []byte
-			err := tx.QueryRowContext(ctx,
+			if err := tx.QueryRowContext(ctx,
 				`SELECT response FROM idempotency_keys WHERE user_id = ? AND key = ?`,
-				hostID, idemKey).Scan(&saved)
-			switch {
-			case err == nil:
-				var prev struct {
-					ShortCode string `json:"short_code"`
-				}
-				if err := json.Unmarshal(saved, &prev); err != nil {
-					return err
-				}
-				detail, err = loadDetailTx(ctx, tx, prev.ShortCode, hostID)
-				return err
-			case errors.Is(err, sql.ErrNoRows):
-				// 第一次见到这个键，继续往下建局。
-			default:
+				hostID, idemKey).Scan(&saved); err != nil {
 				return err
 			}
+			var prev struct {
+				ShortCode string `json:"short_code"`
+			}
+			if err := json.Unmarshal(saved, &prev); err != nil {
+				return err
+			}
+			detail, err = loadDetailTx(ctx, tx, prev.ShortCode, hostID)
+			return err
 		}
 
 		// 配额：每人每天最多开 10 局（§10.8）。
@@ -344,17 +345,9 @@ func (s *Service) Create(ctx context.Context, hostID string, in CreateInput, ide
 		s.publishFeedAfterCommit(tx, code, in.Area, EventFeedAdded, 1)
 
 		// 记下这次的结果，下次同一个键直接用（§11.4）。
-		if idemKey != "" {
-			body, err := json.Marshal(map[string]string{"short_code": code})
-			if err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO idempotency_keys (key, user_id, route, status, response, created_at)
-				VALUES (?, ?, ?, 200, ?, ?)`,
-				idemKey, hostID, route, body, now.Unix()); err != nil {
-				return err
-			}
+		if err := idemSave(ctx, tx, hostID, idemKey, route, fp,
+			map[string]string{"short_code": code}, now); err != nil {
+			return err
 		}
 
 		detail, err = loadDetailTx(ctx, tx, code, hostID)
