@@ -73,6 +73,11 @@ eq '并发隔离自测脚本单独改动也跑 docker' \
   'local-ci/docker' \
   "$(printf 'scripts/test-deploy-names.sh\nscripts/test-drill-names.sh\n' | scope_contexts)"
 
+# docker-wait.sh（#186）被那三个 docker 脚本 source，单独改它也要跑 docker 那项。
+eq 'docker-wait.sh 单独改动也跑 docker' \
+  'local-ci/docker' \
+  "$(printf 'scripts/docker-wait.sh\n' | scope_contexts)"
+
 eq 'scripts/agents 不命中（协作脚本，不在 CI 范围）' \
   '' \
   "$(printf 'scripts/agents/board.sh\n' | scope_contexts)"
@@ -362,13 +367,13 @@ export POST_STATUS_BACKOFF=0 POST_STATUS_REPAIR_DELAY=0
 SHA40=0123456789abcdef0123456789abcdef01234567
 
 # 1) 前两次 POST 失败、第三次成功 → 重试救回来
-STATE=$(mktemp -d); export STATE FAIL_POST=2 GET_JSON=''
+STATE=$(mktemp -d "$TMPG/state.XXXXXX"); export STATE FAIL_POST=2 GET_JSON=''
 post_status_retry "$TMPG/gh" "$SHA40" local-ci/test success 描述 >/dev/null 2>&1; rc=$?
 eq '重试：前两次失败、第三次成功 → 0' '0' "$rc"
 eq '重试：一共试了 3 次' '3' "$(wc -l < "$STATE/posts" | tr -d ' ')"
 
 # 2) 一直失败 → 用尽次数后非 0，并且说清试了几次
-STATE=$(mktemp -d); export STATE FAIL_POST=99 GET_JSON=''
+STATE=$(mktemp -d "$TMPG/state.XXXXXX"); export STATE FAIL_POST=99 GET_JSON=''
 out=$(post_status_retry "$TMPG/gh" "$SHA40" local-ci/test success 描述 4 2>&1); rc=$?
 eq '重试：一直失败 → 非 0' '1' "$rc"
 case "$out" in
@@ -379,7 +384,7 @@ esac
 # 3) 收尾复核：记录里是 success、当前还停在 pending → 补发，而且补的是**最终结论**
 R=$(mktemp)
 printf '%s\n' 'local-ci/test pending 运行中' 'local-ci/test success 描述甲' > "$R"
-STATE=$(mktemp -d); export STATE FAIL_POST=0 GET_JSON='[{"context":"local-ci/test","state":"pending"}]'
+STATE=$(mktemp -d "$TMPG/state.XXXXXX"); export STATE FAIL_POST=0 GET_JSON='[{"context":"local-ci/test","state":"pending"}]'
 out=$(repair_statuses "$TMPG/gh" "$SHA40" "$R" 2>&1); rc=$?
 eq '复核：还停在 pending → 补发成功、返回 0' '0' "$rc"
 case "$out" in
@@ -391,13 +396,13 @@ grep -q 'state=success' "$STATE/posts" \
   || bad '复核：补发用的是最终结论' '含 state=success' "$(cat "$STATE/posts")"
 
 # 4) 复核：都对得上 → 不补、返回 0
-STATE=$(mktemp -d); export STATE FAIL_POST=0 GET_JSON='[{"context":"local-ci/test","state":"success"}]'
+STATE=$(mktemp -d "$TMPG/state.XXXXXX"); export STATE FAIL_POST=0 GET_JSON='[{"context":"local-ci/test","state":"success"}]'
 out=$(repair_statuses "$TMPG/gh" "$SHA40" "$R" 2>&1); rc=$?
 eq '复核：对得上 → 0' '0' "$rc"
 eq '复核：对得上时不补发' '0' "$(cat "$STATE/posts" 2>/dev/null | wc -l | tr -d ' ')"
 
 # 5) 复核：补发也失败 → 非 0（调用方据此非零退出、大声报错）
-STATE=$(mktemp -d); export STATE FAIL_POST=99 GET_JSON='[{"context":"local-ci/test","state":"pending"}]'
+STATE=$(mktemp -d "$TMPG/state.XXXXXX"); export STATE FAIL_POST=99 GET_JSON='[{"context":"local-ci/test","state":"pending"}]'
 out=$(repair_statuses "$TMPG/gh" "$SHA40" "$R" 2>&1); rc=$?
 eq '复核：补发也失败 → 非 0' '1' "$rc"
 case "$out" in
@@ -406,9 +411,63 @@ case "$out" in
 esac
 
 # 6) 复核：连当前 status 都取不到 → 非 0（宁可让人去看一眼，也别当成都对得上）
-STATE=$(mktemp -d); export STATE FAIL_POST=0 GET_JSON=''
+STATE=$(mktemp -d "$TMPG/state.XXXXXX"); export STATE FAIL_POST=0 GET_JSON=''
 out=$(repair_statuses "$TMPG/gh" "$SHA40" "$R" 2>&1); rc=$?
 eq '复核：取不到 status → 非 0' '1' "$rc"
+
+# 7) 复核只碰**本次跑过的** context；「第一次 POST 就失败、连 pending 都没发上去」也要补。
+#    远端那一堆里还有个别的 context 停着 pending（上一次运行留下的），**不该去动它**。
+STATE=$(mktemp -d "$TMPG/state.XXXXXX")
+export STATE FAIL_POST=0
+export GET_JSON='[{"context":"local-ci/docker","state":"pending"}]'
+R2=$(mktemp)
+printf '%s\n' 'local-ci/test success 描述甲' > "$R2"   # 本次只跑了 test
+out=$(repair_statuses "$TMPG/gh" "$SHA40" "$R2" 2>&1); rc=$?
+eq '复核：连 pending 都没发上去的 context 也补' '0' "$rc"
+grep -q 'context=local-ci/test' "$STATE/posts" \
+  && ok '复核：补的是本次跑过的 context' \
+  || bad '复核：补的是本次跑过的 context' '含 context=local-ci/test' "$(cat "$STATE/posts")"
+grep -q 'local-ci/docker' "$STATE/posts" \
+  && bad '复核：不碰本次没跑的 context' '不含 local-ci/docker' "$(cat "$STATE/posts")" \
+  || ok '复核：不碰本次没跑的 context'
+rm -f "$R2"
+
+echo '--- 退出码与分离头指针（#186）---'
+
+eq '退出码：全绿 0' '0' "$(final_exit_code '' '' '' 0)"
+eq '退出码：代码红 1（最优先）' '1' "$(final_exit_code ' local-ci/test' '' '' 1)"
+eq '退出码：环境未就绪 2' '2' "$(final_exit_code '' ' local-ci/docker' '' 0)"
+eq '退出码：脚本自身出错 3' '3' "$(final_exit_code '' '' ' local-ci/meta' 0)"
+eq '退出码：status 没兜住 4' '4' "$(final_exit_code '' '' '' 1)"
+eq '退出码：环境优先于 status' '2' "$(final_exit_code '' ' x' '' 1)"
+eq '退出码：脚本 bug 优先于 status' '3' "$(final_exit_code '' '' ' x' 1)"
+
+# 分离头指针（$3 是 `git symbolic-ref -q HEAD` 的退出码：0=在分支上，非 0=detached）
+reject_rc() { should_reject_detached "$1" "$2" "$3"; printf '%s' "$?"; }
+eq 'detached + 带上报 + 没给 --pr → 拒绝' '0' "$(reject_rc 1 '' 1)"
+eq 'detached + 带上报 + 给了 --pr → 放行' '1' "$(reject_rc 1 999 1)"
+eq '在分支上 + 带上报 → 放行' '1' "$(reject_rc 1 '' 0)"
+eq 'detached + --no-post → 放行（本来就不上报）' '1' "$(reject_rc 0 '' 1)"
+
+# `--pr <n>` 真的能用：配假 gh 跑一次协议检查（--base 指到 HEAD，改动范围是空的，只跑 protocol；
+# --no-post 不上报）。这样测的是真的 local-ci.sh，不是复制的逻辑。
+PG=$(mktemp -d)
+cat > "$PG/gh" <<'GH'
+#!/bin/sh
+if [ "$1 $2" = "pr view" ]; then
+  printf '%s\n' '{"number":999,"title":"T","body":"[impl] x\n\nFixes #1\n"}'
+  exit 0
+fi
+exit 0
+GH
+chmod +x "$PG/gh"
+out=$(cd "$ROOT" && PATH="$PG:$PATH" bash scripts/local-ci.sh --base HEAD --pr 999 --no-post 2>&1); rc=$?
+eq '--pr：能跑通（退出 0）' '0' "$rc"
+case "$out" in
+  *"PR #999"*) ok '--pr：按号认出 PR 并打出来' ;;
+  *) bad '--pr：按号认出 PR 并打出来' '含 PR #999' "$out" ;;
+esac
+rm -rf "$PG"
 
 unset STATE FAIL_POST GET_JSON POST_STATUS_BACKOFF POST_STATUS_REPAIR_DELAY
 rm -rf "$TMPG" "$R"

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # 本地 CI：按改动范围跑检查，把结论发成 commit status。
 #
-#   scripts/local-ci.sh [--base <ref>] [--no-post] [--all]
+#   scripts/local-ci.sh [--base <ref>] [--no-post] [--pr <n>] [--all]
 #
 #   --base <ref>  比较的基线，默认 origin/main
 #   --no-post     只跑不发 status（开 PR 之前自检用）。没有开的 PR 时跳过协议三项。
+#   --pr <n>      按 PR 号取标题/描述（协议检查要用）。detached HEAD、或者分支被别的
+#                 worktree 占着时用；带上报跑又没给这个就会直接拒绝。
 #   --all         不看改动范围，全部检查项都跑（等于原来 GitHub CI 的全量）
 #
 # 退出码：全绿 0；有红(代码) 1；只是环境未就绪 2；只是脚本自身出错 3；status 没兜住 4；
@@ -34,15 +36,30 @@ cd "$ROOT" || exit 2
 BASE='origin/main'
 POST=1
 ALL=0
+PR_OPT=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --base)     BASE="${2:?--base 需要一个 ref}"; shift 2 ;;
     --no-post)  POST=0; shift ;;
     --all)      ALL=1; shift ;;
-    -h|--help)  sed -n '2,13p' "$0"; exit 0 ;;
+    --pr)       PR_OPT="${2:?--pr 需要一个 PR 号}"; shift 2 ;;
+    -h|--help)  sed -n '2,15p' "$0"; exit 0 ;;
     *)          printf '未知参数：%s\n' "$1" >&2; exit 64 ;;
   esac
 done
+
+# --- 分离头指针（detached HEAD）上带着上报跑：直接拒绝（#186）----------------
+# 那时 `gh pr view` 认不出是哪个 PR，协议检查会被发成 `protocol=error` —— 一条**假红**，
+# 看的人以为协议没过。以前是某位 auditor 用假 gh 包装绕过去的；现在明确拒绝并说清怎么办。
+git symbolic-ref -q HEAD >/dev/null 2>&1; HEAD_IS_DETACHED=$?
+if should_reject_detached "$POST" "$PR_OPT" "$HEAD_IS_DETACHED"; then
+  printf 'HEAD 是分离的（detached），gh 认不出对应哪个 PR。\n' >&2
+  printf '带上报跑会给 head 发一条假的 protocol=error。三种办法：\n' >&2
+  printf '  · 检出那个 PR 的分支：git switch <分支>（分支被别的 worktree 占着时用下一条）\n' >&2
+  printf '  · 明确指定：scripts/local-ci.sh --pr <PR号>\n' >&2
+  printf '  · 只自检不上报：scripts/local-ci.sh --no-post\n' >&2
+  exit 64
+fi
 
 # --- 检查与上报的目标：**本地 HEAD**，不是 PR 的 headRefOid -----------------
 # `--no-post` 的用途是「推送前自检」，那时本地必然领先远端。取 PR head 得到的是
@@ -68,11 +85,17 @@ elif [ "$ACTION" = warn ]; then
 fi
 
 # --- 取 PR：只为拿 number/title/body（没有 PR 不致命）-----------------------
+# `--pr <n>` 给了就按号取（detached HEAD、或者分支被别的 worktree 占着时用，见上面 #186 那段）。
 PR_JSON=''
 PR_NUM=''
 if command -v gh >/dev/null 2>&1; then
   GH_ERR=$(mktemp)
-  if PR_JSON=$(gh pr view --json number,title,body 2>"$GH_ERR"); then
+  if [ -n "$PR_OPT" ]; then
+    PR_JSON=$(gh pr view "$PR_OPT" --json number,title,body 2>"$GH_ERR")
+  else
+    PR_JSON=$(gh pr view --json number,title,body 2>"$GH_ERR")
+  fi
+  if [ -n "$PR_JSON" ]; then
     PR_NUM=$(printf '%s' "$PR_JSON" | jq -r .number)
   elif grep -qi 'no pull requests found\|no open pull requests\|not on any branch' "$GH_ERR"; then
     PR_JSON=''                    # gh 明说没有 PR —— 这才是「真的没有」
@@ -205,17 +228,24 @@ fi
 printf '\n'
 if [ "$POST_REPAIR_FAILED" -eq 1 ]; then
   printf 'status 没兜住 —— **GitHub 上会有 context 停在 pending，挡住合并**。\n'
-  printf '手动补发（sha 要 40 位全长）：\n'
-  printf '  %s api -X POST repos/{owner}/{repo}/statuses/%s -f state=success -f context=<context> -f description=...\n' "$GH" "$HEAD_SHA"
+  printf '手动补发（sha 必须 40 位全长）。⚠️ state 按每个 context 的**实际结论**写，\n'
+  printf '别一律抄 success —— 那会把红发成绿：\n'
+  # 每个 context 一行，状态取自本次跑的**实际结论**（#186：原来写死 state=success，
+  # 照抄会把失败的 context 发成绿，正好是这套 CI 要防的事）。
+  while IFS=' ' read -r ctx st desc; do
+    [ -n "$ctx" ] || continue
+    printf '  %s api -X POST repos/{owner}/{repo}/statuses/%s -f state=%s -f context=%s -f description=%s\n' \
+      "$GH" "$HEAD_SHA" "$st" "$ctx" "$desc"
+  done <<EOF
+$(awk '{last[$1]=$0} END{for (c in last) print last[c]}' "$RESULTS")
+EOF
 fi
-if [ -z "$FAILED$ENVNOTREADY$SCRIPTBUG" ] && [ "$POST_REPAIR_FAILED" -eq 0 ]; then
+CODE=$(final_exit_code "$FAILED" "$ENVNOTREADY" "$SCRIPTBUG" "$POST_REPAIR_FAILED")
+if [ "$CODE" -eq 0 ]; then
   printf '全绿。\n'
-  exit 0
+else
+  [ -n "$FAILED" ]      && printf '红（代码）：%s\n' "$FAILED"
+  [ -n "$ENVNOTREADY" ] && printf '环境未就绪：%s\n' "$ENVNOTREADY"
+  [ -n "$SCRIPTBUG" ]   && printf '脚本自身出错：%s\n' "$SCRIPTBUG"
 fi
-[ -n "$FAILED" ]      && printf '红（代码）：%s\n' "$FAILED"
-[ -n "$ENVNOTREADY" ] && printf '环境未就绪：%s\n' "$ENVNOTREADY"
-[ -n "$SCRIPTBUG" ]   && printf '脚本自身出错：%s\n' "$SCRIPTBUG"
-[ -n "$FAILED" ] && exit 1
-[ -n "$ENVNOTREADY" ] && exit 2
-[ -n "$SCRIPTBUG" ] && exit 3
-exit 4
+exit "$CODE"

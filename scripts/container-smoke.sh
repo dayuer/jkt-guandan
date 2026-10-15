@@ -9,6 +9,8 @@
 # 同一台机器上可能有几个会话同时在跑：容器名、数据卷带进程号，宿主端口让 docker 随机分配，
 # 互不撞车；退出时只删自己建的那两个。
 set -eu
+# 等容器/HTTP 就绪的小工具（#186）：超时会明确失败并打印日志，不会静默往下走。
+. "$(dirname "$0")/docker-wait.sh"
 IMAGE=${1:?"用法：scripts/container-smoke.sh <镜像> [构建号]"}
 BUILD=${2:-}
 NAME="guandan-smoke-$$"
@@ -32,10 +34,11 @@ docker run -d --name "$NAME" --read-only --cap-drop ALL \
   -e GUANDAN_PUBLIC_URL="$URL" \
   -p "127.0.0.1:$PORT:8080" -v "$VOLUME:/data" "$IMAGE" >/dev/null
 
-for _ in $(seq 1 30); do
-  if curl -fsS "$URL/healthz" >/dev/null 2>&1; then break; fi
-  sleep 1
-done
+# 等它就绪（#186）：容器内的 healthcheck 和 host 侧各等一次，超时都明确失败并打日志 ——
+# 原来只等 host 侧 /healthz 30 次，没等到也不报错，后面那串 curl 才报一个看不出原因的错。
+wait_container_ready "$NAME" 30 || { echo "失败：$NAME 等了 30 秒还没就绪（日志见上）"; exit 1; }
+wait_http_ok "$URL/healthz" 30 >/dev/null \
+  || { echo "失败：host 侧连不上 $URL/healthz"; docker ps -a --filter "name=^${NAME}$" --format '  {{.Names}}  {{.Status}}  {{.Ports}}'; exit 1; }
 echo "--- /healthz"
 curl -fsS "$URL/healthz"
 echo
@@ -59,5 +62,9 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 echo "health=$health"
-test "$health" = healthy
+if [ "$health" != healthy ]; then
+  echo "失败：Docker HEALTHCHECK 等了 30 秒还是 $health —— 日志："
+  docker logs --tail 40 "$NAME" 2>&1 | sed 's/^/  /'
+  exit 1
+fi
 echo "容器冒烟通过"

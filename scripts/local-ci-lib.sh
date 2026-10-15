@@ -65,7 +65,7 @@ _path_to_context() {
       echo 'local-ci/docker' ;;
     # 后两个是 docker 那两项的并发隔离自测（#183）：`test-deploy.sh` / `restore-drill.sh`
     # 会调它们，但它们自己也要能被单独触发 —— 否则只改这两个文件就没人跑（#178 的同类）。
-    scripts/deploy.sh|scripts/deploy-remote.sh|scripts/test-deploy.sh|scripts/restore-drill.sh|scripts/container-smoke.sh|scripts/test-deploy-names.sh|scripts/test-drill-names.sh)
+    scripts/deploy.sh|scripts/deploy-remote.sh|scripts/test-deploy.sh|scripts/restore-drill.sh|scripts/container-smoke.sh|scripts/test-deploy-names.sh|scripts/test-drill-names.sh|scripts/docker-wait.sh)
       echo 'local-ci/docker' ;;
     scripts/e2e-server.sh)
       echo 'local-ci/e2e' ;;
@@ -440,9 +440,10 @@ approve_vs_head() { # $1 = approve 里写的 sha，$2 = head
 # ⚠️ sha 必须 **40 位全长**：短 SHA 会 422（`Sha must be a valid hex object ID`）。
 
 # 发一次。$1=gh 命令 $2=sha $3=context $4=state $5=描述 → 0 成功 / 非 0 失败
+# stdin 接 /dev/null：gh 不该从调用方的 stdin 读任何东西（以前在管道里被调用时会挂住）。
 post_status_once() {
   "$1" api -X POST "repos/{owner}/{repo}/statuses/$2" \
-    -f state="$4" -f context="$3" -f description="$5" >/dev/null 2>&1
+    -f state="$4" -f context="$3" -f description="$5" >/dev/null 2>&1 </dev/null
 }
 
 # 第 $1 次失败之后等几秒（2 / 4 / 8）。测试把 POST_STATUS_BACKOFF 设成 0 就完全不睡。
@@ -458,7 +459,14 @@ post_status_backoff() {
 # 带退避重试。$1=gh $2=sha $3=context $4=state $5=描述 [$6=最多试几次，默认 4]
 # 用尽还失败返回 1，并把「共试了几次」打到 stderr（调用方据此决定要不要非零退出）。
 post_status_retry() {
-  local i=1 tries="${6:-4}" delay
+  local i=1 tries delay
+  # $6 不是正整数就退回默认 4。直接用的话，`[ "$i" -ge "abc" ]` 会报错（非 0），
+  # 判不出「试够了」，循环就再也停不下来 —— 静默死循环比报错更糟。
+  case "${6:-}" in
+    ''|*[!0-9]*) tries=4 ;;
+    *) tries="$6" ;;
+  esac
+  [ "$tries" -ge 1 ] || tries=1
   while :; do
     if post_status_once "$1" "$2" "$3" "$4" "$5"; then return 0; fi
     if [ "$i" -ge "$tries" ]; then
@@ -470,6 +478,26 @@ post_status_retry() {
     [ "$delay" -eq 0 ] || sleep "$delay"
     i=$((i + 1))
   done
+}
+
+# 分离头指针（detached HEAD）上带着上报跑、又没给 `--pr` 时要拒绝吗？（#186）
+#   $1=POST(1/0) $2=--pr 给的号（空 = 没给） $3=`git symbolic-ref -q HEAD` 的退出码（0=在分支上）
+# 该拒绝返回 0，否则返回 1。抽成纯函数是为了能逐条断言 —— 这段以前会让协议检查发出一条
+# 假红（auditor-188 就是踩了这个，拿假 gh 包装绕过去的）。
+should_reject_detached() {
+  [ "${1:-0}" -eq 1 ] && [ -z "${2:-}" ] && [ "${3:-0}" -ne 0 ]
+}
+
+# 汇总时的退出码（local-ci.sh 的「退出码」那段是它的契约，改动要同步）：
+#   1 代码红 / 2 环境未就绪 / 3 脚本自身出错 / 4 status 没兜住 / 0 全绿。
+# 优先级：代码红最要紧（先去修代码），然后环境、脚本 bug，最后才是 status 没兜住。
+#   $1=FAILED(空格分隔的 context) $2=ENVNOTREADY $3=SCRIPTBUG $4=POST_REPAIR_FAILED(0/1)
+final_exit_code() {
+  [ -n "${1:-}" ] && { printf '1\n'; return 0; }
+  [ -n "${2:-}" ] && { printf '2\n'; return 0; }
+  [ -n "${3:-}" ] && { printf '3\n'; return 0; }
+  [ "${4:-0}" -eq 1 ] 2>/dev/null && { printf '4\n'; return 0; }
+  printf '0\n'
 }
 
 # 收尾复核用：从 `gh api .../commits/<sha>/statuses` 的 JSON（$1）里取 $2 这个 context
@@ -486,11 +514,12 @@ status_state_of() {
 #   $1 = gh 命令   $2 = 40 位全长 sha   $3 = `context state 描述` 每行一条的文件（同一 context 取最后一条）
 # 全部对得上 / 补发成功 → 0；有任何一条补发失败、或取不到 status → 1（调用方据此非零退出）。
 repair_statuses() {
-  local gh="$1" sha="$2" results="$3" cur='' repaired=0 failed=0 ctx st desc now
-  for _ in 1 2 3; do
+  local gh="$1" sha="$2" results="$3" cur='' repaired=0 failed=0 tried ctx st desc now
+  for tried in 1 2 3; do
     if cur=$("$gh" api "repos/{owner}/{repo}/commits/$sha/statuses" 2>/dev/null) && [ -n "$cur" ]; then break; fi
     cur=''
-    sleep "${POST_STATUS_REPAIR_DELAY:-2}"
+    # 最后一次失败就不用再睡了 —— 反正下面直接放弃。原来多睡一次，白等。
+    [ "$tried" -eq 3 ] || sleep "${POST_STATUS_REPAIR_DELAY:-2}"
   done
   if [ -z "$cur" ]; then
     printf '取不到本 SHA 的 status —— 复核不了，**请手动确认 GitHub 上有没有停在 pending 的 context**。\n' >&2
@@ -506,11 +535,17 @@ repair_statuses() {
       repaired=$((repaired + 1))
     else
       printf '  ✗ 补发失败：%s\n' "$ctx" >&2
-      failed=1
+      failed=$((failed + 1))
     fi
   done <<EOF
 $(awk '{last[$1]=$0} END{for (c in last) print last[c]}' "$results")
 EOF
-  if [ "$repaired" -eq 0 ]; then printf '  都对得上，不用补。\n'; else printf '  补发了 %s 条。\n' "$repaired"; fi
-  return "$failed"
+  # ⚠️ 先看 failed 再看 repaired：全都没补上时 repaired 也是 0，只看它就会打印
+  # 「都比对过，不用补」—— 那是**假绿**，正是这套 CI 一直在防的东西。
+  if [ "$failed" -ne 0 ]; then
+    printf '  补上了 %s 条，还有 %s 条没补上。\n' "$repaired" "$failed"
+    return 1
+  fi
+  if [ "$repaired" -eq 0 ]; then printf '  都比对过，没有要补的。\n'; else printf '  补发了 %s 条。\n' "$repaired"; fi
+  return 0
 }

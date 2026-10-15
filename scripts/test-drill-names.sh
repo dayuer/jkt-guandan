@@ -61,10 +61,13 @@ try_id() { # $1 = 编号；能跑通返回 0
   PORT_OLD= PORT_NEW= PORT_METRICS= DEPLOYTEST_RUN="$1" PATH="$work/shim:$PATH" \
     sh "$SELF" --print-names >/dev/null 2>&1
 }
+# 取值上限是 **1248**，不是 1249（#186）：窗口是 `(编号 % 1250) * 8`，取到 1249 的话
+# 「下一个编号」1250 会绕回窗口 0，而窗口 1249 和窗口 0 隔着整个区间 —— 「D 在自己的
+# 窗口里」那条断言就会误报（约 1/1250，每次 docker 跑两份自测）。
 pick_id() {
   i=0
   while [ "$i" -lt 25 ]; do
-    cand=$(( ($$ * 7 + i * 977) % 1250 ))
+    cand=$(( ($$ * 7 + i * 977) % 1249 ))
     if try_id "$cand" && try_id "$((cand + 1))"; then
       printf '%s' "$cand"; return 0
     fi
@@ -73,12 +76,17 @@ pick_id() {
   return 1
 }
 
-# 相邻的两个编号：并发起的两路就是这个关系。
-A_ID=$(pick_id) || {
+# 相邻的两个编号：并发起的两路就是这个关系。DEPLOYTEST_RUN 给了就用它（测边界用）。
+if [ -n "${DEPLOYTEST_RUN:-}" ]; then A_ID="$DEPLOYTEST_RUN"; else A_ID=$(pick_id); fi
+[ -n "${A_ID:-}" ] || {
   printf '找不到两个相邻编号、窗口都凑得出端口的编号 —— 本机这一段占用异常（见 #183）。\n' >&2
   exit 1
 }
 B_ID=$((A_ID + 1))
+if [ "$A_ID" -gt 1248 ]; then
+  printf '自测编号超出范围：%s（必须 ≤ 1248，否则 B 会绕回窗口 0，见 #186）\n' "$A_ID" >&2
+  exit 1
+fi
 
 A_OUT=$(run_once "$work/a.log" "$A_ID")
 B_OUT=$(run_once "$work/b.log" "$B_ID")
