@@ -7,6 +7,8 @@ export interface Nav {
   created(code: string): void;
   tab(name: TabName): void;
   lesson(id: string): void;
+  /** 牌桌计分（#165） */
+  score(code: string): void;
   devices(): void;
   privacy(): void;
   back(): void;

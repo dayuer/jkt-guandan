@@ -15,6 +15,7 @@ import { Friends } from "./scenes/friends";
 import { Home, TAB_H } from "./scenes/home";
 import { Learn, LessonScene } from "./scenes/learn";
 import { Devices, Me, Privacy } from "./scenes/me";
+import { ScoreScene } from "./scenes/score";
 import type { Nav, TabName } from "./scenes/nav";
 
 if (__DEV__ && __SELFTEST__) installSelftest();
@@ -32,6 +33,10 @@ const nav: Nav = {
     const s = new LessonScene(app, id, nav);
     if (app.top instanceof LessonScene) { app.stack[app.stack.length - 1] = s; app.redraw(); }
     else app.push(s);
+  },
+  score: (code) => {
+    const top = app.top;
+    if (!(top instanceof ScoreScene && top.code === code)) app.push(new ScoreScene(app, code, nav));
   },
   devices: () => app.push(new Devices(app, nav)),
   privacy: () => app.push(new Privacy(app, nav)),
