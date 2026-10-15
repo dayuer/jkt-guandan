@@ -27,24 +27,26 @@ REPO="guandan-deploytest-$RUN"
 
 # 每次运行占**一对相邻**端口：PORT 给场景 1–6，PORT+1 留给场景 7。
 #
-# 起点按 PID 推、而且**按 2 步进**（`(RUN % 7500) * 2`）。为什么一定要 2 步进：
-# 并发起的两路 PID 常常相邻，起点就会差 1，那 B 的 PORT 正好是 A 的 PORT_OLD ——
-# 而 A 要到几分钟后的场景 7 才去绑它，那时早被 B 占了（auditor 实测：
-# `Bind for 127.0.0.1:27428 failed: port is already allocated`）。按 2 步进，
-# 两路的端口区间就天然错开。
+# 每次运行独占一个 8 个口宽的**窗口**，窗口起点按编号推：[20000 + (RUN % 1250) * 8, +8)。
+# 窗口里挑第一组连着的 2 个空闲端口。三条约束，缺一不可：
 #
-# 起点也不能交给内核（bind 到 0）：内核会把**刚释放**的端口立刻再发出去，先后两次
-# 运行会拿到同一个号。上面这两条都是自测先红、再改出来的。
+#  1. 起点按编号推，不能交给内核（bind 到 0）—— 内核会把刚释放的端口立刻再发出去，
+#     先后两次运行会拿到同一个号。
+#  2. 挪的时候**只在窗口里挪，步长就是这一组的宽度**。允许挪出窗口的话，挪一步正好落进
+#     下一个编号的窗口，而并发起的两路 PID 就是相邻的 —— 还是要撞（auditor 实测：占住
+#     28485 时自测就红了）。窗口比这一组宽，挪完还是自己的地盘。
+#  3. 一组里的每个口都要先探过是空的：场景 7 要等好几分钟才用第二个，光探第一个不够。
 #
-# 一对里的两个口都要先探过是空的 —— 场景 7 要等好几分钟才用第二个，光探第一个不够。
-# 被别的进程占了就整对往上挪 2。
-port_pair() { # $1 = 起始端口（偶数）；打印第一对 (p, p+1) 都空闲的端口
-  python3 - "$1" <<'PY'
+# 窗口里凑不出来就**报错退出**，不去抢别人的窗口 —— 那是本机这一段端口占用异常，
+# 说清楚比撞上强。（restore-drill.sh 用 30000–39999，两个脚本的窗口不会撞。）
+WINDOW=8
+port_group() { # $1=窗口起点 $2=要几个；在窗口内打印一组，找不到就退出非 0
+  python3 - "$1" "$2" "$WINDOW" <<'PY'
 import socket, sys
-start = int(sys.argv[1])
-for p in range(start, start + 400, 2):
+start, k, window = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+for p in range(start, start + window - k + 1):
     held = []
-    for q in (p, p + 1):
+    for q in range(p, p + k):
         s = socket.socket()
         try:
             s.bind(("127.0.0.1", q))
@@ -53,11 +55,11 @@ for p in range(start, start + 400, 2):
         held.append(s)
     for s in held:
         s.close()          # 立刻交还给 docker；窗口极小
-    if len(held) == 2:
-        print("%d %d" % (p, p + 1))
-        break
-else:
-    sys.exit("从 %d 往上 400 个端口里找不到一对空闲的" % start)
+    if len(held) == k:
+        print(" ".join(str(p + i) for i in range(k)))
+        sys.exit(0)
+sys.exit("本机 %d–%d 这一段端口凑不出 %d 个连着的空闲端口（有别的进程占着？）；"
+         "过一会儿或换台机器再跑" % (start, start + window - 1, k))
 PY
 }
 if [ -n "${PORT:-}" ]; then
@@ -66,7 +68,7 @@ if [ -n "${PORT:-}" ]; then
   printf '注意：环境里给了 PORT=%s，本次运行就用它（并发跑 CI 时不要设，见 #181）\n' "$PORT"
   PORT_OLD=$((PORT + 1))
 else
-  PAIR=$(port_pair $((20000 + (RUN % 7500) * 2)))
+  PAIR=$(port_group $((20000 + (RUN % 1250) * 8)) 2)
   PORT=${PAIR%% *}
   PORT_OLD=${PAIR#* }
 fi
