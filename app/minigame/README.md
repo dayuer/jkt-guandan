@@ -31,7 +31,7 @@ npm test
 | `src/main.ts` | 入口：Tab 栏、页面跳转、从转发卡片进来（`query.g`） |
 | `src/core/` | 画布运行时（场景栈、触摸、弹层、键盘）和常用控件 |
 | `src/lib/` | 接口（`wx.request` + Bearer）、登录、实时（复用 H5 的 RealtimeClient）、埋点、时间格式 |
-| `src/scenes/` | 各页：牌局、详情、开局、学牌、牌友、我的、设备、隐私，以及共用弹层 |
+| `src/scenes/` | 各页：牌局、详情、开局、学牌、牌友、我的、设备、隐私、牌桌计分（`score.ts`，#165），以及共用弹层 |
 
 复用 `app/h5/src` 的纯逻辑：`status.ts`（状态提示）、`conflict.ts`（K4/K5）、`share.ts`（话术）、`learn.ts`（课程）、`wa.ts`、`invite.ts`、`realtime.ts`。
 H5 的 `format.ts` 依赖 `Intl` 时区，安卓微信不保证支持，打包时换成 `src/lib/fmt.ts`（雅加达固定 UTC+7）。
