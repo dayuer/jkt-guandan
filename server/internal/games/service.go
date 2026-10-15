@@ -179,6 +179,8 @@ func (s *Service) attachMyRole(ctx context.Context, viewerID string, items []Sum
 		for _, seat := range items[i].Seats {
 			if seat.UserID == viewerID {
 				items[i].MyRole = "seated"
+				items[i].MyJoinedAt = seat.JoinedAt()
+				items[i].MyPromotedAt = seat.PromotedAt()
 			}
 		}
 		if i > 0 {
@@ -190,7 +192,7 @@ func (s *Service) attachMyRole(ctx context.Context, viewerID string, items []Sum
 
 	// 位置和 loadDetailFrom 一致：先按 created_at，相同再按 rowid。
 	rows, err := s.st.Read().QueryContext(ctx, `
-		SELECT w.game_id,
+		SELECT w.game_id, w.created_at,
 		       (SELECT count(*) FROM waitlist o
 		         WHERE o.game_id = w.game_id
 		           AND (o.created_at < w.created_at
@@ -203,15 +205,17 @@ func (s *Service) attachMyRole(ctx context.Context, viewerID string, items []Sum
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			gameID string
-			pos    int
+			gameID   string
+			joinedAt int64
+			pos      int
 		)
-		if err := rows.Scan(&gameID, &pos); err != nil {
+		if err := rows.Scan(&gameID, &joinedAt, &pos); err != nil {
 			return err
 		}
 		if idx, ok := byID[gameID]; ok && items[idx].MyRole != "seated" {
 			items[idx].MyRole = "waitlist"
 			items[idx].WaitlistPos = pos
+			items[idx].MyJoinedAt = time.Unix(joinedAt, 0)
 		}
 	}
 	return rows.Err()
@@ -236,7 +240,8 @@ func (s *Service) attachSeats(ctx context.Context, items []Summary) error {
 	}
 
 	rows, err := s.st.Read().QueryContext(ctx, `
-		SELECT s.game_id, s.seat_no, s.user_id, COALESCE(u.nickname, ''), s.created_at
+		SELECT s.game_id, s.seat_no, s.user_id, COALESCE(u.nickname, ''), s.created_at,
+		       COALESCE(s.waitlisted_at, 0)
 		  FROM seats s LEFT JOIN users u ON u.id = s.user_id
 		 WHERE s.game_id IN (`+placeholders+`)
 		 ORDER BY s.game_id, s.seat_no`, args...)
@@ -247,14 +252,15 @@ func (s *Service) attachSeats(ctx context.Context, items []Summary) error {
 
 	for rows.Next() {
 		var (
-			gameID    string
-			seat      Seat
-			createdAt int64
+			gameID                  string
+			seat                    Seat
+			createdAt, waitlistedAt int64
 		)
-		if err := rows.Scan(&gameID, &seat.SeatNo, &seat.UserID, &seat.Nickname, &createdAt); err != nil {
+		if err := rows.Scan(&gameID, &seat.SeatNo, &seat.UserID, &seat.Nickname, &createdAt, &waitlistedAt); err != nil {
 			return err
 		}
 		seat.CreatedAt = time.Unix(createdAt, 0)
+		seat.WaitlistedAt = unixOrZero(waitlistedAt)
 		if idx, ok := byID[gameID]; ok {
 			items[idx].Seats = append(items[idx].Seats, seat)
 		}
@@ -708,10 +714,13 @@ func (s *Service) leaveInTx(ctx context.Context, tx *store.Tx, game Game, userID
 
 // promoteHead 把候补队首补到 seatNo 上，返回是否补到了人。
 func (s *Service) promoteHead(ctx context.Context, tx *store.Tx, game Game, seatNo int, version int64, now time.Time) (bool, error) {
-	var userID string
+	var (
+		userID       string
+		waitlistedAt int64
+	)
 	err := tx.QueryRowContext(ctx, `
-		SELECT user_id FROM waitlist
-		 WHERE game_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 1`, game.ID).Scan(&userID)
+		SELECT user_id, created_at FROM waitlist
+		 WHERE game_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 1`, game.ID).Scan(&userID, &waitlistedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -723,9 +732,10 @@ func (s *Service) promoteHead(ctx context.Context, tx *store.Tx, game Game, seat
 		`DELETE FROM waitlist WHERE game_id = ? AND user_id = ?`, game.ID, userID); err != nil {
 		return false, err
 	}
+	// 记下原来排候补的时间（#160）：加入时间从它算，这一行的 created_at 就是补位时间。
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO seats (game_id, seat_no, user_id, created_at) VALUES (?, ?, ?, ?)`,
-		game.ID, seatNo, userID, now.Unix()); err != nil {
+		INSERT INTO seats (game_id, seat_no, user_id, created_at, waitlisted_at) VALUES (?, ?, ?, ?, ?)`,
+		game.ID, seatNo, userID, now.Unix(), waitlistedAt); err != nil {
 		return false, err
 	}
 

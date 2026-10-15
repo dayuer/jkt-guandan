@@ -33,7 +33,7 @@ npm test
 | `src/lib/` | 接口（`wx.request` + Bearer）、登录、实时（复用 H5 的 RealtimeClient）、埋点、时间格式 |
 | `src/scenes/` | 各页：牌局、详情、开局、学牌、牌友、我的、设备、隐私、牌桌计分（`score.ts`，#165），以及共用弹层 |
 
-复用 `app/h5/src` 的纯逻辑：`status.ts`（状态提示）、`conflict.ts`（K4/K5）、`share.ts`（话术）、`learn.ts`（课程）、`wa.ts`、`invite.ts`、`realtime.ts`。
+复用 `app/h5/src` 的纯逻辑：`status.ts`（状态提示；没有本机快照时的换设备兜底在 `src/lib/notice.ts`，#160）、`conflict.ts`（K4/K5）、`share.ts`（话术）、`learn.ts`（课程）、`wa.ts`、`invite.ts`、`realtime.ts`。
 H5 的 `format.ts` 依赖 `Intl` 时区，安卓微信不保证支持，打包时换成 `src/lib/fmt.ts`（雅加达固定 UTC+7）。
 
 ## 和 H5 的差异
