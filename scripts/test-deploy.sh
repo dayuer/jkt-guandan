@@ -18,41 +18,57 @@ set -eu
 # 再往上找空闲的（做法见下面的 port_from）。容器名、卷名、镜像标签同理。
 #
 # 生产 deploy.sh / deploy-remote.sh 的命名一个字不动 —— 线上就是 guandan，这里只改测试注入的变量。
-RUN=$$
+# DEPLOYTEST_RUN 只给自测用：固定「本次运行的编号」，好造出两次运行编号相邻的场景
+# （并发起的两路 PID 就是相邻的，那是最容易撞的一种）。生产/日常跑不设它。
+RUN=${DEPLOYTEST_RUN:-$$}
 NAME="guandan-deploytest-$RUN"
 VOLUME="guandan-deploytest-$RUN-data"
 REPO="guandan-deploytest-$RUN"
 
-# 两个**互不相同**的空闲端口。
+# 每次运行占**一对相邻**端口：PORT 给场景 1–6，PORT+1 留给场景 7。
 #
-# 起点用 PID 推，而不是交给内核随便分配：内核会把刚释放的端口**立刻再发出去**，两次
-# 先后运行的测试就会拿到同一个号（实测过：A=54053/54054，B 也是 54053/54054）。
-# 并发时那两路就还是会抢同一个端口 —— 只是把 `No such container` 换成
-# `port is already allocated`。起点带上 PID，两路的起点就不同；万一被别的进程占了，
-# 再往上找第一个空闲的。
-port_from() { # $1 = 起始端口；往上找第一个能绑的，打印出来
+# 起点按 PID 推、而且**按 2 步进**（`(RUN % 7500) * 2`）。为什么一定要 2 步进：
+# 并发起的两路 PID 常常相邻，起点就会差 1，那 B 的 PORT 正好是 A 的 PORT_OLD ——
+# 而 A 要到几分钟后的场景 7 才去绑它，那时早被 B 占了（auditor 实测：
+# `Bind for 127.0.0.1:27428 failed: port is already allocated`）。按 2 步进，
+# 两路的端口区间就天然错开。
+#
+# 起点也不能交给内核（bind 到 0）：内核会把**刚释放**的端口立刻再发出去，先后两次
+# 运行会拿到同一个号。上面这两条都是自测先红、再改出来的。
+#
+# 一对里的两个口都要先探过是空的 —— 场景 7 要等好几分钟才用第二个，光探第一个不够。
+# 被别的进程占了就整对往上挪 2。
+port_pair() { # $1 = 起始端口（偶数）；打印第一对 (p, p+1) 都空闲的端口
   python3 - "$1" <<'PY'
 import socket, sys
 start = int(sys.argv[1])
-for p in range(start, start + 200):
-    s = socket.socket()
-    try:
-        s.bind(("127.0.0.1", p))
-    except OSError:
-        s.close()
-        continue
-    s.close()          # 立刻交还给 docker；窗口极小
-    print(p)
-    break
+for p in range(start, start + 400, 2):
+    held = []
+    for q in (p, p + 1):
+        s = socket.socket()
+        try:
+            s.bind(("127.0.0.1", q))
+        except OSError:
+            break
+        held.append(s)
+    for s in held:
+        s.close()          # 立刻交还给 docker；窗口极小
+    if len(held) == 2:
+        print("%d %d" % (p, p + 1))
+        break
 else:
-    sys.exit("从 %d 往上 200 个端口都被占了" % start)
+    sys.exit("从 %d 往上 400 个端口里找不到一对空闲的" % start)
 PY
 }
 if [ -n "${PORT:-}" ]; then
-  PORT_OLD=$((PORT + 1))   # 显式指定时保持原来的行为
+  # 显式指定时保持原来的行为（调试、或外部脚本要固定端口）。
+  # 并发跑 CI 时**不要**设它：那样两路就又用回同一组固定端口了，正是 #181 要修的。
+  printf '注意：环境里给了 PORT=%s，本次运行就用它（并发跑 CI 时不要设，见 #181）\n' "$PORT"
+  PORT_OLD=$((PORT + 1))
 else
-  PORT=$(port_from $((20000 + RUN % 15000)))
-  PORT_OLD=$(port_from $((PORT + 1)))
+  PAIR=$(port_pair $((20000 + (RUN % 7500) * 2)))
+  PORT=${PAIR%% *}
+  PORT_OLD=${PAIR#* }
 fi
 export PORT PORT_OLD
 

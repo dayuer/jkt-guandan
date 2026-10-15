@@ -7,8 +7,14 @@
 # 模式照样会走头上那两行 `docker rm -f` 和退出时 trap 里的 cleanup，所以记下来的正好是
 # 「这一次运行碰过的全部资源」。然后断言：
 #
-#   1. 两次的 RUN / 名字 / 端口各不相同，而且名字里带着本次运行的 RUN 后缀；
-#   2. 第一次运行碰过的资源里没有任何一个属于第二次，反过来也一样（清理只碰自己那组）。
+#   1. 两次运行的编号 / 名字 / 端口各不相同，而且名字里带着本次运行的编号；
+#   2. **四个端口两两不同**（含交叉比较：A 的第二个口不能等于 B 的第一个口）；
+#   3. 第一次运行碰过的资源里没有任何一个属于第二次，反过来也一样（清理只碰自己那组）。
+#
+# 第 1、2 条的两次运行**编号是相邻的**（N 和 N+1，靠 DEPLOYTEST_RUN 指定）。这一点是
+# 关键：并发起的两路 PID 就是相邻的，而那正是最容易撞的一种 —— 起点差 1 时，B 的 PORT
+# 正好是 A 的 PORT_OLD。先后跑两次拿到的 PID 永远不会相邻，光靠那样是发现不了这个的
+# （#181 复审的阻塞 1 就是这么漏掉的）。
 #
 # 不碰真实 docker、不需要镜像，毫秒级跑完。由 scripts/test-deploy.sh 在开跑前调用，
 # 也可以单独跑：scripts/test-deploy-names.sh
@@ -34,14 +40,15 @@ exit 0
 SHIM
 chmod +x "$work/shim/docker"
 
-# 跑一次 --print-names。$1 = 这次运行的 docker 调用日志；stdout 是键值对。
+# 跑一次 --print-names。$1 = 这次运行的 docker 调用日志；$2 = 这次运行的编号。
 #
 # **必须把 PORT / PORT_OLD 清掉**：本脚本通常是 test-deploy.sh 调起来的，而 test-deploy.sh
 # 把 PORT export 出去了（deploy-remote.sh 要读）。不清的话两次探测都继承同一个 PORT，
 # 走的是「显式指定端口」那条分支，两次当然一样 —— 本地单独跑看不出来，只有从
 # test-deploy.sh 里跑才会露。清成空串即可：test-deploy.sh 那边是 `[ -n "${PORT:-}" ]`。
 run_once() {
-  DOCKER_LOG="$1" PATH="$work/shim:$PATH" PORT= PORT_OLD= sh "$SELF" --print-names
+  DOCKER_LOG="$1" PATH="$work/shim:$PATH" PORT= PORT_OLD= DEPLOYTEST_RUN="$2" \
+    sh "$SELF" --print-names
 }
 
 # 从键值对里取一个字段（值里没有空格）。
@@ -49,11 +56,13 @@ field() { # $1=键 $2=全部输出
   printf '%s\n' "$2" | sed -n "s/^$1=//p"
 }
 
-A_OUT=$(run_once "$work/a.log")
-B_OUT=$(run_once "$work/b.log")
+# 相邻的两个编号：并发起的两路就是这个关系。
+A_ID=${DEPLOYTEST_RUN:-4242}
+B_ID=$((A_ID + 1))
 
-A_RUN=$(field RUN "$A_OUT")
-B_RUN=$(field RUN "$B_OUT")
+A_OUT=$(run_once "$work/a.log" "$A_ID")
+B_OUT=$(run_once "$work/b.log" "$B_ID")
+
 A_NAME=$(field NAME "$A_OUT")
 B_NAME=$(field NAME "$B_OUT")
 A_VOL=$(field VOLUME "$A_OUT")
@@ -70,9 +79,9 @@ if [ -z "$A_NAME" ] || [ -z "$B_NAME" ]; then
   exit 1
 fi
 
-echo '--- scripts/test-deploy.sh 的并发隔离（#181）---'
+echo "--- scripts/test-deploy.sh 的并发隔离（#181，编号 $A_ID / ${B_ID}）---"
 
-# 1. 两次运行的名字不同，而且带上了本次运行的 RUN 后缀。
+# 1. 两次运行的名字不同，而且带上了本次运行的编号。
 same_or_diff() { # $1=标签 $2=A 的值 $3=B 的值
   if [ "$2" = "$3" ]; then bad "两次运行的 $1 不同" '不同' "两次都是 $2"
   else ok "两次运行的 $1 不同（$2 / $3）"; fi
@@ -81,28 +90,27 @@ same_or_diff NAME "$A_NAME" "$B_NAME"
 same_or_diff VOLUME "$A_VOL" "$B_VOL"
 same_or_diff REPO "$A_REPO" "$B_REPO"
 
-# 名字里必须带着这一次的 RUN，否则等于又写死了。
 case "$A_NAME" in
-  *"-${A_RUN}") ok "容器名带本次运行的 RUN 后缀（-${A_RUN}）" ;;
-  *) bad "容器名带本次运行的 RUN 后缀（-${A_RUN}）" "以 -${A_RUN} 结尾" "$A_NAME" ;;
+  *"-${A_ID}") ok "容器名带本次运行的编号（-${A_ID}）" ;;
+  *) bad "容器名带本次运行的编号（-${A_ID}）" "以 -${A_ID} 结尾" "$A_NAME" ;;
 esac
 case "$B_NAME" in
-  *"-${B_RUN}") ok "另一次也是（-${B_RUN}）" ;;
-  *) bad "另一次也是（-${B_RUN}）" "以 -${B_RUN} 结尾" "$B_NAME" ;;
+  *"-${B_ID}") ok "另一次也是（-${B_ID}）" ;;
+  *) bad "另一次也是（-${B_ID}）" "以 -${B_ID} 结尾" "$B_NAME" ;;
 esac
 [ "$A_NAME" != 'guandan-deploytest' ] && ok '不再是写死的 guandan-deploytest' \
   || bad '不再是写死的 guandan-deploytest' '带后缀' "$A_NAME"
 
-# 2. 端口也是每路自己的，而且同一路里的两个场景端口不撞。
-if [ "$A_PORT" = "$B_PORT" ] || [ "$A_PORT2" = "$B_PORT2" ]; then
-  bad '两次运行的端口不同' '两路四个端口互不相同' "A=$A_PORT/$A_PORT2 B=$B_PORT/$B_PORT2"
+# 2. 四个端口**两两**不同 —— 包括交叉的 A_PORT2 / B_PORT。
+#
+# 这一条才是拦「起点按 1 步进」的：那样 A 占 (p, p+1)、B 占 (p+1, p+2)，
+# A 的第二个口就是 B 的第一个口，而 A 要到几分钟后的场景 7 才去绑它。
+DUPES=$(printf '%s\n' "$A_PORT" "$A_PORT2" "$B_PORT" "$B_PORT2" | sort | uniq -d | tr '\n' ' ')
+if [ -n "$DUPES" ]; then
+  bad '四个端口两两不同（含交叉）' '没有重复' \
+      "A=$A_PORT/$A_PORT2 B=$B_PORT/${B_PORT2}，重复：$DUPES"
 else
-  ok "两次运行的端口不同（$A_PORT/$A_PORT2 与 $B_PORT/${B_PORT2}）"
-fi
-if [ "$A_PORT" = "$A_PORT2" ] || [ "$B_PORT" = "$B_PORT2" ]; then
-  bad '同一路里两个场景的端口不同' '各不同' "A=$A_PORT/$A_PORT2 B=$B_PORT/$B_PORT2"
-else
-  ok '同一路里两个场景的端口不同'
+  ok "四个端口两两不同（A=$A_PORT/$A_PORT2 B=$B_PORT/${B_PORT2}）"
 fi
 
 # 3. 清理只碰自己那组：A 的 docker 调用里不能出现 B 的任何名字。
