@@ -3,7 +3,7 @@
 
 import type { App, Scene } from "../core/app";
 import { C, Ctx, Scroller, card, circle, ellipsize, fillRR, font, initial, strokeRR, text } from "../core/ui";
-import { PAD, banner, chip, disclaimer, emptyState, errorLine, segmented, textLink } from "../core/widgets";
+import { PAD, banner, chip, disclaimer, emptyState, errorLine, icon, segmented, textLink, type Suit } from "../core/widgets";
 import { leaveGame, listGames, type GameSummary } from "../lib/api";
 import { cardDay, kindLabel, missingLabel, slashDate, timeHM, dayShort } from "../lib/fmt";
 import { realtime } from "../lib/realtime";
@@ -137,7 +137,8 @@ export class Home implements Scene {
     const titleY = a.menu.bottom + 26;
     text(ctx, "随时掼掼蛋", PAD, titleY, font(28, "900", true), C.red);
     text(ctx, "找人凑一桌，就差你一个", PAD, titleY + 28, font(13), C.ink3);
-    this.drawMiniCards(ctx, W - 86, titleY - 22);
+    // 小牌顶边离胶囊底至少 8（适配稿 1.2）：牌的中心在 y + 24，半高 24
+    this.drawMiniCards(ctx, W - 86, a.contentTop + 4);
 
     const segY = titleY + 46;
     segmented(a, ctx, "day", PAD, segY, W - PAD * 2, DAYS.map((d) => d.label), this.day, (i) => {
@@ -152,18 +153,18 @@ export class Home implements Scene {
   }
 
   private drawMiniCards(ctx: Ctx, x: number, y: number) {
-    const one = (dx: number, rot: number, suit: string, color: string) => {
+    const one = (dx: number, rot: number, suit: Suit, color: string) => {
       ctx.save();
       ctx.translate(x + dx + 18, y + 24);
       ctx.rotate(rot);
       fillRR(ctx, -17, -23, 34, 46, 5, C.line);
       fillRR(ctx, -18, -24, 34, 46, 5, C.card);
       strokeRR(ctx, -18, -24, 34, 46, 5, C.line2, 1);
-      text(ctx, suit, -1, -1, font(18), color, "center");
+      icon[suit](ctx, -1, -1, 18, color);
       ctx.restore();
     };
-    one(0, -0.12, "♠", C.ink);
-    one(36, 0.1, "♥", C.red);
+    one(0, -0.12, "spade", C.ink);
+    one(36, 0.1, "heart", C.red);
   }
 
   private drawChips(ctx: Ctx) {

@@ -2,7 +2,7 @@
 
 import type { App, Sheet } from "../core/app";
 import { C, Ctx, circle, ellipsize, fillRR, font, initial, paragraph, strokeRR, text, Scroller } from "../core/ui";
-import { avatar, button, copy, field, sheetButtons, sheetHeader, simpleSheet, textLink } from "../core/widgets";
+import { avatar, button, copy, field, icon, sheetButtons, sheetHeader, simpleSheet, textLink } from "../core/widgets";
 import { ApiError, API_BASE, listFriends, posterURL, shareURL, type Friend, type GameDetail, type UserRef } from "../lib/api";
 import { dayShort, slashDate, timeHM, weekday } from "../lib/fmt";
 import { currentUser, linkWithCode, signUp } from "../lib/session";
@@ -168,7 +168,7 @@ export function promotedSheet(app: App, g: { starts_at: number; venue: string },
     onClose: () => { if (!decided) h.onOk(); },
     draw(ctx, y, w) {
       circle(ctx, w / 2, y + 46, 24, C.redTint);
-      text(ctx, "♥", w / 2, y + 47, font(24), C.red, "center");
+      icon.heart(ctx, w / 2, y + 47, 24, C.red);
       let cy = sheetHeader(ctx, y + 56, w, "有人退出，你补上了！", `${dayShort(g.starts_at)} ${timeHM(g.starts_at)} · ${g.venue}\n轮到你了，已经给你占上座`, true);
       cy = sheetButtons(app, ctx, cy + 4, w, [
         { label: "好的，到时见", style: "primary", onTap: () => app.closeSheet(s) },
@@ -361,7 +361,7 @@ export function friendPicker(
           text(ctx, ellipsize(ctx, f.user.nickname, w - 150, font(15, "600")), 70, ry + 21, font(15, "600"), already ? C.ink4 : C.ink);
           text(ctx, already ?? `一起打过 ${f.together_count} 局`, 70, ry + 40, font(12), C.ink3);
           const bx = w - 46, by = ry + rowH / 2;
-          if (on) { circle(ctx, bx, by, 12, C.red); text(ctx, "✓", bx, by + 1, font(14, "700"), C.cream, "center"); }
+          if (on) { circle(ctx, bx, by, 12, C.red); icon.check(ctx, bx, by, C.cream); }
           else circle(ctx, bx, by, 11.5, null, already ? C.line : C.khaki, 1.5);
           const vy = Math.max(ry, listTop), vh = Math.min(ry + rowH, listTop + listH) - vy;
           if (!already && vh > 0) app.hit(`pick:${f.user.id}`, 0, vy, w, vh, () => {
