@@ -54,7 +54,7 @@ func loadDetailFrom(ctx context.Context, q queryer, code, viewerID string) (*Det
 	d.HostName = hostName
 
 	seats, err := q.QueryContext(ctx, `
-		SELECT s.seat_no, s.user_id, COALESCE(u.nickname, ''), s.created_at
+		SELECT s.seat_no, s.user_id, COALESCE(u.nickname, ''), s.created_at, COALESCE(s.waitlisted_at, 0)
 		  FROM seats s LEFT JOIN users u ON u.id = s.user_id
 		 WHERE s.game_id = ? ORDER BY s.seat_no`, d.Game.ID)
 	if err != nil {
@@ -62,14 +62,15 @@ func loadDetailFrom(ctx context.Context, q queryer, code, viewerID string) (*Det
 	}
 	for seats.Next() {
 		var (
-			seat      Seat
-			createdAt int64
+			seat                    Seat
+			createdAt, waitlistedAt int64
 		)
-		if err := seats.Scan(&seat.SeatNo, &seat.UserID, &seat.Nickname, &createdAt); err != nil {
+		if err := seats.Scan(&seat.SeatNo, &seat.UserID, &seat.Nickname, &createdAt, &waitlistedAt); err != nil {
 			seats.Close()
 			return nil, err
 		}
 		seat.CreatedAt = time.Unix(createdAt, 0)
+		seat.WaitlistedAt = unixOrZero(waitlistedAt)
 		d.Seats = append(d.Seats, seat)
 	}
 	seats.Close()
@@ -113,12 +114,15 @@ func loadDetailFrom(ctx context.Context, q queryer, code, viewerID string) (*Det
 			if seat.UserID == viewerID {
 				d.Me = "seat"
 				d.MySeatNo = seat.SeatNo
+				d.MyJoinedAt = seat.JoinedAt()
+				d.MyPromotedAt = seat.PromotedAt()
 			}
 		}
 		for _, entry := range d.Waitlist {
 			if entry.UserID == viewerID {
 				d.Me = "waitlist"
 				d.MyPosition = entry.Position
+				d.MyJoinedAt = entry.CreatedAt
 			}
 		}
 		var inviter Seat

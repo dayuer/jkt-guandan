@@ -13,7 +13,8 @@ import { realtime } from "../lib/realtime";
 import { currentUser } from "../lib/session";
 import { track } from "../lib/telemetry";
 import { conflictingFields, describeConflict, type FieldDiff } from "../../../h5/src/conflict";
-import { acknowledge, fromDetail, observe, type Notice, type NoticeKind } from "../../../h5/src/status";
+import type { Notice, NoticeKind } from "../../../h5/src/status";
+import { detailView, dismissNotice, observeNotices } from "../lib/notice";
 import { rescheduleText } from "./home";
 import type { Nav } from "./nav";
 import { addToCalendar, friendPicker, joinedSheet, promotedSheet, requireIdentity, shareSheet } from "./sheets";
@@ -102,7 +103,7 @@ export class Detail implements Scene {
     if (ms !== null) this.recheck = setTimeout(() => { this.recheck = null; void this.load(); }, ms);
   }
 
-  /** 拿到新数据：播落座动画、和本机快照比出提示（#114）。 */
+  /** 拿到新数据：播落座动画、和本机快照比出提示（#114）；没有快照用服务端字段兜底（#160）。 */
   private set(d: GameDetail) {
     const ids = d.seats.map((s) => s.user.id);
     if (this.seen.size > 0) {
@@ -114,12 +115,12 @@ export class Detail implements Scene {
     this.seen = new Set(ids);
     this.detail = d;
     if (!this.viewed) { this.viewed = true; track("detail_view", { game: this.code }); }
-    this.notices = observe(fromDetail(d), currentUser()?.id);
+    this.notices = observeNotices(detailView(d), currentUser()?.id);
     this.maybePromoted();
   }
 
   private dismiss(kind: NoticeKind) {
-    if (this.detail) acknowledge(fromDetail(this.detail), currentUser()?.id, [kind]);
+    if (this.detail) dismissNotice(detailView(this.detail), currentUser()?.id, kind);
     this.notices = this.notices.filter((n) => n.kind !== kind);
     this.app.redraw();
   }
