@@ -199,6 +199,26 @@ CREATE TABLE wx_subscribe_quota (
   updated_at  INTEGER NOT NULL,
   PRIMARY KEY (user_id, template_id)
 );
+-- 牌桌计分（0008，#165，§5.6）。只存事实，级数等状态由 server/internal/scoring 从第 1 局重算，不落库。不涉及金钱
+CREATE TABLE score_matches (               -- 一局牌一行：开局约定。「再来一场」沿用，场次从各局推出来
+  game_id      TEXT PRIMARY KEY REFERENCES games(id),
+  kind         TEXT NOT NULL CHECK (kind IN ('classic','no-level')),  -- 开始时按牌局的 kind 定，teaching 按 classic
+  a_fail_limit INTEGER NOT NULL CHECK (a_fail_limit IN (0, 3)),        -- 打自己的 A 第几次没过回到 2；0 = 不回 2
+  started_by   TEXT NOT NULL REFERENCES users(id),
+  started_at   INTEGER NOT NULL,
+  revision     INTEGER NOT NULL DEFAULT 1                             -- 开始、记一局、改一局各 +1，实时事件按它去重
+);
+CREATE TABLE score_rounds (
+  game_id       TEXT NOT NULL REFERENCES score_matches(game_id),
+  round_no      INTEGER NOT NULL CHECK (round_no >= 1),               -- 从 1 连续往下编，跨场不重来
+  head_seat     INTEGER NOT NULL CHECK (head_seat BETWEEN 1 AND 4),
+  partner_place INTEGER NOT NULL CHECK (partner_place BETWEEN 2 AND 4),  -- 2 二游（双上）/ 3 三游 / 4 末游
+  recorded_by   TEXT NOT NULL REFERENCES users(id),
+  created_at    INTEGER NOT NULL,
+  edited_by     TEXT REFERENCES users(id),                            -- 最近一次改这一局的人
+  edited_at     INTEGER,
+  PRIMARY KEY (game_id, round_no)
+);
 ```
 
 连接设置和并发规则见 §11。
@@ -209,6 +229,7 @@ CREATE TABLE wx_subscribe_quota (
 3. 牌局状态为 `open` 或 `full` 时，局头一定坐在这一局的某个座位上。
 4. 同一个人在同一局里，不会同时出现在座位和候补中（触发器保证）。
 5. 牌局状态为 `cancelled` 或 `done` 时，没有未发送、且发送时间晚于结束时间的 `t_minus_1h` 提醒。
+6. 计分的局号从 1 连续：`count(score_rounds) = max(round_no)`（#165）。
 
 ## 5. 关键流程
 
@@ -352,6 +373,7 @@ CREATE TABLE wx_subscribe_quota (
 |---|---|---|
 | 03 牌局详情：别人报名或退出时，座位圆点实时「落座」或「离座」，「差 N 人」随之变化 | `game:{code}` | `seat.taken` · `seat.left` · `game.full` |
 | 03 牌局详情：局头改时间或地点时，顶部出现横幅「局头改到 20:00 了」 | `game:{code}` | `game.updated` |
+| 记分页：别人开始记分、记了一局、改了一局（#165，S11 翻牌） | `game:{code}` | `score.started` · `score.round` · `score.edited`（见 §5.6，不带 `v`，按 `data.revision` 去重） |
 | 03 牌局详情：「3 人正在看这局」 | `game:{code}` | `presence`（人数在服务端合并，同一局每 2 秒最多推一次，#46） |
 | 02 首页：列表里每局的「差 N 人」实时变化，有新开的局时出现「有 1 个新局」提示条 | `feed:{area}` | `feed.game_changed` · `feed.game_added` |
 | 12 跳出引导：在 Safari 或 Chrome 里认领成功后，微信里那一页自动变成「✓ 已在浏览器中打开」 | `user:{id}` | `claim.redeemed` |
@@ -409,6 +431,52 @@ CREATE TABLE wx_subscribe_quota (
 
 **部署注意**：用内置 autocert 直接对外时不需要额外配置。如果放在反向代理后面，代理要透传 `Upgrade` 和 `Connection` 头，读超时设到 60 秒以上。
 
+### 5.6 牌桌计分（#165）
+
+四个人坐满后在同一局里接着记分（设计稿 `design/guandan-minigame/README.md` §7，截图 S1–S15）。**不涉及金钱**（#91）：没有分数、倍率、金额、结算。
+
+- **只存事实，状态重算**：库里只有开局约定（`score_matches`）和每局谁头游、搭档第几（`score_rounds`）。两队级数、打谁的级、A 没过几次、第几场、是否结束，每次读的时候由纯函数 `server/internal/scoring.Compute` 从第 1 局算到最后一局；改任意一局 = 替换这一局再算一遍，后面的局自动跟着变。前端只展示，不自己算。
+- **规则**（README §7.1，口径同学牌页）：1、3 号红方，2、4 号黑方；只有头游所在的队升级，搭档二游 +3、三游 +2、末游 +1；第 1 局打 2，之后打上一局赢的那一队的级；到 A 封顶；打**本队的** A 时本队头游且搭档不是末游 = 过 A，本场结束（打对方的级时在 A 上赢了只升级，不算过）；打本队 A 的局没过（含对方拿头游）计一次，到约定次数（3）回到 2、计数清零，约定「不回 2」（0）时不回；本队头游搭档末游恰好是第 3 次时，回到 2 优先，不再 +1。过 A 后再记的一局就是下一场：两队都从 2 开始、计数和统计清零，局号接着编。`no-level` 只记每队赢了几局、双上几次。
+- **权限**（README §7.6）：能看牌局详情的人都能读；开始、记一局、改一局只有**座位上**的人能做（局头没有额外权限），否则 403 `not_seated`。牌局必须是 `full`（有人中途退出、局回到 `open` 时 409 `not_full`，补齐了再记），`done` / `cancelled` 的局 409 `game_closed`，只读。开局前 30 分钟起才能开始记分（S1 的入口条同一时刻出现），更早 409 `too_early`；开始之后记一局、改一局不再看时间，直到清理任务把局标成 `done`（开局 6 小时后，§13.1）。
+- **并发**：写都在单个写事务里（§11.2）。记一局带 `expected_round_no`：正好是下一局才写；已经有人记了（两人同时记，S12）返回 409 `round_taken`，带上已经记下的那一局（`round`）和最新的全部计分，前端结果相同就静默合并，不同就让用户选；跳号是 400。改一局可以带 `was`（打开弹层时看到的原结果），库里已经不是它（别人刚改过）返回 409 `round_changed` 和最新计分；不带就直接覆盖。只比这一局，别人在此期间记了新的一局不算冲突。改成和现在一样的结果什么也不写。
+- **不动牌局版本号**：计分有自己的 `revision`，`games.version` 不变，局头在打牌期间改时间、备注不会被记分挤成 409。
+- **接口**（JSON；cookie 和小游戏的 `Authorization: Bearer` 都能用）：
+
+  | 接口 | 身份 | 说明 |
+  |---|---|---|
+  | `GET /api/games/{code}/score` | public | 没开始：`{"started":false,"can_record":…}`；开始了：见下 |
+  | `POST /api/games/{code}/score` | user | 开始记分 `{"a_fail_limit":3}`（3 默认，或 0 = 不回 2）。已经开始了就原样返回，后到的约定不生效。接受 `Idempotency-Key` |
+  | `POST /api/games/{code}/score/rounds` | user | 记一局 `{"expected_round_no":7,"head_seat":1,"partner_place":3}`。本场已结束时这一局就是下一场的第 1 局（「再来一场」不需要单独的接口；「结束记分」只是前端离开记分页）。接受 `Idempotency-Key`：同一次提交重发返回现在的计分，不报 `round_taken`；同一个键用在别的请求上 422 `idempotency_key_reused` |
+  | `PUT /api/games/{code}/score/rounds/{no}` | user | 改一局 `{"head_seat":2,"partner_place":2,"was":{"head_seat":1,"partner_place":2}}`，`was` 可省 |
+
+  四个接口成功时都返回同一个形状：
+  ```json
+  {"started":true,"can_record":true,
+   "settings":{"kind":"classic","a_fail_limit":3},
+   "started_by":{"id":"01J…","nickname":"Lily"},"started_at":1791980000,"revision":7,
+   "rounds":[{"round_no":1,"match":1,"head_seat":1,"partner_place":2,
+              "playing":"","playing_level":2,"winner":"red","double_up":true,
+              "upgrade":3,"level_before":2,"level_after":5,"passed_a":false,
+              "recorded_by":{"id":"01J…","nickname":"Lily"},"recorded_at":1791980900}, …],
+   "state":{"match":1,"match_rounds":6,"playing":"red","playing_level":11,
+            "red":{"level":11,"a_fails":0,"wins":4,"double_ups":2},
+            "black":{"level":7,"a_fails":0,"wins":2,"double_ups":1},
+            "match_over":false}}
+  ```
+  - 级数是整数 2–14（11 = J、12 = Q、13 = K、14 = A）；队是 `red` / `black`，`playing` 为空串表示一场的第 1 局（打 2，不算哪队的）。
+  - `rounds` 按局号从小到大（S9 新的在上由前端倒过来）。每局还可能有：`failed_a`（这一局哪队打自己的 A 没过）、`a_fails`（它记完后的次数）、`reset_to_2`、`edited_by`、`edited_at`（改过的局，S9 的「已改」）。`level_before` → `level_after` 是赢的一队实际的变化，封顶和回到 2 都算进去；不升级玩法里这三项是 0。
+  - `state` 是记完最后一局之后、下一局要看的：`match_over` 为真时 `winner` 是过 A 的一队，`playing` / `playing_level` 已经是下一场第 1 局的值（空串、2），两队的 `level` 和统计仍是这一场结束时的（S8「停在 Q」）。`wins`、`double_ups` 是本场的（S8、S15「红方双上 4 次」）；`a_fails` 用于「打 A · 已没过 N 次」。
+  - 用时（S8）由前端从 `started_at` 和各局 `recorded_at` 算，服务端不另存。
+- **实时**：`score.started`、`score.round`、`score.edited` 推到 `game:{code}`（§5.5）。**不带顶层 `v`**（`v` 是牌局版本号，计分不动它），客户端按 `data.revision` 丢弃不比本地新的：
+  ```json
+  {"topic":"game:8K2","type":"score.round",
+   "data":{"revision":7,"by":{"id":"01J…","nickname":"Lily"},"rounds":6,
+           "settings":{…},"state":{…},"round":{ …和 rounds 里的一项相同… }}}
+  ```
+  `by` 是开始、记或改的人（S11「Lily 记了第 6 局」）；`round` 是这次记的或改的那一局（`score.started` 没有）；`rounds` 是现在一共几局。改一局时后面各局都可能变了，S10 要完整列表就重新拉 `GET /score`。收到 `score.round` 才翻牌（S11），REST 刷新和重连后的重绘不翻。
+- **限流**：开始、记一局、改一局合计每个用户每分钟 30 次，超出 429 `rate_limited`。
+- **注销与合并**：计分记录是这一局的历史，注销时不删，记录人的称呼随 `users` 变成「已注销牌友」；admin 合并身份时 `started_by`、`recorded_by`、`edited_by` 搬到保留的身份上。
+
 ## 6. HTTP 接口
 
 ```
@@ -432,6 +500,10 @@ DELETE /api/games/{code}/seat         退出（座位或候补）
 POST /api/games/{code}/cancel         局头取消
 POST /api/games/{code}/kick           局头移出 {user_id}
 POST /api/games/{code}/invites        邀请 {user_ids}
+GET  /api/games/{code}/score          牌桌计分：开局约定、每局记录、重算后的状态（#165，§5.6）
+POST /api/games/{code}/score          开始记分 {a_fail_limit}
+POST /api/games/{code}/score/rounds   记一局 {expected_round_no, head_seat, partner_place}
+PUT  /api/games/{code}/score/rounds/{no}  改一局 {head_seat, partner_place, was?}
 PUT/DELETE /api/follows/{user_id}     星标牌友
 GET  /api/friends                     牌友列表（含一起打过几局）
 POST /api/events                      埋点批量上报（#117，见下面「埋点」）
@@ -882,6 +954,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 | 创建身份 `POST /api/me` | 每个 IP 每小时 20 次 |
 | 开局 | 每个用户每天 10 次 |
 | 报名、退出 | 每个用户每分钟 30 次 |
+| 牌桌计分（开始、记一局、改一局） | 每个用户每分钟 30 次 |
 | 认领码兑换 | 每个 IP 每分钟 10 次 |
 | WebSocket | 每个 IP 最多 20 条连接，新连接每秒最多 5 条（防止部署后所有客户端同时重连） |
 | 蛋蛋 | 每台设备每天 30 次，每个 IP 每天 60 次（没有身份时只按 IP 算）；同时最多 4 个请求在调模型 |

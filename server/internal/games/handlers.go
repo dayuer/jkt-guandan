@@ -32,6 +32,11 @@ func Routes(svc *Service) []route.Route {
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/cancel", Access: route.User, Handler: http.HandlerFunc(h.cancel)},
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/kick", Access: route.User, Handler: http.HandlerFunc(h.kick)},
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/invites", Access: route.User, Handler: http.HandlerFunc(h.invite)},
+		// 牌桌计分（#165，§5.6）：能看详情的人都能看；只有座位上的人能写，在 service 里判。
+		{Method: http.MethodGet, Pattern: "/api/games/{code}/score", Access: route.Public, Handler: http.HandlerFunc(h.score)},
+		{Method: http.MethodPost, Pattern: "/api/games/{code}/score", Access: route.User, Handler: http.HandlerFunc(h.startScore)},
+		{Method: http.MethodPost, Pattern: "/api/games/{code}/score/rounds", Access: route.User, Handler: http.HandlerFunc(h.recordRound)},
+		{Method: http.MethodPut, Pattern: "/api/games/{code}/score/rounds/{no}", Access: route.User, Handler: http.HandlerFunc(h.editRound)},
 	}
 }
 
@@ -359,13 +364,39 @@ func unixSec(t time.Time) int64 {
 
 // writeGameError 把业务错误映射成状态码（§6）。
 func writeGameError(w http.ResponseWriter, err error) {
-	var conflict *VersionConflict
+	var (
+		conflict      *VersionConflict
+		roundConflict *RoundConflict
+		roundChanged  *RoundChanged
+	)
 	switch {
 	case errors.As(err, &conflict):
 		// 409 里带上最新的牌局，前端据此提示「局已被修改，请确认」。
 		body := toDetailJSON(&conflict.Latest)
 		body["error"] = map[string]string{"code": "version_conflict", "message": err.Error()}
 		writeJSON(w, http.StatusConflict, body)
+	case errors.As(err, &roundConflict):
+		// S12：两人同时记同一局。带上已经记下的那一局和最新的计分。
+		body := toScoreJSON(&roundConflict.Latest)
+		body["round"] = scoreRoundJSON(roundConflict.Existing)
+		body["error"] = map[string]string{"code": "round_taken", "message": err.Error()}
+		writeJSON(w, http.StatusConflict, body)
+	case errors.As(err, &roundChanged):
+		body := toScoreJSON(&roundChanged.Latest)
+		body["error"] = map[string]string{"code": "round_changed", "message": err.Error()}
+		writeJSON(w, http.StatusConflict, body)
+	case errors.Is(err, ErrNotSeated):
+		writeError(w, http.StatusForbidden, "not_seated", err.Error())
+	case errors.Is(err, ErrNotFull):
+		writeError(w, http.StatusConflict, "not_full", err.Error())
+	case errors.Is(err, ErrScoreTooEarly):
+		writeError(w, http.StatusConflict, "too_early", err.Error())
+	case errors.Is(err, ErrScoreNotStarted):
+		writeError(w, http.StatusConflict, "score_not_started", err.Error())
+	case errors.Is(err, ErrRoundNotFound):
+		writeError(w, http.StatusNotFound, "round_not_found", err.Error())
+	case errors.Is(err, ErrIdemKeyReused):
+		writeError(w, http.StatusUnprocessableEntity, "idempotency_key_reused", err.Error())
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, "game_not_found", "牌局不存在")
 	case errors.Is(err, ErrClosed):

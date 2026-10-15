@@ -46,6 +46,8 @@ type Service struct {
 
 	// 报名/退出：每用户每分钟 30 次（§12.3）。
 	joinLimiter *ratelimit.Limiter
+	// 计分（开始、记一局、改一局）：每用户每分钟 30 次。一局牌几分钟才打完一局，正常用不到。
+	scoreLimiter *ratelimit.Limiter
 
 	// 内容安全检测（#146）：小游戏用户写的地点、备注先送微信查。nil 时不查。
 	sec *secheck.Guard
@@ -63,10 +65,11 @@ func NewService(st *store.Store, clk clock.Clock, pub Publisher) *Service {
 		pub = NopPublisher{}
 	}
 	return &Service{
-		st:          st,
-		clk:         clk,
-		pub:         pub,
-		joinLimiter: ratelimit.New(30, 30, clk),
+		st:           st,
+		clk:          clk,
+		pub:          pub,
+		joinLimiter:  ratelimit.New(30, 30, clk),
+		scoreLimiter: ratelimit.New(30, 30, clk),
 	}
 }
 
