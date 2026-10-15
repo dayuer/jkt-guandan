@@ -191,8 +191,9 @@ func waitForCond(t *testing.T, cond func() bool, what string) {
 // #191：**迟到的 40001 不该把刚换上的新 token 再强刷掉**。
 //
 // 并发的样子：8 个请求都带着 tok1 出去，tok1 在服务端失效。
-//   第一个 40001 回来 → 该换 tok2；剩下 7 个是**带着 tok1 发出去的**，它们迟到回来时
-//   缓存里已经是 tok2 了，不该再动它。改之前是 fetches=3 forced=2。
+//
+//	第一个 40001 回来 → 该换 tok2；剩下 7 个是**带着 tok1 发出去的**，它们迟到回来时
+//	缓存里已经是 tok2 了，不该再动它。改之前是 fetches=3 forced=2。
 func TestStaleTokenErrorDoesNotForceRefreshAgain(t *testing.T) {
 	var fetches, forced, blocked atomic.Int32
 	var current atomic.Value // 服务端认为有效的那个
@@ -369,7 +370,8 @@ func TestForceRefreshIsLoggedAndCounted(t *testing.T) {
 			if body["force_refresh"] == true {
 				forced.Add(1)
 			}
-			tok := fmt.Sprintf("tok%d", fetches.Add(1))
+			// token 取得让人一眼认得出来 —— 下面要断言它**不出现**在日志里（#199）。
+			tok := fmt.Sprintf("tok-secret-%d", fetches.Add(1))
 			current.Store(tok)
 			fmt.Fprintf(w, `{"access_token":%q,"expires_in":7200}`, tok)
 			return
@@ -382,9 +384,10 @@ func TestForceRefreshIsLoggedAndCounted(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// JSON 输出（生产非 dev 就是 JSON）：字段名和值都能精确断言。
 	var logs strings.Builder
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 	defer slog.SetDefault(prev)
 
 	clk := clock.NewFake(time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
@@ -419,15 +422,23 @@ func TestForceRefreshIsLoggedAndCounted(t *testing.T) {
 	if m := metricsText(reg); !strings.Contains(m, metric("force")+"1") {
 		t.Errorf("真强刷该记 force=1，实际：%s", m)
 	}
-	for _, want := range []string{"强制刷新", "内容安全", "40001"} {
+	// 字段名是英文、consumer 和 code **分开**（#199）。
+	for _, want := range []string{"强制刷新", `"consumer":"内容安全"`, `"code":40001`} {
 		if !strings.Contains(logs.String(), want) {
-			t.Errorf("强刷的日志该带上 %q（哪个使用方、什么 errcode），实际：%s", want, logs.String())
+			t.Errorf("强刷的日志该带上 %q，实际：%s", want, logs.String())
 		}
+	}
+	if strings.Contains(logs.String(), "原因") {
+		t.Errorf("字段名要用英文（原来是中文的「原因」），实际：%s", logs.String())
 	}
 
 	// ③ 只过 5 秒，订阅消息又收到 40001：被冷却挡回，走普通模式 —— 该记 force_cooled，
 	//    **force 还是 1**（没真刷），日志也要区分得开。
-	logs.Reset()
+	//
+	// 这里**不能 `logs.Reset()`**：那会把第 ② 段那条 Warn 一起抹掉，下面「两种日志都不要
+	// 出现 token」就只剩 Info 可查了（第一版就是这么写漏的 —— 故意把 token 打进 Warn 也没红）。
+	// 改成记住当前位置，③ 的断言只看新增的那一段。
+	phase3 := logs.Len()
 	clk.Advance(5 * time.Second)
 	current.Store("")
 	if err := subscribe.PostJSON(ctx, "/x", nil, nil); err == nil {
@@ -443,11 +454,28 @@ func TestForceRefreshIsLoggedAndCounted(t *testing.T) {
 	if !strings.Contains(m, metric("force")+"1") {
 		t.Errorf("冷却期内被挡回**不该**算真强刷（force 该还是 1），实际：%s", m)
 	}
-	if !strings.Contains(logs.String(), "订阅消息") || !strings.Contains(logs.String(), "30 秒") {
-		t.Errorf("挡回的日志该说明原因（谁触发、为什么按普通模式取），实际：%s", logs.String())
+	last := logs.String()[phase3:]
+	if !strings.Contains(last, `"consumer":"订阅消息"`) || !strings.Contains(last, "30 秒") {
+		t.Errorf("挡回的日志该说明原因（谁触发、为什么按普通模式取），实际：%s", last)
 	}
-	if strings.Contains(logs.String(), "强制刷新") {
-		t.Errorf("挡回不是强刷，不该打「强制刷新」那条 Warn，实际：%s", logs.String())
+	if !strings.Contains(last, `"code":40001`) {
+		t.Errorf("挡回的日志也要带错误码字段，实际：%s", last)
+	}
+	if strings.Contains(last, "强制刷新") {
+		t.Errorf("挡回不是强刷，不该打「强制刷新」那条 Warn，实际：%s", last)
+	}
+
+	// #199：**两条日志里都不能出现 token 的值**。access_token 是长期凭证，进了
+	// `docker logs` 就等于泄出去了；假 token 起成 `tok-secret-N` 就是为了这里能搜到。
+	// 查的是**全程**：Warn（②，上面那条真强刷）和 Info（③，挡回）都要覆盖。
+	all := logs.String()
+	for _, leak := range []string{"tok-secret", "access_token="} {
+		if strings.Contains(all, leak) {
+			t.Errorf("日志里不该出现 %q（token 不能进日志），实际：%s", leak, all)
+		}
+	}
+	if !strings.Contains(all, "强制刷新") || !strings.Contains(all, "不到 30 秒") {
+		t.Errorf("上面那两条日志都该在全文里（不然这个泄露断言等于没查 Warn），实际：%s", all)
 	}
 
 	// ④ 隔够 30 秒再强刷一次：force 变 2，累计额度看得见。
@@ -461,5 +489,181 @@ func TestForceRefreshIsLoggedAndCounted(t *testing.T) {
 	}
 	if m := metricsText(reg); !strings.Contains(m, metric("force")+"2") {
 		t.Errorf("再刷一次该记 force=2（额度用了几次要累计可数），实际：%s", m)
+	}
+}
+
+// #201：**强刷失败之后不能一直强刷**。
+//
+// 原来 `Token()` 在 postJSON 失败时直接 return：`force` 留在 true、`lastForced` 也不更新。
+// 后果是之后**每一次**取 token 都带 `force_refresh=true`，永远退不回普通模式 —— 而普通模式
+// 其实能拿到平台认为当前有效的那个。强刷额度用完（45009）时，内容安全和订阅消息的**每一次**
+// 调用都会跟着失败，一直到额度恢复或者重启。
+//
+// 审计时是拿临时测试复现的：缓存 tok0，40001 作废；假服务端对 force_refresh=true 回 45009、
+// 普通模式正常给 token；之后每隔一分钟调一次，四次全是 45009，一次普通模式都没走。
+func TestFailedForceRefreshDoesNotForceForever(t *testing.T) {
+	var fetches, forceSent, normalSent atomic.Int32
+	var current atomic.Value
+	var quotaOut atomic.Bool // 强刷额度用完：只有 force_refresh=true 会撞 45009
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cgi-bin/stable_token" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["force_refresh"] == true {
+				forceSent.Add(1)
+				if quotaOut.Load() {
+					fmt.Fprint(w, `{"errcode":45009,"errmsg":"reach max api daily quota limit"}`)
+					return
+				}
+			} else {
+				normalSent.Add(1)
+			}
+			tok := fmt.Sprintf("tok-secret-%d", fetches.Add(1))
+			current.Store(tok)
+			fmt.Fprintf(w, `{"access_token":%q,"expires_in":7200}`, tok)
+			return
+		}
+		if got := r.URL.Query().Get("access_token"); got != current.Load() {
+			fmt.Fprint(w, `{"errcode":40001,"errmsg":"invalid credential"}`)
+			return
+		}
+		fmt.Fprint(w, `{"errcode":0}`)
+	}))
+	defer srv.Close()
+
+	clk := clock.NewFake(time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
+	tokens := &StableToken{AppID: "wxapp", Secret: "sec", BaseURL: srv.URL, Clock: clk}
+	c := &Client{BaseURL: srv.URL, Tokens: tokens, Name: "内容安全"}
+	ctx := context.Background()
+
+	// ① 先正常拿一个 token
+	if err := c.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// ② 这个 token 在服务端失效了（比如被别处强刷顶掉）+ 强刷额度也用完了
+	current.Store("")
+	quotaOut.Store(true)
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+
+	// ③ 下一次取 token 会强刷，而强刷撞上 45009
+	err := c.PostJSON(ctx, "/x", nil, nil)
+	if code, ok := Code(err); !ok || code != ErrCodeRateLimited {
+		t.Fatalf("应该撞上 45009（额度用完），实际：%v", err)
+	}
+
+	// ④ 之后每一次调用都该能用：退回普通模式，拿到平台当前有效的那个 token。
+	//    改之前这里是「一直强刷」——四次全 45009，一次都成功不了。
+	okN := 0
+	for i := 0; i < 4; i++ {
+		clk.Advance(time.Minute)
+		if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+			okN++
+		}
+	}
+	if okN != 4 {
+		t.Errorf("强刷失败后该退回普通模式、之后每个调用都能成，实际只成了 %d/4 次"+
+			"（额度用完不该让两个使用方一直挂到重启）", okN)
+	}
+	if normalSent.Load() == 0 {
+		t.Errorf("一次普通模式都没走（force 发了 %d 次），说明还在无脑强刷", forceSent.Load())
+	}
+}
+
+// #201 的第 (1) 件：强刷**失败**之后，30 秒内不能再出现 `force_refresh=true`。
+//
+// 为什么要单独测一条：上面那条用的是 45009，而 45009 那个分支本来就会清掉 `force` ——
+// 冷却根本没机会起作用，于是把「失败也记 lastForced」整行删掉，上面那条测试照样绿
+// （auditor 验过）。真正需要冷却兜住的是**临时错误**：`-1`（系统繁忙）、网络抖动这种，
+// 它们不清 force，只有冷却能让下一个请求别再强刷。
+func TestFailedForceRefreshRespectsCooldown(t *testing.T) {
+	var forceSent, normalSent atomic.Int32
+	var current atomic.Value
+	var busy atomic.Bool // 强刷时回 -1（系统繁忙）；普通模式正常给 token
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cgi-bin/stable_token" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["force_refresh"] == true {
+				forceSent.Add(1)
+				if busy.Load() {
+					fmt.Fprint(w, `{"errcode":-1,"errmsg":"system error"}`)
+					return
+				}
+			} else {
+				normalSent.Add(1)
+			}
+			tok := fmt.Sprintf("tok-secret-%d", normalSent.Load()+forceSent.Load())
+			current.Store(tok)
+			fmt.Fprintf(w, `{"access_token":%q,"expires_in":7200}`, tok)
+			return
+		}
+		if got := r.URL.Query().Get("access_token"); got != current.Load() {
+			fmt.Fprint(w, `{"errcode":40001,"errmsg":"invalid credential"}`)
+			return
+		}
+		fmt.Fprint(w, `{"errcode":0}`)
+	}))
+	defer srv.Close()
+
+	clk := clock.NewFake(time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
+	tokens := &StableToken{AppID: "wxapp", Secret: "sec", BaseURL: srv.URL, Clock: clk}
+	c := &Client{BaseURL: srv.URL, Tokens: tokens, Name: "内容安全"}
+	ctx := context.Background()
+
+	// ① 正常拿一个 token
+	if err := c.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	// ② 它失效了 → 40001 → 作废
+	current.Store("")
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+	// ③ 强刷撞上临时错误 -1
+	busy.Store(true)
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("强刷撞 -1 应该报错")
+	}
+	if forceSent.Load() != 1 {
+		t.Fatalf("这会儿应该只强刷过一次，实际 %d", forceSent.Load())
+	}
+
+	// ④ 之后每秒调一次、共 4 次：**30 秒冷却之内不该再强刷**。
+	//    删掉「失败也记 lastForced」这一行的话，这里每次都会强刷、每次都是 -1 —— 0/4。
+	okN := 0
+	for i := 0; i < 4; i++ {
+		clk.Advance(time.Second)
+		if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+			okN++
+		}
+	}
+	if okN != 4 {
+		t.Errorf("强刷失败后 30 秒内该走普通模式、每次都成，实际只成了 %d/4", okN)
+	}
+	if f := forceSent.Load(); f != 1 {
+		t.Errorf("30 秒内不该再强刷（临时错误也要受冷却约束），实际强刷了 %d 次", f)
+	}
+	if normalSent.Load() == 0 {
+		t.Error("一次普通模式都没走")
+	}
+
+	// ⑤ 隔够 30 秒再失败一次：那次该重新强刷（冷却不是永久的）
+	busy.Store(false)
+	current.Store("")
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+	busy.Store(true)
+	clk.Advance(31 * time.Second)
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("这次强刷撞 -1 应该报错")
+	}
+	if f := forceSent.Load(); f != 2 {
+		t.Errorf("隔够 30 秒之后该重新强刷，实际一共 %d 次", f)
 	}
 }
