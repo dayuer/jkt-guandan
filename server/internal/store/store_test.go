@@ -21,7 +21,20 @@ func openTest(t *testing.T) *store.Store {
 
 func openDir(t *testing.T, dir string) *store.Store {
 	t.Helper()
-	st, err := store.Open(dir)
+	return openDirWith(t, dir, store.Options{})
+}
+
+// openTestSlow 给一个用例几百次写入时用：机器的 load 高时，默认的 2 秒写事务上限
+// 会被排队耗掉，用例随机变红（#171）。**默认值是 openTest 那一路**，
+// TestWriteReturnsBusyWhenLockHeldTooLong 钉的也是默认值，别在这里改。
+func openTestSlow(t *testing.T) *store.Store {
+	t.Helper()
+	return openDirWith(t, t.TempDir(), store.Options{WriteTimeout: 30 * time.Second})
+}
+
+func openDirWith(t *testing.T, dir string, opts store.Options) *store.Store {
+	t.Helper()
+	st, err := store.OpenWith(dir, opts)
 	if err != nil {
 		t.Fatalf("打开数据库: %v", err)
 	}

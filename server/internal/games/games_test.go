@@ -28,7 +28,11 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 
-	st, err := store.Open(t.TempDir())
+	// 写事务上限调大（#171）：TestFiftyRaceForFourSeats 让 49 个 goroutine 同时报名，
+	// 全都排在唯一那条写连接后面。机器 load 高时排队会超过生产的 2 秒，用例就随机变红，
+	// 而它要验的是「正好 4 人坐下、46 人进候补」这个结果，不是等锁的耗时。
+	// 只有测试这么做；生产的 2 秒语义（超时 → ErrBusy → 503）由 store 自己的用例钉住。
+	st, err := store.OpenWith(t.TempDir(), store.Options{WriteTimeout: 30 * time.Second})
 	if err != nil {
 		t.Fatalf("打开数据库: %v", err)
 	}
