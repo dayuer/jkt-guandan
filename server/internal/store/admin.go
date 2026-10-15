@@ -95,6 +95,7 @@ func (s *Store) DeleteUserData(ctx context.Context, userID string) error {
 			`DELETE FROM follows WHERE user_id = ?1 OR target_id = ?1`,
 			`DELETE FROM invites WHERE user_id = ?1 OR invited_by = ?1`,
 			`DELETE FROM waitlist WHERE user_id = ?`,
+			`DELETE FROM score_seat_leavers WHERE user_id = ?`,
 			`UPDATE events SET user_id = NULL WHERE user_id = ?`,
 		} {
 			if _, err := tx.ExecContext(ctx, q, userID); err != nil {

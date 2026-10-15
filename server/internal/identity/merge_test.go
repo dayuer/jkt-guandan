@@ -175,6 +175,7 @@ func TestMergeUsersMovesScoreRecords(t *testing.T) {
 	exec(`INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at) VALUES ('g1', 'classic', 3, 'u-other', 0)`)
 	exec(`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at, edited_by, edited_at)
 	      VALUES ('g1', 1, 1, 2, 'u-other', 0, 'u-other', 1)`)
+	exec(`INSERT INTO score_seat_leavers (game_id, seat_no, user_id, left_at) VALUES ('g1', 3, 'u-other', 2)`)
 	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
 		_, err := mergeUsers(ctx, tx, "u-other", "u-primary")
 		return err
@@ -188,5 +189,10 @@ func TestMergeUsersMovesScoreRecords(t *testing.T) {
 	}
 	if startedBy != "u-primary" || recordedBy != "u-primary" || editedBy != "u-primary" {
 		t.Fatalf("计分记录没搬：%s %s %s", startedBy, recordedBy, editedBy)
+	}
+	// 离座记录也要搬，合并后由保留的身份回原座号（#168）。
+	var leaver string
+	if err := st.Read().QueryRow(`SELECT user_id FROM score_seat_leavers WHERE game_id = 'g1' AND seat_no = 3`).Scan(&leaver); err != nil || leaver != "u-primary" {
+		t.Fatalf("离座记录没搬：%q %v", leaver, err)
 	}
 }

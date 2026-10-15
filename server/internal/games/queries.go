@@ -221,6 +221,22 @@ func countSeats(ctx context.Context, q queryer, gameID string) (int, error) {
 }
 
 // freeSeatNo 返回最小的空座号；坐满了返回 0。
+// formerSeatNo 返回这个人记分开始以后离开过、现在还空着的座号；他也是这个座号最后一个离开的人
+// （#168）。有好几个时取最近离开的那个。没有返回 0。
+func formerSeatNo(ctx context.Context, q queryer, gameID, userID string) (int, error) {
+	var n int
+	err := q.QueryRowContext(ctx, `
+		SELECT seat_no FROM score_seat_leavers
+		 WHERE game_id = ?1 AND user_id = ?2
+		   AND seat_no NOT IN (SELECT seat_no FROM seats WHERE game_id = ?1)
+		 ORDER BY left_at DESC, seat_no
+		 LIMIT 1`, gameID, userID).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return n, err
+}
+
 func freeSeatNo(ctx context.Context, q queryer, gameID string) (int, error) {
 	var n sql.NullInt64
 	err := q.QueryRowContext(ctx, `

@@ -2,7 +2,9 @@ package games
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,6 +72,9 @@ type Score struct {
 	State    scoring.State
 	// CanRecord：当前身份在座位上、牌局满座，可以开始记分 / 记一局 / 改一局（S14 旁观时为假）。
 	CanRecord bool
+	// CanStart：CanRecord 之外还没开始记分，而且已经到了开局前 30 分钟——这时点「开始记分」
+	// 才会成功（不会 409 too_early）。S1 的入口条按它显示，客户端不用自己算时间。
+	CanStart bool
 }
 
 // round 返回第 no 局；没有这一局返回 nil。
@@ -113,11 +118,11 @@ func (s *Service) Score(ctx context.Context, code, viewerID string) (*Score, err
 	if err != nil {
 		return nil, err
 	}
-	return loadScore(ctx, tx, game, viewerID)
+	return loadScore(ctx, tx, game, viewerID, s.clk.Now())
 }
 
-// loadScore 读出事实，交给 scoring 重算。
-func loadScore(ctx context.Context, q queryer, game Game, viewerID string) (*Score, error) {
+// loadScore 读出事实，交给 scoring 重算。now 只用来算 CanStart。
+func loadScore(ctx context.Context, q queryer, game Game, viewerID string, now time.Time) (*Score, error) {
 	sc := &Score{}
 	if viewerID != "" && game.Status == StatusFull {
 		seated, err := isSeated(ctx, q, game.ID, viewerID)
@@ -135,6 +140,8 @@ func loadScore(ctx context.Context, q queryer, game Game, viewerID string) (*Sco
 		Scan(&sc.Settings.Kind, &sc.Settings.AFailLimit, &sc.StartedBy.ID, &sc.StartedBy.Nickname,
 			&startedAt, &sc.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
+		// 和 StartScore 的判断一致：full 已经排除了 done / cancelled。
+		sc.CanStart = sc.CanRecord && !now.Before(scoreOpensAt(game))
 		return sc, nil
 	}
 	if err != nil {
@@ -203,6 +210,9 @@ func loadScore(ctx context.Context, q queryer, game Game, viewerID string) (*Sco
 // 写
 // ---------------------------------------------------------------------------
 
+// scoreOpensAt 是这一局最早可以开始记分的时刻。
+func scoreOpensAt(game Game) time.Time { return game.StartsAt.Add(-ScoreOpensBefore) }
+
 // scoreWriter 是三个写操作共同的前置检查：牌局在、没结束、我在座位上、满座。
 func (s *Service) scoreWriter(ctx context.Context, tx *store.Tx, code, userID string) (Game, error) {
 	game, err := loadGameByCode(ctx, tx, code)
@@ -235,6 +245,7 @@ func (s *Service) StartScore(ctx context.Context, code, userID string, aFailLimi
 	}
 	now := s.clk.Now()
 	const route = "POST /api/games/{code}/score"
+	fp := idemFingerprint("a_fail_limit", aFailLimit)
 
 	var sc *Score
 	err := s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
@@ -242,9 +253,9 @@ func (s *Service) StartScore(ctx context.Context, code, userID string, aFailLimi
 		if err != nil {
 			return err
 		}
-		if replay, err := idemReplay(ctx, tx, userID, idemKey, route+" "+code); err != nil || replay {
+		if replay, err := idemReplay(ctx, tx, userID, idemKey, route+" "+code, fp); err != nil || replay {
 			if err == nil {
-				sc, err = loadScore(ctx, tx, game, userID)
+				sc, err = loadScore(ctx, tx, game, userID, now)
 			}
 			return err
 		}
@@ -254,7 +265,7 @@ func (s *Service) StartScore(ctx context.Context, code, userID string, aFailLimi
 			return err
 		}
 		if !started {
-			if now.Before(game.StartsAt.Add(-ScoreOpensBefore)) {
+			if now.Before(scoreOpensAt(game)) {
 				return ErrScoreTooEarly
 			}
 			settings := scoring.Settings{Kind: scoring.KindClassic, AFailLimit: aFailLimit}
@@ -273,10 +284,10 @@ func (s *Service) StartScore(ctx context.Context, code, userID string, aFailLimi
 			tx.Touch(game.ID)
 			s.publishScoreAfterCommit(tx, game, EventScoreStarted, 0)
 		}
-		if err := idemSave(ctx, tx, userID, idemKey, route+" "+code, map[string]any{}, now); err != nil {
+		if err := idemSave(ctx, tx, userID, idemKey, route+" "+code, fp, map[string]any{}, now); err != nil {
 			return err
 		}
-		sc, err = loadScore(ctx, tx, game, userID)
+		sc, err = loadScore(ctx, tx, game, userID, now)
 		return err
 	})
 	if err != nil {
@@ -303,6 +314,7 @@ func (s *Service) RecordRound(ctx context.Context, code, userID string, expected
 	}
 	now := s.clk.Now()
 	const route = "POST /api/games/{code}/score/rounds"
+	fp := idemFingerprint("expected_round_no", expectedNo, "head_seat", rd.HeadSeat, "partner_place", rd.PartnerPlace)
 
 	var sc *Score
 	err := s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
@@ -311,14 +323,14 @@ func (s *Service) RecordRound(ctx context.Context, code, userID string, expected
 			return err
 		}
 		// 幂等键：超时后重试同一次提交，返回现在的计分，不报「这一局已经有人记了」。
-		if replay, err := idemReplay(ctx, tx, userID, idemKey, route+" "+code); err != nil || replay {
+		if replay, err := idemReplay(ctx, tx, userID, idemKey, route+" "+code, fp); err != nil || replay {
 			if err == nil {
-				sc, err = loadScore(ctx, tx, game, userID)
+				sc, err = loadScore(ctx, tx, game, userID, now)
 			}
 			return err
 		}
 
-		current, err := loadScore(ctx, tx, game, userID)
+		current, err := loadScore(ctx, tx, game, userID, now)
 		if err != nil {
 			return err
 		}
@@ -346,10 +358,10 @@ func (s *Service) RecordRound(ctx context.Context, code, userID string, expected
 		tx.Touch(game.ID)
 		s.publishScoreAfterCommit(tx, game, EventScoreRound, next)
 
-		if err := idemSave(ctx, tx, userID, idemKey, route+" "+code, map[string]int{"round_no": next}, now); err != nil {
+		if err := idemSave(ctx, tx, userID, idemKey, route+" "+code, fp, map[string]int{"round_no": next}, now); err != nil {
 			return err
 		}
-		sc, err = loadScore(ctx, tx, game, userID)
+		sc, err = loadScore(ctx, tx, game, userID, now)
 		return err
 	})
 	if err != nil {
@@ -378,7 +390,7 @@ func (s *Service) EditRound(ctx context.Context, code, userID string, no int, rd
 		if err != nil {
 			return err
 		}
-		current, err := loadScore(ctx, tx, game, userID)
+		current, err := loadScore(ctx, tx, game, userID, now)
 		if err != nil {
 			return err
 		}
@@ -409,7 +421,7 @@ func (s *Service) EditRound(ctx context.Context, code, userID string, no int, rd
 		tx.Touch(game.ID)
 		s.publishScoreAfterCommit(tx, game, EventScoreEdited, no)
 
-		sc, err = loadScore(ctx, tx, game, userID)
+		sc, err = loadScore(ctx, tx, game, userID, now)
 		return err
 	})
 	if err != nil {
@@ -428,27 +440,41 @@ func bumpScoreRevision(ctx context.Context, tx *store.Tx, gameID string) error {
 // ---------------------------------------------------------------------------
 
 // idemReplay 查幂等键：这个键已经用在同一个请求上，返回 true，调用方直接返回现在的结果。
-// 用在了别的请求上（别的路由、别的局）返回 ErrIdemKeyReused。键为空什么也不做。
-func idemReplay(ctx context.Context, tx *store.Tx, userID, key, route string) (bool, error) {
+// 用在了别的请求上（别的路由、别的局，或者同一个接口换了请求体）返回 ErrIdemKeyReused：
+// 客户端误把键复用到下一局时，不能当成重放静默返回 200、实际却没记。键为空什么也不做。
+// 库里的指纹为空（旧版本写的）只比路由。
+func idemReplay(ctx context.Context, tx *store.Tx, userID, key, route, fingerprint string) (bool, error) {
 	if key == "" {
 		return false, nil
 	}
 	var saved string
+	var savedFP sql.NullString
 	err := tx.QueryRowContext(ctx,
-		`SELECT route FROM idempotency_keys WHERE user_id = ? AND key = ?`, userID, key).Scan(&saved)
+		`SELECT route, fingerprint FROM idempotency_keys WHERE user_id = ? AND key = ?`, userID, key).
+		Scan(&saved, &savedFP)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, nil
 	case err != nil:
 		return false, err
-	case saved != route:
+	case saved != route, savedFP.Valid && savedFP.String != fingerprint:
 		return false, ErrIdemKeyReused
 	}
 	return true, nil
 }
 
-// idemSave 记下这个键。计分的响应是「现在的计分」，重放时现读，所以 response 只存一个摘要。
-func idemSave(ctx context.Context, tx *store.Tx, userID, key, route string, summary any, now time.Time) error {
+// idemFingerprint 是请求的指纹：业务参数按给定的顺序拼成 name=value，取 sha256。
+// 用解析后的参数而不是原始请求体，JSON 的字段顺序、空白、省略默认值都不影响。
+func idemFingerprint(kv ...any) string {
+	h := sha256.New()
+	for i := 0; i+1 < len(kv); i += 2 {
+		fmt.Fprintf(h, "%v=%v\n", kv[i], kv[i+1])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// idemSave 记下这个键和请求指纹。计分的响应是「现在的计分」，重放时现读，所以 response 只存一个摘要。
+func idemSave(ctx context.Context, tx *store.Tx, userID, key, route, fingerprint string, summary any, now time.Time) error {
 	if key == "" {
 		return nil
 	}
@@ -457,8 +483,8 @@ func idemSave(ctx context.Context, tx *store.Tx, userID, key, route string, summ
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO idempotency_keys (key, user_id, route, status, response, created_at)
-		VALUES (?, ?, ?, 200, ?, ?)`, key, userID, route, body, now.Unix())
+		INSERT INTO idempotency_keys (key, user_id, route, fingerprint, status, response, created_at)
+		VALUES (?, ?, ?, ?, 200, ?, ?)`, key, userID, route, fingerprint, body, now.Unix())
 	return err
 }
 
@@ -519,7 +545,7 @@ func scoreRoundJSON(r ScoreRound) map[string]any {
 
 func toScoreJSON(sc *Score) map[string]any {
 	if !sc.Started {
-		return map[string]any{"started": false, "can_record": sc.CanRecord}
+		return map[string]any{"started": false, "can_record": sc.CanRecord, "can_start": sc.CanStart}
 	}
 	rounds := make([]map[string]any, 0, len(sc.Rounds))
 	for _, r := range sc.Rounds {
@@ -528,6 +554,7 @@ func toScoreJSON(sc *Score) map[string]any {
 	return map[string]any{
 		"started":    true,
 		"can_record": sc.CanRecord,
+		"can_start":  false,
 		"settings":   sc.Settings,
 		"started_by": sc.StartedBy,
 		"started_at": sc.StartedAt.Unix(),

@@ -101,6 +101,8 @@ func mergeUsers(ctx context.Context, tx *store.Tx, a, b string) (string, error) 
 		`UPDATE score_matches SET started_by = ? WHERE started_by = ?`,
 		`UPDATE score_rounds SET recorded_by = ? WHERE recorded_by = ?`,
 		`UPDATE score_rounds SET edited_by = ? WHERE edited_by = ?`,
+		// 「这个座号最后是谁离开的」（#168）：合并后由保留的身份回座。
+		`UPDATE score_seat_leavers SET user_id = ? WHERE user_id = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, stmt, primary, other); err != nil {
 			return "", err
