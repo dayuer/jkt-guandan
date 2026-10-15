@@ -11,11 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/dayuer/jkt-guandan/server/internal/clock"
+	"github.com/dayuer/jkt-guandan/server/internal/metrics"
 )
 
 // DefaultBaseURL 是微信服务端接口的地址。测试里换成 httptest 的。
@@ -26,10 +28,16 @@ const tokenEarly = 5 * time.Minute
 
 // forceCooldown 是两次强制刷新之间的最短间隔。
 //
-// 微信官方文档（获取稳定版接口调用凭据）：
-// 「强制刷新模式每天限用 20 次且需间隔 30 秒」，不到 30 秒服务端根本不刷新，
-// 只白占一次当天的配额；而配额用完就只能等缓存的 token 自然过期。
-// https://developers.weixin.qq.com/doc/service/api/base/api_getstableaccesstoken.html
+// 微信官方文档《获取稳定版接口调用凭据》里和这个数有关的**原文只有两处**：
+//
+//	注意事项：「强制刷新模式每天限用 20 次且需间隔 30 秒。」
+//	5.3 小节标题：「强制刷新模式，慎用，连续使用需要至少间隔30s」
+//	https://developers.weixin.qq.com/doc/service/api/base/api_getstableaccesstoken.html
+//
+// 30 秒这个数照抄原文。**「间隔不到就不发 force_refresh、改走普通模式」是我们自己的
+// 处理，不是文档要求** —— 文档只说「限用 20 次」「需间隔 30 秒」，没说间隔不到会怎样。
+// 我们这么做的理由：这一模式每天只有 20 次，发出去不成功也照样算占一次，宁可省着用，
+// 也不要去赌服务端的行为。
 const forceCooldown = 30 * time.Second
 
 // 几个要特别处理的 errcode。
@@ -80,7 +88,36 @@ type TokenSource interface {
 	Token(ctx context.Context) (string, error)
 	// Invalidate 在微信说 token 无效时调用，bad 是**这一次请求实际带出去的那个** token。
 	// 下次 Token 会强制换新的 —— 但如果缓存里已经不是它了就不动（见 StableToken.Invalidate）。
-	Invalidate(bad string)
+	//
+	// why 是给日志用的原因（哪个使用方、什么 errcode）。强刷每天只有 20 次，额度用完会直接
+	// 影响内容安全和订阅消息，所以真刷的时候要留下记录（#197）。
+	Invalidate(bad, why string)
+}
+
+// Metrics 是 access_token 取用情况的计数。nil 表示不计（多数测试不需要）。
+//
+// 微信的强制刷新每天限 20 次，额度用完就只能等缓存自然过期 —— 内容安全和订阅消息都会
+// 跟着受影响。所以「真的刷了几次」必须是能直接看到的数，不能靠猜（#197）。
+type Metrics struct {
+	// Fetches 按 kind 分：ok（普通取）/ force（真的带了 force_refresh）/ force_cooled
+	// （想强刷但离上次不到 30 秒，退成普通模式）/ error（没取到）。
+	Fetches *metrics.CounterVec
+}
+
+func NewMetrics(r *metrics.Registry) *Metrics {
+	m := &Metrics{Fetches: &metrics.CounterVec{}}
+	if r != nil {
+		r.CounterVec("guandan_wx_token_total",
+			"微信 access_token 取用次数。kind=ok 普通取 / force 真的强刷 / force_cooled 间隔不到 30 秒退成普通模式 / error 没取到。",
+			"kind", m.Fetches)
+	}
+	return m
+}
+
+func (m *Metrics) inc(kind string) {
+	if m != nil && m.Fetches != nil {
+		m.Fetches.Inc(kind)
+	}
 }
 
 // StableToken 调 cgi-bin/stable_token 拿 access_token，缓存到过期前 5 分钟。
@@ -91,11 +128,14 @@ type StableToken struct {
 	BaseURL string
 	HTTP    *http.Client
 	Clock   clock.Clock
+	// Metrics 为 nil 时不计数。生产在 main.go 接上（#197）。
+	Metrics *Metrics
 
 	mu         sync.Mutex
 	token      string
 	expires    time.Time
 	force      bool
+	forceWhy   string    // 触发这次强刷的原因，留给真正刷的那一刻打日志（#197）
 	lastForced time.Time // 上一次真的带 force_refresh=true 出去的时刻，冷却用
 }
 
@@ -114,9 +154,12 @@ func (s *StableToken) Token(ctx context.Context) (string, error) {
 	if s.token != "" && !s.force && now.Before(s.expires.Add(-tokenEarly)) {
 		return s.token, nil
 	}
-	// 离上一次强刷不到 30 秒就不要带 force_refresh 了：服务端不会刷新（文档要求至少隔 30 秒），
-	// 还白占一次「每天 20 次」的配额。普通模式会返回平台认为当前有效的那个。
+	// 离上一次强刷不到 30 秒就不带 force_refresh（见 forceCooldown：这是我们自己的取舍，
+	// 文档只写了「每天限用 20 次且需间隔 30 秒」）。普通模式会返回平台认为当前有效的那个，
+	// 文档 5.2 的返回示例注释也印证了：「如果仍然有效，会返回上次的 token，并给出所剩有效时间」。
 	force := s.force && now.Sub(s.lastForced) >= forceCooldown
+	cooled := s.force && !force
+	why := s.forceWhy
 	var out struct {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int64  `json:"expires_in"`
@@ -125,14 +168,27 @@ func (s *StableToken) Token(ctx context.Context) (string, error) {
 		"grant_type": "client_credential", "appid": s.AppID, "secret": s.Secret, "force_refresh": force,
 	}, &out)
 	if err != nil {
+		s.Metrics.inc("error")
 		return "", err
 	}
 	if out.AccessToken == "" {
+		s.Metrics.inc("error")
 		return "", fmt.Errorf("stable_token 没有返回 access_token: %w", ErrUnavailable)
 	}
-	s.token, s.force = out.AccessToken, false
-	if force {
+	s.token, s.force, s.forceWhy = out.AccessToken, false, ""
+	switch {
+	case force:
+		// 真的刷了。每天只有 20 次，额度用完会直接影响内容安全和订阅消息 ——
+		// 这条 Warn 就是「用掉了一次」的账（#197）。
 		s.lastForced = now
+		s.Metrics.inc("force")
+		slog.Warn("微信 access_token 强制刷新（每天限 20 次）", "原因", why)
+	case cooled:
+		// 想刷但离上次不到 30 秒，按 forceCooldown 的取舍退成普通模式（我们自己定的，不是文档要求）。
+		s.Metrics.inc("force_cooled")
+		slog.Info("微信 access_token 想强刷，但离上次不到 30 秒：这一次按普通模式取", "原因", why)
+	default:
+		s.Metrics.inc("ok")
 	}
 	s.expires = now.Add(time.Duration(out.ExpiresIn) * time.Second)
 	return s.token, nil
@@ -143,7 +199,7 @@ func (s *StableToken) Token(ctx context.Context) (string, error) {
 // 并发时 N 个请求都带着 tok1 出去、tok1 失效：第一个 40001 回来就该换 tok2，剩下几个是
 // **带着 tok1 发出去的**，它们迟到回来时缓存里已经是 tok2 了，不该再把它顶掉。按文档强刷
 // 会让上一个立刻失效，这么顶来顶去会连锁，也很快用完每天 20 次。
-func (s *StableToken) Invalidate(bad string) {
+func (s *StableToken) Invalidate(bad, why string) {
 	if bad == "" {
 		return
 	}
@@ -152,15 +208,30 @@ func (s *StableToken) Invalidate(bad string) {
 	if s.token != bad {
 		return
 	}
+	if !s.force {
+		// 记下**最先**把它弄脏的那次：同一轮里两个使用方都收到 40001 时，
+		// 真正刷的是同一次，报第一个就够了。
+		s.forceWhy = why
+	}
 	s.force = true
 }
 
 // Client 调带 access_token 的接口。
 type Client struct {
 	Tokens TokenSource
+	// Name 是这个使用方的名字（「内容安全」「订阅消息」），只用于日志：强刷是有配额的，
+	// 出事时要能看出是谁触发的（#197）。空着会记成「未命名使用方」。
+	Name string
 	// BaseURL 为空时用 DefaultBaseURL。
 	BaseURL string
 	HTTP    *http.Client
+}
+
+func (c *Client) name() string {
+	if c.Name == "" {
+		return "未命名使用方"
+	}
+	return c.Name
 }
 
 // PostJSON 调 POST <BaseURL><path>?access_token=…，请求体是 req 的 JSON，响应解到 resp（可以为 nil）。
@@ -173,7 +244,8 @@ func (c *Client) PostJSON(ctx context.Context, path string, req, resp any) error
 	err = postJSON(ctx, httpClient(c.HTTP), baseURL(c.BaseURL)+path+"?access_token="+token, req, resp)
 	if code, ok := Code(err); ok && IsTokenError(code) {
 		// 把用过的那个 token 一起带回去：这样「旧 token 的迟到 40001」不会把新 token 顶掉。
-		c.Tokens.Invalidate(token)
+		// 顺便带上是谁、什么错 —— 真刷的那一刻要打进日志（#197）。
+		c.Tokens.Invalidate(token, fmt.Sprintf("%s 收到 errcode=%d", c.name(), code))
 	}
 	return err
 }

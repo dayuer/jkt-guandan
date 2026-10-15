@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dayuer/jkt-guandan/server/internal/clock"
+	"github.com/dayuer/jkt-guandan/server/internal/metrics"
 )
 
 // access_token：缓存到过期前 5 分钟；快过期时换新的；接口说 token 无效时作废，下次带 force_refresh 重新拿。
@@ -343,5 +345,121 @@ func TestForceRefreshRespectsCooldown(t *testing.T) {
 	}
 	if f := forced.Load(); f != 2 {
 		t.Fatalf("间隔够了就该真强刷，实际 forced=%d", f)
+	}
+}
+
+// metricsText 把注册表渲染成 Prometheus 文本（和 secheck 的测试一样）。
+func metricsText(reg *metrics.Registry) string {
+	var b strings.Builder
+	reg.WriteTo(context.Background(), &b)
+	return b.String()
+}
+
+// #197：**强刷要留下记录**。
+//
+// 微信的强制刷新每天只有 20 次，额度用完内容安全和订阅消息会一起停 —— 所以「真刷了几次」
+// 必须能直接从日志和 metric 里看到，不能靠猜。冷却期内被挡回的也要分得清（那不是真刷）。
+func TestForceRefreshIsLoggedAndCounted(t *testing.T) {
+	var fetches, forced atomic.Int32
+	var current atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cgi-bin/stable_token" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["force_refresh"] == true {
+				forced.Add(1)
+			}
+			tok := fmt.Sprintf("tok%d", fetches.Add(1))
+			current.Store(tok)
+			fmt.Fprintf(w, `{"access_token":%q,"expires_in":7200}`, tok)
+			return
+		}
+		if got := r.URL.Query().Get("access_token"); got != current.Load() {
+			fmt.Fprint(w, `{"errcode":40001,"errmsg":"invalid credential"}`)
+			return
+		}
+		fmt.Fprint(w, `{"errcode":0}`)
+	}))
+	defer srv.Close()
+
+	var logs strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+
+	clk := clock.NewFake(time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
+	reg := &metrics.Registry{}
+	// 一个 token 源、两个使用方 —— 就是 main.go 注入给内容安全和订阅消息的形状。
+	tokens := &StableToken{AppID: "wxapp", Secret: "sec", BaseURL: srv.URL, Clock: clk, Metrics: NewMetrics(reg)}
+	guard := &Client{BaseURL: srv.URL, Tokens: tokens, Name: "内容安全"}
+	subscribe := &Client{BaseURL: srv.URL, Tokens: tokens, Name: "订阅消息"}
+	ctx := context.Background()
+
+	metric := func(kind string) string { return `guandan_wx_token_total{kind="` + kind + `"} ` }
+
+	// ① 普通取一次
+	if err := guard.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if m := metricsText(reg); !strings.Contains(m, metric("ok")+"1") {
+		t.Errorf("普通取该记 ok=1，实际：%s", m)
+	}
+	if forced.Load() != 0 {
+		t.Fatal("第一次不该强刷")
+	}
+
+	// ② 内容安全收到 40001 → 下一次真强刷：计数 + 一条带原因的 Warn
+	current.Store("")
+	if err := guard.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+	if err := guard.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if m := metricsText(reg); !strings.Contains(m, metric("force")+"1") {
+		t.Errorf("真强刷该记 force=1，实际：%s", m)
+	}
+	for _, want := range []string{"强制刷新", "内容安全", "40001"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("强刷的日志该带上 %q（哪个使用方、什么 errcode），实际：%s", want, logs.String())
+		}
+	}
+
+	// ③ 只过 5 秒，订阅消息又收到 40001：被冷却挡回，走普通模式 —— 该记 force_cooled，
+	//    **force 还是 1**（没真刷），日志也要区分得开。
+	logs.Reset()
+	clk.Advance(5 * time.Second)
+	current.Store("")
+	if err := subscribe.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+	if err := subscribe.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	m := metricsText(reg)
+	if !strings.Contains(m, metric("force_cooled")+"1") {
+		t.Errorf("冷却期内该记 force_cooled=1，实际：%s", m)
+	}
+	if !strings.Contains(m, metric("force")+"1") {
+		t.Errorf("冷却期内被挡回**不该**算真强刷（force 该还是 1），实际：%s", m)
+	}
+	if !strings.Contains(logs.String(), "订阅消息") || !strings.Contains(logs.String(), "30 秒") {
+		t.Errorf("挡回的日志该说明原因（谁触发、为什么按普通模式取），实际：%s", logs.String())
+	}
+	if strings.Contains(logs.String(), "强制刷新") {
+		t.Errorf("挡回不是强刷，不该打「强制刷新」那条 Warn，实际：%s", logs.String())
+	}
+
+	// ④ 隔够 30 秒再强刷一次：force 变 2，累计额度看得见。
+	clk.Advance(30 * time.Second)
+	current.Store("")
+	if err := guard.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+	if err := guard.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if m := metricsText(reg); !strings.Contains(m, metric("force")+"2") {
+		t.Errorf("再刷一次该记 force=2（额度用了几次要累计可数），实际：%s", m)
 	}
 }

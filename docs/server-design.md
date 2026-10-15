@@ -363,7 +363,11 @@ CREATE TABLE score_seat_leavers (
   其他提醒类型没有模板，不走订阅消息。模板里填三个字段：事项（`message()` 生成的标题，最多 20 个字）、时间（`2026年10月14日 19:30`，雅加达时间）、地点；字段名按 `…_KEYS` 配置。点开消息回到小游戏这一局（`page = ?g=<短码>`）。
 - **收件人**：按 `(appid, openid)` 发，openid 从 `user_links` 的 `wx_openid:<appid>` 取。没有这条关联（H5 用户）就不发。openid 和 access_token 都不进日志，失败只记 errcode。
 - **一次性订阅的次数**：小游戏在用户点「报名占座」的那次点按里同步调 `wx.requestSubscribeMessage`（没身份时改在称呼层「就用这个名字」那次点按里），同意了的模板经 `POST /api/wx/subscribe {accepted:[模板 ID]}` 上报（`user` 鉴权，最多 10 个，不是本站配置的模板 ID 忽略，返回 `200 {"added":N}`；通道没开 `503 wx_disabled`）。每个模板次数 + 1，最多攒 50 次；发出一次 - 1，为 0 时不发。
-- **access_token**：在公共包 `server/internal/wxapi`（`TokenSource` 接口 + `StableToken` + 带 access_token 的 `Client.PostJSON`，errcode 映射成 `*wxapi.Error`；#146 的内容安全检查也用它）。调 `cgi-bin/stable_token`，缓存到过期前 5 分钟再换（不用 `cgi-bin/token`：它每次调用都让旧 token 失效，和其他共用 AppID 的服务互相踢）。发送返回 40001 / 42001 / 40014 时作废缓存，下一次带 `force_refresh` 重新拿。作废要**带上这一次用的那个 token**（`Invalidate(bad string)`）：并发的请求都带着同一个旧 token 出去时，第一个 40001 换掉就够了，迟到的那些不该再把刚换上的顶掉（#191）。两次强刷之间自己先隔 30 秒 —— 微信文档写的是「强制刷新模式每天限用 20 次且需间隔 30 秒」，不到间隔服务端不会刷新，只白占配额；所以间隔内的那次退成普通模式（`force_refresh=false`）取。
+- **access_token**：在公共包 `server/internal/wxapi`（`TokenSource` 接口 + `StableToken` + 带 access_token 的 `Client.PostJSON`，errcode 映射成 `*wxapi.Error`；#146 的内容安全检查也用它）。调 `cgi-bin/stable_token`，缓存到过期前 5 分钟再换（不用 `cgi-bin/token`：它每次调用都让旧 token 失效，和其他共用 AppID 的服务互相踢）。发送返回 40001 / 42001 / 40014 时作废缓存，下一次带 `force_refresh` 重新拿。作废要**带上这一次用的那个 token**（`Invalidate(bad, why string)`）：并发的请求都带着同一个旧 token 出去时，第一个 40001 换掉就够了，迟到的那些不该再把刚换上的顶掉（#191）。两次强刷之间我们自己先隔 30 秒。**微信原文只有一句**（《获取稳定版接口调用凭据》「注意事项」）：
+
+> 强制刷新模式每天限用 20 次且需间隔 30 秒。
+
+（5.3 小节标题同样写着「强制刷新模式，慎用，连续使用需要至少间隔30s」。）文档**没有**说间隔不到会怎样；「间隔内就不发 `force_refresh`、退成普通模式取」是**我们自己的取舍**，理由是这一模式每天只有 20 次，发出去不成功也照样算占一次，宁可省着用。普通模式会返回平台认为当前有效的那个，文档 5.2 的返回示例注释印证了这点：「如果仍然有效，会返回上次的 token，并给出所剩有效时间」。真强刷时要留下记录（`slog.Warn` 带触发方和 errcode + `guandan_wx_token_total{kind="force"}` 计数）—— 额度用完内容安全和订阅消息会一起停，这个数必须能直接看到（#197）。
 - **去重（和 Web Push 的选择）**：一条 outbox 提醒**只走一个通道**。用户有 Web Push 订阅就只走 Web Push（不限次数，设备上还能按 tag 去重），不动订阅消息的次数；没有 Web Push 订阅、且这类提醒有模板时才走订阅消息。同一个人在 H5 开了推送、又在小游戏里同意了订阅，每条提醒也只收到一次。
 - **至多送达一次**：订阅消息没有 Topic / tag 这种设备端去重，崩溃后重发用户就会看到两条，还多用一次次数。所以这一路**先预占再发**：一个短的写事务里扣 1 次并把提醒标成已发送（`sent_at`，`last_error = '订阅消息发送中'`），然后在事务外发送，再在写回事务里按结果处理。进程在预占和写回之间崩溃，这条提醒不再发——宁可漏一条，不发两条。
 - **发送结果**：
@@ -1086,7 +1090,7 @@ guandan restore <快照>                    从备份恢复（§13.3）
 
 - 外部定时探测 `/readyz`（任何免费的探活服务都可以），失败时通知仓库所有者。
 - 日志：`slog` 输出 JSON。每个请求带 `request_id`、路由、状态码、耗时、写锁等待时间。写锁等待超过 100 毫秒、`503 busy`、panic 都记为 warn 及以上级别。
-- `/metrics` 只允许内网或 localhost 访问，内容包括：请求数和延迟、写锁等待时间、WebSocket 连接数、outbox 积压量和发送失败数、备份时间、微信内容安全检测的次数（按结论）和耗时（§14）。
+- `/metrics` 只允许内网或 localhost 访问，内容包括：请求数和延迟、写锁等待时间、WebSocket 连接数、outbox 积压量和发送失败数、备份时间、微信内容安全检测的次数（按结论）和耗时（§14）、微信 access_token 的取用次数 `guandan_wx_token_total{kind}`（`ok` / `force` / `force_cooled` / `error`）—— `force` 就是当天那 20 次强制刷新用掉了几次（§5.3、#197）。
 
 ## 14. 合规（印尼）
 
