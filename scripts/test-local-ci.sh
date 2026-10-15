@@ -162,14 +162,14 @@ echo '--- protocol_failures ---'
 
 pass_case() { # $1=名字 $2=title $3=body $4=commits $5=authors
   local out rc
-  out=$(protocol_failures "$2" "$3" "$4" "$5"); rc=$?
+  out=$(protocol_failures "$2" "$3" "$4" "$5" "$ROOT/scripts"); rc=$?
   if [ "$rc" -eq 0 ] && [ -z "$out" ]; then ok "$1"
   else bad "$1" '退出码 0 且无输出' "退出码 ${rc}，输出: $out"; fi
 }
 
 fail_case() { # $1=名字 $2=title $3=body $4=commits $5=authors $6=输出应含
   local out rc
-  out=$(protocol_failures "$2" "$3" "$4" "$5"); rc=$?
+  out=$(protocol_failures "$2" "$3" "$4" "$5" "$ROOT/scripts"); rc=$?
   if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "$6"; then ok "$1"
   else bad "$1" "退出码 1 且输出含「$6」" "退出码 ${rc}，输出: $out"; fi
 }
@@ -219,7 +219,7 @@ Fixes: #115' 'abc x' 'dayuer <a@b.c>'
 
 out=$(protocol_failures 'docs: 改点东西 (Co-Authored-By: Claude <noreply@anthropic.com>)' '[impl]
 
-改点东西，没写 Refs。' 'abc x' 'dayuer <a@b.c>'); rc=$?
+改点东西，没写 Refs。' 'abc x' 'dayuer <a@b.c>' "$ROOT/scripts"); rc=$?
 if [ "$rc" -eq 1 ] \
    && printf '%s' "$out" | grep -qF 'AI 助手署名' \
    && printf '%s' "$out" | grep -qF '必须关联 issue'; then
@@ -287,6 +287,7 @@ esac
 echo '--- scripts/ 里 $VAR 紧跟多字节字符（#178）---'
 
 # UTF-8 locale 下 bash 3.2 会把紧跟 $VAR 的全角标点吃进变量名，`set -u` 直接中止（#178）。
+# 这一项由 **protocol** 每个 PR 跑（见下面的断言），这里是全仓库的现状。
 eq 'scripts/ 下没有这种写法' '' "$(unsafe_var_expansions "$ROOT/scripts")"
 
 # 这个检查自己也要被测：正则哪天写坏了，它会一路静默绿下去 —— 正是它要防的那种假绿。
@@ -304,7 +305,33 @@ case "$SCAN" in
   *good.sh*|*comment.sh*|*single.sh*) bad '${VAR}、注释、单引号都不算' '空' "$SCAN" ;;
   *) ok '${VAR}、注释、单引号都不算' ;;
 esac
+
+# 有函数不够，还要钉住 **protocol 这个 context 真的会调用它** —— 这一项被放在 protocol
+# （而不是 local-ci/meta）就是为了每个 PR 都跑；哪天有人把那个参数漏掉、或者把调用删了，
+# 上面几条还是会全绿，而真实 PR 上什么都不查。
+# 协议三项都合规、只有 scripts/ 里那一处脏 → protocol 必须红。
+PDIRTY=$(protocol_failures '标题' "$GOOD_BODY" 'abc x' 'dayuer <a@b.c>' "$TMPD")
+prc=$?
+if [ "$prc" -eq 1 ] && printf '%s' "$PDIRTY" | grep -qF 'bad.sh'; then
+  ok 'protocol 会调用它（协议都合规、只有脚本脏时也红）'
+else
+  bad 'protocol 会调用它（协议都合规、只有脚本脏时也红）' \
+      '退出码 1 且输出含 bad.sh' "退出码 ${prc}，输出: $PDIRTY"
+fi
 rm -rf "$TMPD"
+
+# 反过来：scripts/ 干净时，这一项不该把 protocol 带红（否则每个 PR 都会红）。
+PCLEAN=$(protocol_failures '标题' "$GOOD_BODY" 'abc x' 'dayuer <a@b.c>' "$ROOT/scripts"); prc=$?
+if [ "$prc" -eq 0 ] && [ -z "$PCLEAN" ]; then ok 'scripts 干净时 protocol 不受这一项影响'
+else bad 'scripts 干净时 protocol 不受这一项影响' '退出码 0 且无输出' "退出码 ${prc}，输出: $PCLEAN"; fi
+
+# 漏传第 5 个参数必须**报错**，不能静默跳过第 ④ 项（那会是一条绿 status 底下什么都没查）。
+PNOARG=$(protocol_failures '标题' "$GOOD_BODY" 'abc x' 'dayuer <a@b.c>' 2>&1); prc=$?
+if [ "$prc" -ne 0 ] && printf '%s' "$PNOARG" | grep -q 'protocol_failures 需要 scripts 目录'; then
+  ok '漏传 scripts 目录时大声报错，不静默跳过'
+else
+  bad '漏传 scripts 目录时大声报错，不静默跳过' '非 0 且提示缺参数' "退出码 ${prc}，输出: $PNOARG"
+fi
 
 echo '--- §4 合并条件 1：approve 的 sha vs head ---'
 
