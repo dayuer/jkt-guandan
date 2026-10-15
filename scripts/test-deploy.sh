@@ -7,6 +7,8 @@
 #       scripts/test-deploy.sh --print-names   只打印本次运行用的名字和端口（给自测/排障看）
 # 在仓库根目录执行：场景 6 要用当前提交的源码另外构建一个带额外迁移的镜像。
 set -eu
+# 等容器/HTTP 就绪的小工具（#186）：超时会明确失败并打印日志，不会静默往下走。
+. "$(dirname "$0")/docker-wait.sh"
 
 # 每次运行一套自己的名字和端口（#181）。本机经常同时跑好几个 local-ci/docker —— impl 自测、
 # auditor 复审、coord 的 pre-merge-check。原来名字写死成 guandan-deploytest*：另一路进程的
@@ -152,14 +154,14 @@ stage broken
 deploy broken "已回滚，旧版本恢复服务"
 expect "current" "$(current)" good2
 expect "镜像" "$(image)" "$REPO:good2"
-curl -fsS "http://127.0.0.1:$PORT/readyz"; echo
+wait_http_ok "http://127.0.0.1:$PORT/readyz" 30 || { echo "失败：host 侧连不上 $PORT 的 /readyz"; exit 1; }; echo
 
 echo "== 3b. 新镜像连发布前冷备份都做不了：中止发布，旧容器原样恢复（#34 复审第 1 条）"
 stage unusable
 deploy unusable "发布前冷备份失败，中止发布"
 expect "current" "$(current)" good2
 expect "镜像" "$(image)" "$REPO:good2"
-curl -fsS "http://127.0.0.1:$PORT/readyz"; echo
+wait_http_ok "http://127.0.0.1:$PORT/readyz" 30 || { echo "失败：host 侧连不上 $PORT 的 /readyz"; exit 1; }; echo
 
 echo "== 4. current 是真目录：预检就停下，旧容器不受影响"
 mv "$WEB_ROOT/current" "$work/current-link"
@@ -173,7 +175,7 @@ echo "== 5. 新版本就绪了，但切换后经「nginx」访问失败：容器
 (SITE_URL=http://127.0.0.1:9; export SITE_URL; deploy good3 "前端已切回 good2") || exit 1
 expect "current" "$(current)" good2
 expect "镜像" "$(image)" "$REPO:good2"
-curl -fsS "http://127.0.0.1:$PORT/readyz"; echo
+wait_http_ok "http://127.0.0.1:$PORT/readyz" 30 || { echo "失败：host 侧连不上 $PORT 的 /readyz"; exit 1; }; echo
 
 echo "== 6. 新版本先跑完一条兼容迁移、然后才失败：旧版本照常起来（coord 对 #34 的裁定）"
 # 用当前提交的源码加一条兼容迁移构建新版本，再让它监听一个非法端口：迁移跑完后才退出。
@@ -189,7 +191,7 @@ expect "current" "$(current)" good2
 expect "镜像" "$(image)" "$REPO:good2"
 docker logs "$NAME" 2>&1 | grep -q "不认识的兼容迁移" || { echo "失败：旧版本日志里没有「不认识的兼容迁移」，新版本的迁移可能没跑"; exit 1; }
 docker logs "$NAME" 2>&1 | grep "不认识的兼容迁移" | tail -1
-curl -fsS "http://127.0.0.1:$PORT/readyz"; echo
+wait_http_ok "http://127.0.0.1:$PORT/readyz" 30 || { echo "失败：host 侧连不上 $PORT 的 /readyz"; exit 1; }; echo
 
 echo "== 7. 从线上版本（#34 之前：遇到任何不认识的迁移都拒绝启动）升级，新版本迁移后失败（#34 复审第 1 条）"
 # 线上跑的是 0e45b18（#35）。用它的源码构建「旧版本」，在一个新数据卷上先发布它。
