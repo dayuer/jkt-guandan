@@ -1,11 +1,11 @@
 // 各页共用的弹层：填称呼、认领码认回、报名成功、候补转正、加日历、分享、选牌友。
 
 import type { App, Sheet } from "../core/app";
-// #144 的转发卡片用 measure（core/ui），main 上的补位弹层用 icon（core/widgets）—— 两边都留。
+// #144/#155 的转发卡片用 measure（core/ui），main 上的补位弹层用 icon（core/widgets）—— 两边都留。
 import { C, Ctx, circle, ellipsize, fillRR, font, initial, measure, paragraph, strokeRR, text, wrap, Scroller } from "../core/ui";
 import { avatar, button, copy, field, icon, sheetButtons, sheetHeader, simpleSheet, textLink } from "../core/widgets";
 import { ApiError, API_BASE, listFriends, posterURL, shareURL, type Friend, type GameDetail, type UserRef } from "../lib/api";
-import { dayShort, kindLabel, slashDate, timeHM, weekday } from "../lib/fmt";
+import { dayShort, kindLabel, slashDate, timeHM, weekday, wibParts } from "../lib/fmt";
 import { currentUser, linkWithCode, signUp } from "../lib/session";
 import { track } from "../lib/telemetry";
 import { shareText } from "../../../h5/src/share";
@@ -303,7 +303,7 @@ export function sharePayload(app: App, d: GameDetail): { title: string; imageUrl
  * 画转发卡片图，返回临时文件路径。
  * 小游戏的离屏画布在真机上导不出图片（imageUrl 变空，微信就去截当前屏幕的上半截），
  * 所以画在主画布左上角、按 5:4 裁出来，再立刻把当前页面重画回去：同一个 tick 里完成，用户看不到。
- * 版面按转发卡片的 5:4 来排，地点长了就换行、缩字号，不截断。
+ * 版面见 drawShareCard。
  */
 export function renderShareCard(app: App, d: GameDetail): string | undefined {
   const W = 500, H = 400;
@@ -323,42 +323,61 @@ export function renderShareCard(app: App, d: GameDetail): string | undefined {
   }
 }
 
+/**
+ * 转发卡片 5:4（适配稿第五节）：满版牌桌红；日期、时间、地点、次要信息作为一块在 [36, H − 118] 里垂直居中；
+ * 底部座位和状态签。差人时状态签醒目（金底），满座、已取消、已结束变弱；已取消、已结束整张变灰。
+ */
 export function drawShareCard(ctx: Ctx, d: GameDetail, W = 500, H = 400) {
   const g = d.game;
-  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, H);
-  fillRR(ctx, 16, 16, W - 32, H - 32, 28, C.redDeep);
-  strokeRR(ctx, 22, 22, W - 44, H - 44, 24, C.redInk, 8);
-  strokeRR(ctx, 38, 38, W - 76, H - 76, 18, "rgba(233,196,106,0.45)", 2, [6, 5]);
-  text(ctx, `${dayShort(g.starts_at)} · ${weekday(g.starts_at)} ${slashDate(g.starts_at)}`, W / 2, 70, font(24, "700"), C.gold, "center");
-  text(ctx, timeHM(g.starts_at), W / 2, 130, font(70, "900", true), C.cream, "center");
-  // 地点：最多两行，放不下先缩字号
-  let fs = 26, lines = wrap(ctx, g.venue, W - 100, font(fs, "700"));
-  while (lines.length > 2 && fs > 18) { fs -= 2; lines = wrap(ctx, g.venue, W - 100, font(fs, "700")); }
-  if (lines.length > 2) lines = [lines[0], ellipsize(ctx, lines.slice(1).join(""), W - 100, font(fs, "700"))];
-  let y = 188;
-  for (const ln of lines) { text(ctx, ln, W / 2, y, font(fs, "700"), C.cream, "center"); y += fs + 8; }
-  text(ctx, `${g.area} · ${kindLabel(g.kind)} · 局头 ${d.host.nickname}`, W / 2, y + 6, font(18), "rgba(255,247,236,0.8)", "center");
-  // 座位 + 还差几人
+  const closed = g.status === "cancelled" || g.status === "done";
+  // 满版，不留纸色边：群聊里卡片本身有白框
+  ctx.fillStyle = closed ? "#8a7d70" : C.redDeep; ctx.fillRect(0, 0, W, H);
+  strokeRR(ctx, 8, 8, W - 16, H - 16, 22, closed ? "#6f645a" : C.redInk, 8);
+  strokeRR(ctx, 24, 24, W - 48, H - 48, 14, "rgba(233,196,106,0.45)", 2, [6, 5]);
+  const CW = W - 96; // 文字区：左右各留 48
+  // 地点：26 起，最多两行；放不下每次缩 2，最小 20；还放不下第二行末尾省略
+  let fs = 26, vl = wrap(ctx, g.venue, CW, font(fs, "700"));
+  while (vl.length > 2 && fs > 20) { fs -= 2; vl = wrap(ctx, g.venue, CW, font(fs, "700")); }
+  if (vl.length > 2) vl = [vl[0], ellipsize(ctx, vl.slice(1).join(""), CW, font(fs, "700"))];
+  const vlh = Math.round(fs * 1.3);
+  // 信息块：日期 30 + 时间 84 + 地点 n × 行高 + 间距 10 + 次要信息 22
+  const blockH = 30 + 84 + vl.length * vlh + 10 + 22;
+  let y = 36 + Math.max(0, (H - 118 - 36 - blockH) / 2);
+  const rel = ["今天", "明天", "后天"][wibParts(g.starts_at).dayOffset];
+  const date = `${weekday(g.starts_at)} ${slashDate(g.starts_at)}`;
+  text(ctx, rel ? `${rel} · ${date}` : date, W / 2, y + 15, font(22, "700"), closed ? C.cream : C.gold, "center");
+  y += 30;
+  text(ctx, timeHM(g.starts_at), W / 2, y + 44, font(76, "900", true), C.cream, "center");
+  y += 84;
+  vl.forEach((ln, i) => text(ctx, ln, W / 2, y + vlh / 2 + i * vlh, font(fs, "700"), C.cream, "center"));
+  y += vl.length * vlh + 10;
+  // 次要信息：局头称呼最宽 104（约 6 个汉字），整行最宽 404，超出都省略
+  const host = ellipsize(ctx, d.host.nickname, 104, font(17));
+  text(ctx, ellipsize(ctx, `${g.area} · ${kindLabel(g.kind)} · 局头 ${host}`, CW, font(17)), W / 2, y + 11, font(17), "rgba(255,247,236,0.75)", "center");
+  // 座位：圆心 y = H − 70，从 x = 70 起间距 52；卡片给别人看，不显示「我」的金色
   const seated = [...d.seats].sort((a, b) => a.seat_no - b.seat_no);
-  const cy = H - 72;
+  const cy = H - 70;
   for (let i = 0; i < 4; i++) {
     const cx = 70 + i * 52;
     const st = seated[i];
     if (st) {
-      const host = st.user.id === d.host.id;
-      circle(ctx, cx, cy, 22, host ? C.redTint : C.beige);
-      text(ctx, initial(st.user.nickname), cx, cy + 2, font(20, "900", true), host ? C.red : C.ink, "center");
+      const isHost = st.user.id === d.host.id;
+      circle(ctx, cx, cy, 22, isHost ? C.redTint : C.beige);
+      text(ctx, initial(st.user.nickname), cx, cy + 2, font(20, "900", true), isHost ? C.red : C.ink, "center");
     } else circle(ctx, cx, cy, 21, null, "rgba(255,247,236,0.65)", 2.5, [6, 5]);
   }
+  // 状态签：右边对齐 W − 48，左边不越过 x = 262；字号放不下从起始值往下缩，最小 14
   const full = g.status === "full" || d.missing <= 0;
-  const label = g.status === "cancelled" ? "已取消" : full ? "已满 · 可排候补" : `还差 ${d.missing} 人`;
-  // 座位占到 x≈248，标签放在右边剩下的地方，放不下就缩字号
+  const label = g.status === "cancelled" ? "已取消" : g.status === "done" ? "已结束"
+    : full ? (d.waitlist.length > 0 ? `已满 · ${d.waitlist.length} 人候补` : "已满 · 可排候补") : `还差 ${d.missing} 人`;
+  const loud = !closed && !full;
+  const weight = loud ? "900" : "700";
   const room = W - 48 - 262;
-  let ls = 22, lf = font(ls, "900");
-  while (measure(ctx, label, lf) + 32 > room && ls > 14) lf = font(--ls, "900");
-  const lw = Math.min(room, measure(ctx, label, lf) + 32);
-  fillRR(ctx, W - 48 - lw, cy - 22, lw, 44, 22, C.gold);
-  text(ctx, label, W - 48 - lw / 2, cy + 1, lf, C.redInk, "center");
+  let ls = loud ? 24 : 20, lf = font(ls, weight);
+  while (measure(ctx, label, lf) + 32 > room && ls > 14) lf = font(--ls, weight);
+  const lw = Math.min(room, measure(ctx, label, lf) + 32), lx = W - 48 - lw;
+  fillRR(ctx, lx, cy - 22, lw, 44, 22, loud ? C.gold : "rgba(255,247,236,0.16)");
+  text(ctx, label, lx + lw / 2, cy + 1, lf, loud ? C.redInk : C.cream, "center");
 }
 
 // ── 选牌友（08「邀请谁」，#115）──
