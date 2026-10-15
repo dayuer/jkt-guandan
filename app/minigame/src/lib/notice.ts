@@ -25,6 +25,8 @@ export interface ServerTimes {
   rescheduledAt?: number;
   joinedAt?: number;
   promotedAt?: number;
+  /** 我**接手**当上局头的时刻（#189）；开局的人本人没有这一项。 */
+  becameHostAt?: number;
 }
 
 export interface NoticeView {
@@ -32,10 +34,14 @@ export interface NoticeView {
   times: ServerTimes;
 }
 
-/** 关掉过的兜底提示：r / p 是关掉时的 rescheduled_at / promoted_at，s 是开局时间（过期清理用）。 */
+/**
+ * 关掉过的兜底提示：r / p / h 是关掉时的 rescheduled_at / promoted_at / became_host_at，
+ * s 是开局时间（过期清理用）。
+ */
 interface Seen {
   r?: number;
   p?: number;
+  h?: number;
   s: number;
 }
 
@@ -48,18 +54,26 @@ export function fallbackKey(meID: string): string {
 export function detailView(d: GameDetail): NoticeView {
   // 这几个字段 H5 的类型里没有（H5 不用），这里就地补上。
   const game = d.game as GameDetail["game"] & { rescheduled_at?: number };
-  const me = d.me as GameDetail["me"] & { joined_at?: number; promoted_at?: number };
+  const me = d.me as GameDetail["me"] & { joined_at?: number; promoted_at?: number; became_host_at?: number };
   return {
     view: fromDetail(d),
-    times: { rescheduledAt: game.rescheduled_at, joinedAt: me.joined_at, promotedAt: me.promoted_at },
+    times: {
+      rescheduledAt: game.rescheduled_at, joinedAt: me.joined_at, promotedAt: me.promoted_at,
+      becameHostAt: me.became_host_at,
+    },
   };
 }
 
 export function summaryView(g: GameSummary): NoticeView {
-  const x = g as GameSummary & { rescheduled_at?: number; my_joined_at?: number; my_promoted_at?: number };
+  const x = g as GameSummary & {
+    rescheduled_at?: number; my_joined_at?: number; my_promoted_at?: number; my_became_host_at?: number;
+  };
   return {
     view: fromSummary(g),
-    times: { rescheduledAt: x.rescheduled_at, joinedAt: x.my_joined_at, promotedAt: x.my_promoted_at },
+    times: {
+      rescheduledAt: x.rescheduled_at, joinedAt: x.my_joined_at, promotedAt: x.my_promoted_at,
+      becameHostAt: x.my_became_host_at,
+    },
   };
 }
 
@@ -100,6 +114,7 @@ export function dismissNotice(
   const entry: Seen = { ...seen[v.view.code], s: v.view.startsAt };
   if (kind === "rescheduled") entry.r = v.times.rescheduledAt;
   if (kind === "promoted") entry.p = v.times.promotedAt;
+  if (kind === "host") entry.h = v.times.becameHostAt;
 
   if (fallback(v, meID, entry).length === 0) {
     delete seen[v.view.code];
@@ -113,16 +128,27 @@ export function dismissNotice(
   saveSeen(store, meID, seen);
 }
 
-/** 没有快照时，用服务端字段算出的提示。顺序和 status.ts 一致：先补位，后改时间。 */
+/** 没有快照时，用服务端字段算出的提示。顺序和 status.ts 一致：先补位，后局头，再改时间。 */
 function fallback(v: NoticeView, meID: string, seen: Seen | undefined): Notice[] {
   const { view, times } = v;
   const out: Notice[] = [];
   if (view.role === "seat" && times.promotedAt && seen?.p !== times.promotedAt) {
     out.push({ kind: "promoted", code: view.code });
   }
-  // 局头自己改的不用告诉他；看不到当时谁是局头，按现在的算。
+  // 接手当上局头（#189）：和补位同理，没有快照时靠服务端的 became_host_at。开局的人本人
+  // 没有这一项，所以不会给自己弹。看不到上一位局头是谁，formerHost 留空（文案里有兜底）。
+  if (view.role === "seat" && times.becameHostAt && seen?.h !== times.becameHostAt) {
+    out.push({ kind: "host", code: view.code, formerHost: "" });
+  }
+  // 改时间横幅：**接手的局头也要看**（#185 复审意见 3）—— 上一位局头改的时间他也没看过。
+  // 只有在「那次改时间的时候我已经是局头」时才不用说，那才是我自己改的。
+  //   · 我不是局头 → 说；
+  //   · 我是局头、became_host_at 是空的 → 我是开局那个人，按老规矩不说；
+  //   · 我是接手的，而且接手**晚于**那次改时间 → 不是我改的，说。
+  const iWasHostThen =
+    view.hostID === meID && (!times.becameHostAt || times.becameHostAt <= (times.rescheduledAt ?? 0));
   if (
-    view.role !== undefined && view.role !== "none" && view.hostID !== meID &&
+    view.role !== undefined && view.role !== "none" && !iWasHostThen &&
     times.rescheduledAt && times.joinedAt && times.rescheduledAt > times.joinedAt &&
     seen?.r !== times.rescheduledAt
   ) {

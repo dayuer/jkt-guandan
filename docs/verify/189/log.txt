@@ -1,0 +1,72 @@
+WS open
+HTTP GET /api/config → 200
+HTTP GET /api/games → 200
+HTTP POST /api/wx/login → 200
+WS open
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+A game RKQVP4
+HTTP GET /api/games → 200
+HTTP GET /api/games/RKQVP4 → 200
+HTTP GET /api/games/RKQVP4/score → 200
+PASS A：这会儿阿杰只是普通座位，没有 became_host_at
+PASS A：还没转交 → 没有「你现在是局头」横幅
+laowang 退出 → 200
+PASS A：局头退出成功
+HTTP GET /api/games/RKQVP4/score → 200
+HTTP GET /api/games/RKQVP4 → 200
+PASS A：服务端已经把这局交给阿杰
+PASS A：服务端给了 me.became_host_at
+换设备：清掉 1 个本机快照键
+HTTP GET /api/games → 200
+HTTP GET /api/games/RKQVP4 → 200
+HTTP GET /api/games/RKQVP4/score → 200
+PASS A：**无快照** + 我接手当上局头 → 出 K2 横幅
+tap notice:host:x
+PASS A：关掉之后不再出现
+HTTP GET /api/games/RKQVP4/score → 200
+HTTP GET /api/games/RKQVP4 → 200
+HTTP POST /api/events → 200
+PASS A：再进来不再出现（快照已写下）
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+B game HJW5KW
+HTTP GET /api/games → 200
+HTTP GET /api/games → 200
+PASS B：局头改时间成功（实际 200）
+HTTP GET /api/games → 200
+lily 退出 → 200
+HTTP GET /api/games → 200
+PASS B：阿杰补上了座位
+PASS B：这会儿还不是局头
+zhou 退出 → 200
+HTTP GET /api/games → 200
+zhang 退出 → 200
+HTTP GET /api/games → 200
+laowang 退出 → 200
+PASS B：老王退出成功
+PASS B：服务端把这局交给了阿杰
+PASS B：joined_at 从排候补算，早于补位
+PASS B：改时间发生在我加入之后
+PASS B：我接手**晚于**那次改时间 —— 不是我改的
+换设备：清掉 2 个本机快照键
+HTTP GET /api/games → 200
+HTTP GET /api/games/HJW5KW → 200
+HTTP GET /api/games/HJW5KW/score → 200
+PASS B：换设备后先弹「有人退出，你补上了」（#160 的兜底）
+tap sb:0
+PASS B：关掉弹层
+PASS B：换设备后照样出「你现在是局头」
+PASS B：**接手**的局头也出「改了安排」横幅（#185 复审意见 3）
+tap notice:host:x
+HTTP POST /api/events → 200
+PASS B：关掉局头那条
+PASS B：还有一条没关，改时间横幅还在
+tap notice:rescheduled:x
+PASS B：两条都关掉
+HTTP GET /api/games/HJW5KW → 200
+HTTP GET /api/games/HJW5KW/score → 200
+PASS B：再进来两条都不再出现

@@ -112,7 +112,7 @@ func (s *Service) List(ctx context.Context, viewerID, area, day string, limit, o
 	query := `
 		SELECT g.id, g.short_code, g.host_id, g.starts_at, g.area, g.venue, g.kind,
 		       COALESCE(g.note, ''), g.status, g.version, g.created_at,
-		       COALESCE(g.rescheduled_at, 0), COALESCE(u.nickname, ''),
+		       COALESCE(g.rescheduled_at, 0), COALESCE(g.host_since, 0), COALESCE(u.nickname, ''),
 		       (SELECT count(*) FROM seats s WHERE s.game_id = g.id)
 		  FROM games g
 		  LEFT JOIN users u ON u.id = g.host_id
@@ -137,17 +137,19 @@ func (s *Service) List(ctx context.Context, viewerID, area, day string, limit, o
 			sum                 Summary
 			startsAt, createdAt int64
 			rescheduledAt       int64
+			hostSince           int64
 			seats               int
 		)
 		if err := rows.Scan(&sum.Game.ID, &sum.Game.ShortCode, &sum.Game.HostID, &startsAt,
 			&sum.Game.Area, &sum.Game.Venue, &sum.Game.Kind, &sum.Game.Note,
-			&sum.Game.Status, &sum.Game.Version, &createdAt, &rescheduledAt,
+			&sum.Game.Status, &sum.Game.Version, &createdAt, &rescheduledAt, &hostSince,
 			&sum.HostName, &seats); err != nil {
 			return nil, err
 		}
 		sum.Game.StartsAt = time.Unix(startsAt, 0)
 		sum.Game.CreatedAt = time.Unix(createdAt, 0)
 		sum.Game.RescheduledAt = unixOrZero(rescheduledAt)
+		sum.Game.HostSince = unixOrZero(hostSince)
 		sum.Missing = Capacity - seats
 		sum.MyRole = "none"
 		out = append(out, sum)
@@ -182,6 +184,10 @@ func (s *Service) attachMyRole(ctx context.Context, viewerID string, items []Sum
 				items[i].MyJoinedAt = seat.JoinedAt()
 				items[i].MyPromotedAt = seat.PromotedAt()
 			}
+		}
+		// 我接手当上局头的时刻（#189），同上。
+		if items[i].Game.HostID == viewerID && !items[i].Game.HostSince.IsZero() {
+			items[i].MyBecameHostAt = items[i].Game.HostSince
 		}
 		if i > 0 {
 			placeholders += ","
@@ -764,8 +770,11 @@ func (s *Service) transferHost(ctx context.Context, tx *store.Tx, game Game, _ i
 		return err
 	}
 
+	// host_since 记下接手时刻（#189）：开局的人留空，只有转交才写。客户端用它判断
+	// 「你成了局头」这条对这个人是不是新闻，以及接手前别人改的时间他要不要看到。
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE games SET host_id = ?, version = version + 1 WHERE id = ?`, newHost, game.ID); err != nil {
+		`UPDATE games SET host_id = ?, host_since = ?, version = version + 1 WHERE id = ?`,
+		newHost, now.Unix(), game.ID); err != nil {
 		return err
 	}
 	version, err := currentVersion(ctx, tx, game.ID)

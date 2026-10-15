@@ -76,6 +76,8 @@ type Game struct {
 	CreatedAt time.Time
 	// RescheduledAt 是局头最近一次改时间或地点的时刻；零值表示没改过（#114）。
 	RescheduledAt time.Time
+	// HostSince 是现在这位局头**接手**的时刻；零值表示还是开局那个人本人（#189）。
+	HostSince time.Time
 }
 
 // Open 表示这局还能报名。
@@ -135,6 +137,9 @@ type Detail struct {
 	// 客户端拿它们判断改时间横幅和「轮到你了」要不要出（#160）。
 	MyJoinedAt   time.Time
 	MyPromotedAt time.Time
+	// MyBecameHostAt 是我**接手**当上局头的时刻；开局的人本人没有这一项（#189）。
+	// 没有本机快照时，客户端拿它出 K2「你现在是局头」横幅，也用它判断改时间横幅要不要出。
+	MyBecameHostAt time.Time
 }
 
 // Summary 是 02 屏列表里的条目。
@@ -153,6 +158,8 @@ type Summary struct {
 	// MyJoinedAt / MyPromotedAt 同 Detail（#160）；MyRole 为空或 none 时是零值。
 	MyJoinedAt   time.Time
 	MyPromotedAt time.Time
+	// MyBecameHostAt 同 Detail（#189）。
+	MyBecameHostAt time.Time
 }
 
 // 业务错误。接口层把它们映射成 §6 的状态码。

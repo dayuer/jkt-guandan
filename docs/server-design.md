@@ -81,6 +81,7 @@ CREATE TABLE games (
   id         TEXT PRIMARY KEY,
   short_code TEXT NOT NULL UNIQUE,         -- 链接里的短码：6 位 Crockford base32 随机串（如 /g/8K2QXM），防止逐个猜出所有局
   host_id    TEXT NOT NULL REFERENCES users(id),
+  host_since INTEGER,                      -- 现在这位局头**接手**的时刻（0011_game_host_since.sql，#189）；开局的人本人是空
   starts_at  INTEGER NOT NULL,
   area       TEXT NOT NULL,                -- SCBD / PIK / ...
   venue      TEXT NOT NULL,
@@ -545,11 +546,17 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `rescheduled_at` | 局头最近一次改时间或地点的时刻（Unix 秒）；没改过就没有这一项。改备注、片区或原样重发都不算 |
 | `my_joined_at` | 我加入这一局的时间（Unix 秒，#160）：座位上的是坐下的时间，候补里的是排候补的时间，补位上来的仍从排候补算。不在局里没有这一项 |
 | `my_promoted_at` | 我候补补位的时间（Unix 秒，#160）；不是补位上来的没有这一项 |
+| `my_became_host_at` | 我**接手**当上局头的时刻（Unix 秒，#189）；开局的人本人没有这一项 |
 
 - `GET /api/games/{code}` 的 `game` 对象里也有 `rescheduled_at`。改期横幅的做法：客户端把「上次看到这一局的 `rescheduled_at`」存在本机，服务端值更大且我在座位上（`my_role` 为 `seated`）就显示「局头把时间改到 X 了」，关掉时把本机的值更新成服务端的。
-- 这些按身份算的字段（`my_role`、`waitlist_pos`、`my_joined_at`、`my_promoted_at`）只出现在 `GET /api/games` 里，首页事件（`feed:*`）是广播，不带它们，带 `rescheduled_at`。
+- 这些按身份算的字段（`my_role`、`waitlist_pos`、`my_joined_at`、`my_promoted_at`、`my_became_host_at`）只出现在 `GET /api/games` 里，首页事件（`feed:*`）是广播，不带它们，带 `rescheduled_at`。
 - `GET /api/games/{code}` 的 `me` 里对应有 `joined_at`、`promoted_at`，取值同上（#160）。
-- **换设备兜底**（#160，目前只有小游戏用）：客户端平时拿本机快照判断改时间横幅、「轮到你了」弹层（`app/h5/src/status.ts`）；本机没有这一局的快照时（换了手机、清了缓存、第一次在这台设备上打开），`rescheduled_at` 晚于加入时间且我不是局头 → 出改时间横幅；有补位时间且我在座位上 → 出「轮到你了」。关掉之后写下快照，之后回到快照那条路。
+- **换设备兜底**（#160、#189，目前只有小游戏用）：客户端平时拿本机快照判断改时间横幅、「轮到你了」弹层、「你现在是局头」横幅（`app/h5/src/status.ts`）；本机没有这一局的快照时（换了手机、清了缓存、第一次在这台设备上打开），按服务端字段兜底（`app/minigame/src/lib/notice.ts` 的 `fallback`）：
+  - `rescheduled_at` 晚于加入时间，而且**那次改时间的时候我不是局头** → 改时间横幅。「是不是局头」按 `became_host_at` 算：没有这一项（开局的人本人）就当他一直是局头，不用提示；接手的局头在**接手之后**才发生改时间，同样是他自己改的，也不提示（#185 复审意见 3）；
+  - 有补位时间且我在座位上 → 「轮到你了」；
+  - 我**接手**当上局头（`became_host_at` 有值）且我在座位上 → 「你现在是局头」（#189）。
+
+  关掉之后写下快照，之后回到快照那条路。
 
 **绑定 WhatsApp**（#116，「我的」页 G2）。号码只给自己看：只出现在自己的 `GET /api/me` 里，牌友列表、牌局详情里都没有。注销时清空。
 
