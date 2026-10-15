@@ -596,10 +596,13 @@ eq '日志名：sha 短于 7 位也不炸' 'abc-x-t.log' "$(log_file_name abc x 
 
 # macOS 的 $TMPDIR 结尾**自带一个 `/`**，不去掉路径就成 `/var/…/T//local-ci-logs`：
 # 打印难看，而且 status 描述只有 140 字，白占一格。真跑红的那次就是这么发现的。
-eq '日志目录：$TMPDIR 结尾的斜杠要去掉' '/x/local-ci-logs' "$(TMPDIR=/x/ local_ci_log_dir)"
-eq '日志目录：LOCAL_CI_LOG_DIR 也去尾斜杠' '/y' "$(LOCAL_CI_LOG_DIR=/y/ local_ci_log_dir)"
-eq '日志目录：正常路径不动' '/z/local-ci-logs' "$(TMPDIR=/z local_ci_log_dir)"
-eq '日志目录：不设 TMPDIR 时退回 /tmp' '/tmp/local-ci-logs' "$(TMPDIR= local_ci_log_dir)"
+# ⚠️ 每条都要先把 LOCAL_CI_LOG_DIR 清空：它优先级更高，不清的话外面跑 CI 时
+# （`LOCAL_CI_LOG_DIR=… scripts/local-ci.sh`）这几条就会拿到那个目录、**在 CI 里红**
+# —— 直接跑本文件时它是空的，所以只在 CI 里露出来。第一版就是这么漏的。
+eq '日志目录：$TMPDIR 结尾的斜杠要去掉' '/x/local-ci-logs' "$(LOCAL_CI_LOG_DIR= TMPDIR=/x/ local_ci_log_dir)"
+eq '日志目录：LOCAL_CI_LOG_DIR 也去尾斜杠' '/y' "$(LOCAL_CI_LOG_DIR=/y/ TMPDIR= local_ci_log_dir)"
+eq '日志目录：正常路径不动' '/z/local-ci-logs' "$(LOCAL_CI_LOG_DIR= TMPDIR=/z local_ci_log_dir)"
+eq '日志目录：不设 TMPDIR 时退回 /tmp' '/tmp/local-ci-logs' "$(LOCAL_CI_LOG_DIR= TMPDIR= local_ci_log_dir)"
 
 # 保留最近 N 份。
 PL=$(mktemp -d)
