@@ -33,6 +33,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/local-ci-lib.sh"
 cd "$ROOT" || exit 2
 
+# GH 可覆盖（GH_BIN）：自测用假 gh。**所有** gh 调用都走它，包括 pr view —— 一处开关管全部，
+# 免得只把 PATH 换了、别处又用上真的 gh（#186 复审）。
+GH="${GH_BIN:-gh}"
+
 BASE='origin/main'
 POST=1
 ALL=0
@@ -74,12 +78,12 @@ export LOCAL_CI_SHA="$HEAD_SHA"
 PR_JSON=''
 PR_NUM=''
 PR_HEAD=''
-if command -v gh >/dev/null 2>&1; then
+if command -v "$GH" >/dev/null 2>&1; then
   GH_ERR=$(mktemp)
   if [ -n "$PR_OPT" ]; then
-    PR_JSON=$(gh pr view "$PR_OPT" --json number,title,body,headRefOid 2>"$GH_ERR")
+    PR_JSON=$("$GH" pr view "$PR_OPT" --json number,title,body,headRefOid 2>"$GH_ERR")
   else
-    PR_JSON=$(gh pr view --json number,title,body,headRefOid 2>"$GH_ERR")
+    PR_JSON=$("$GH" pr view --json number,title,body,headRefOid 2>"$GH_ERR")
   fi
   if [ -n "$PR_JSON" ]; then
     PR_NUM=$(printf '%s' "$PR_JSON" | jq -r .number)
@@ -148,8 +152,7 @@ else
 fi
 
 # --- 上报 -------------------------------------------------------------------
-# GH 可覆盖（测试用假的 gh）。重试与收尾复核见 local-ci-lib.sh（#187）。
-GH="${GH_BIN:-gh}"
+# 重试与收尾复核见 local-ci-lib.sh（#187）。GH 在上面定义（自测会换成假 gh）。
 # 本次每个 context **最后**发出去的结论：每行 `context state 描述`。收尾复核按它比对。
 # 写文件而不是变量：下面置 pending 的那圈在管道里（子 shell），变量带不出来。
 RESULTS=$(mktemp)

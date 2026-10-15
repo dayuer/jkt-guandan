@@ -472,7 +472,7 @@ fi
 exit 0
 GH
 chmod +x "$PG/gh"
-out=$(cd "$ROOT" && PATH="$PG:$PATH" bash scripts/local-ci.sh --base HEAD --pr 999 --no-post 2>&1); rc=$?
+out=$(cd "$ROOT" && GH_BIN="$PG/gh" PATH="$PG:$PATH" bash scripts/local-ci.sh --base HEAD --pr 999 --no-post 2>&1); rc=$?
 eq '--pr：能跑通（退出 0）' '0' "$rc"
 case "$out" in
   *"PR #999"*) ok '--pr：按号认出 PR 并打出来' ;;
@@ -523,7 +523,7 @@ fi
 exit 0
 GH
 chmod +x "$PG/gh"
-out=$(cd "$ROOT" && PATH="$PG:$PATH" bash scripts/local-ci.sh --base HEAD --pr 999 2>&1); rc=$?
+out=$(cd "$ROOT" && GH_BIN="$PG/gh" PATH="$PG:$PATH" bash scripts/local-ci.sh --base HEAD --pr 999 2>&1); rc=$?
 eq '--pr：head 对不上时带上报直接拒绝（64）' '64' "$rc"
 case "$out" in
   *"对不上"*) ok '--pr：head 对不上时说清了原因' ;;
@@ -537,12 +537,21 @@ case "$out" in
 esac
 rm -rf "$PG"
 
-# 10) 自测编号的边界（#186）：1248 是最后一个不绕回的编号；1249 会被拒（names 自测用假 docker，
-#     很便宜，所以直接在这里真跑一遍）。
-X=$(cd "$ROOT" && DEPLOYTEST_RUN=1248 sh scripts/test-deploy-names.sh 2>&1); rc=$?
-eq 'names 自测：编号 1248（边界）不误报' '0' "$rc"
+# 10) 自测编号的边界（#186）：编号上限是 1248，1249 会被拒。
+#
+# ⚠️ **只跑 1249 那一次，不要真跑一个合法编号**（#186 复审阻塞）：钉死一个编号真跑，
+# 就会真的去绑 `20000+编号*8` 开头的那一组端口 —— 这台机器上每一次 local-ci/meta 都抢
+# 同一组口，#181/#183 做出来的「按编号划窗口」就白做了（impl / auditor / coord 的
+# pre-merge 经常同时跑 meta，会表现成随机的红、挡住合并）。
+#
+# 1249 这一次是安全的：它在绑端口**之前**就退出了（那个越界检查在 `run_once` 前面）。
 X=$(cd "$ROOT" && DEPLOYTEST_RUN=1249 sh scripts/test-deploy-names.sh 2>&1); rc=$?
-[ "$rc" -ne 0 ] && ok 'names 自测：编号 1249 越界被拒' || bad 'names 自测：编号 1249 越界被拒' '非 0' "退出码 $rc"
+[ "$rc" -ne 0 ] && ok 'names 自测：编号 1249 越界被拒（不绕回窗口 0）' \
+  || bad 'names 自测：编号 1249 越界被拒（不绕回窗口 0）' '非 0' "退出码 $rc"
+case "$X" in
+  *"超出范围"*) ok 'names 自测：拒绝时说清了原因' ;;
+  *) bad 'names 自测：拒绝时说清了原因' '含「超出范围」' "$X" ;;
+esac
 
 # 11) 重试次数给非数字时不要死循环（#186 复审里的小问题）
 STATE=$(mktemp -d "$TMPG/state.XXXXXX"); export STATE FAIL_POST=99 GET_JSON=''
