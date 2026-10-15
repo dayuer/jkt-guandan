@@ -499,7 +499,8 @@ func idemFingerprint(kv ...any) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// idemSave 记下这个键和请求指纹。计分的响应是「现在的计分」，重放时现读，所以 response 只存一个摘要。
+// idemSave 记下这个键和请求指纹。重放时按 response 里的摘要现读结果（记分存约定或局号，开局存 short_code），
+// 所以 response 只存一个摘要。
 func idemSave(ctx context.Context, tx *store.Tx, userID, key, route, fingerprint string, summary any, now time.Time) error {
 	if key == "" {
 		return nil
