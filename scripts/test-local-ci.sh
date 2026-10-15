@@ -600,16 +600,43 @@ eq '日志名：同一个 sha/秒/context，不同进程也不撞名' '1' \
 eq '日志名：不传 pid 时默认用 $$' "$(log_file_name abc1234 local-ci/docker t)" "$(log_file_name abc1234 local-ci/docker t $$)"
 
 # 描述上限 140 个**字符**（GitHub 的规格）。中文一个字算一个，砍的是尾巴（路径在后）。
+#
+# ⚠️ 这些断言在 **`LC_ALL=C`** 下也必须过 —— agent / launchd / cron 起的 shell 常常就是
+# 那个环境。**断言自己也别用 `${#…}` 数字符**：那东西同样跟着 locale 走，会把「代码错了」
+# 和「断言错了」搅在一起。统一走 utf8_len。
 eq '描述：不超就不动' 'abc' "$(truncate_desc abc)"
 d140="$(printf 'x%.0s' $(seq 1 140))"
 eq '描述：刚好 140 不动' "$d140" "$(truncate_desc "$d140")"
-long="$(printf 'x%.0s' $(seq 1 200))"
-eq '描述：超了砍到 140 字符（139 + …）' '1' \
-  "$([ "${#long}" = 200 ] && [ "$(truncate_desc "$long" | wc -c | tr -d ' ')" = 142 ] && echo 1 || echo 0)"
-eq '描述：中文按**字符**算（140 个汉字不被砍）' '1' \
-  "$(cn=$(printf '环%.0s' $(seq 1 140)); [ "${#cn}" = 140 ] && [ "$(truncate_desc "$cn")" = "$cn" ] && echo 1 || echo 0)"
-eq '描述：141 个汉字要砍' '1' \
-  "$(cn=$(printf '环%.0s' $(seq 1 141)); [ "$(truncate_desc "$cn")" != "$cn" ] && echo 1 || echo 0)"
+
+eq 'utf8_len：ASCII 就是字节数' '3' "$(utf8_len abc)"
+eq 'utf8_len：空串是 0' '0' "$(utf8_len '')"
+cn140="$(printf '环%.0s' $(seq 1 140))"
+eq 'utf8_len：140 个汉字就是 140（不跟 locale 变）' '140' "$(utf8_len "$cn140")"
+eq '描述：140 个汉字**不**被截（按字符算，不是按字节）' "$cn140" "$(truncate_desc "$cn140")"
+
+# 126 个字的一条：按字节算是 378、会被误截，按字符算不该动 —— 这就是 auditor 报的那条。
+d126="$(printf '环%.0s' $(seq 1 126))"
+eq '描述：126 个字不超上限、**不**该被截' "$d126" "$(truncate_desc "$d126")"
+
+cn141="$(printf '环%.0s' $(seq 1 141))"
+t141="$(truncate_desc "$cn141")"
+eq '描述：141 个汉字砍到 140 个字符' '140' "$(utf8_len "$t141")"
+case "$t141" in
+  *…) ok '描述：砍完以「…」结尾' ;;
+  *) bad '描述：砍完以「…」结尾' '以 … 结尾' "$t141" ;;
+esac
+# 关键：绝不能从半个字中间切开 —— 那样不是合法 UTF-8，GitHub 要么拒收要么存成乱码。
+if printf '%s' "$t141" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+  ok '描述：砍完仍是**合法 UTF-8**（没从半个字中间切）'
+else
+  bad '描述：砍完仍是**合法 UTF-8**（没从半个字中间切）' 'iconv 认它是合法 UTF-8' '不是'
+fi
+
+# 函数本身也不该跟着 locale 变：同一件事在 LC_ALL=C 下跑，结果必须一样。
+eq '描述：LC_ALL=C 下结果一样（#178 那一类）' '140' \
+  "$(LC_ALL=C bash -c ". '$ROOT/scripts/local-ci-lib.sh'; utf8_len \"\$(truncate_desc "$cn141")\"" 2>/dev/null)"
+eq '描述：LC_ALL=C 下 140 个汉字也不被截' "$cn140" \
+  "$(LC_ALL=C bash -c ". '$ROOT/scripts/local-ci-lib.sh'; truncate_desc \"$cn140\"" 2>/dev/null)"
 
 
 # macOS 的 $TMPDIR 结尾**自带一个 `/`**，不去掉路径就成 `/var/…/T//local-ci-logs`：
