@@ -577,6 +577,106 @@ eq 'approve 对不上 head（复审后又推了）→ stale' 'stale' "$(approve_
 eq '没有任何 approve → none' 'none' "$(approve_vs_head '' 'bbb2222')"
 eq '没拿到 head → nohead（别硬判）' 'nohead' "$(approve_vs_head 'bbb2222' '')"
 
+echo '--- §4.2 docker 拉镜像失败：环境未就绪 vs 代码红（#193）---'
+
+# 判定本身用小函数测：日志是**真的 docker/buildkit 报错原文**。
+DK=$(mktemp -d)
+cat > "$DK/pull-dns.log" <<'L'
+#1 [internal] load metadata for docker.io/library/node:22-alpine
+#1 ERROR: failed to solve: node:22-alpine: failed to resolve source metadata for docker.io/library/node:22-alpine:latest: failed to authorize: failed to fetch oauth token: Post "https://auth.docker.io/token": dial tcp: lookup auth.docker.io: i/o timeout
+L
+cat > "$DK/pull-deadline.log" <<'L'
+#1 ERROR: failed to solve: golang:1.25-alpine: failed to resolve source metadata for docker.io/library/golang:1.25-alpine:latest: failed to authorize: DeadlineExceeded
+L
+cat > "$DK/pull-502.log" <<'L'
+#2 [1/6] FROM docker.io/library/node:22-alpine
+#2 ERROR: failed to do request: Head "https://registry-1.docker.io/v2/library/node/manifests/22-alpine": Bad Gateway
+L
+cat > "$DK/pull-ratelimit.log" <<'L'
+#2 ERROR: failed to solve: failed to copy: toomanyrequests: You have reached your pull rate limit.
+L
+cat > "$DK/run-fail.log" <<'L'
+#7 [4/6] RUN npm ci
+#7 12.34 npm ERR! code ELIFECYCLE
+#7 ERROR: process "/bin/sh -c npm ci" did not complete successfully: exit code: 1
+L
+cat > "$DK/dockerfile-typo.log" <<'L'
+ERROR: failed to solve: Dockerfile parse error line 12: unknown instruction: COPYY
+L
+# 这条是**故意**的陷阱：RUN 步骤自己打了一行 "502 Bad Gateway"（比如它 curl 了个网关），
+# 但它**是有退出码的** —— 属于代码问题。「网络特征优先」的写法会把它记成环境未就绪，
+# 那就是假绿，正是 dirty_tree_action 防的那一类。
+cat > "$DK/run-prints-502.log" <<'L'
+#7 [4/6] RUN curl -fsS http://gateway/health
+#7 0.21 curl: (22) The requested URL returned error: 502 Bad Gateway
+#7 ERROR: process "/bin/sh -c curl -fsS http://gateway/health" did not complete successfully: exit code: 22
+L
+: > "$DK/empty.log"
+
+eq '拉镜像 DNS 超时 → network' 'network' "$(docker_failure_kind "$DK/pull-dns.log")"
+eq 'failed to authorize: DeadlineExceeded → network' 'network' "$(docker_failure_kind "$DK/pull-deadline.log")"
+eq '镜像源 Bad Gateway → network' 'network' "$(docker_failure_kind "$DK/pull-502.log")"
+eq '镜像源限流 toomanyrequests → network' 'network' "$(docker_failure_kind "$DK/pull-ratelimit.log")"
+eq 'RUN 步骤失败（有 exit code）→ code' 'code' "$(docker_failure_kind "$DK/run-fail.log")"
+eq 'Dockerfile 写错 → code' 'code' "$(docker_failure_kind "$DK/dockerfile-typo.log")"
+eq 'RUN 自己打了 502 但有 exit code → code（不能被网络特征骗过去）' 'code' "$(docker_failure_kind "$DK/run-prints-502.log")"
+eq '空日志 → code（认不出来的一律算代码问题）' 'code' "$(docker_failure_kind "$DK/empty.log")"
+
+# 重试本身：假 docker 记调用次数，按脚本给出的结论回应。
+DB=$(mktemp -d)
+cat > "$DB/docker" <<'DK'
+#!/bin/sh
+n=0; [ -f "$DBG_COUNT" ] && n=$(cat "$DBG_COUNT")
+n=$((n + 1)); printf '%s' "$n" > "$DBG_COUNT"
+case "$DBG_MODE" in
+  flaky)  [ "$n" -le 2 ] || { printf 'Successfully built abc\n'; exit 0; }
+          printf 'ERROR: failed to solve: failed to authorize: dial tcp: lookup auth.docker.io: i/o timeout\n' >&2; exit 1 ;;
+  down)   printf 'ERROR: failed to solve: failed to authorize: failed to fetch oauth token: i/o timeout\n' >&2; exit 1 ;;
+  code)   printf 'ERROR: failed to solve: Dockerfile parse error line 3: unknown instruction: COPYY\n' >&2; exit 1 ;;
+esac
+exit 0
+DK
+chmod +x "$DB/docker"
+
+DLOG=$(mktemp)
+# ⚠️ DBG_COUNT / DBG_MODE 必须写在命令**前缀**里：写成 `DBG_COUNT=x out=$(…)` 是
+# 「只有赋值的简单命令」，变量不会导出给子进程，假 docker 就读不到（第一版这么写，全红）。
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/n" DBG_MODE=flaky DOCKER_BUILD_RETRY_BASE=0 docker_build_retrying "$DLOG" -t x . 2>&1); rc=$?
+eq '网络抖动：重试之后成功 → 0' '0' "$rc"
+eq '网络抖动：一共试了 3 次' '3' "$(cat "$DB/n")"
+case "$out" in
+  *"秒后重试"*) ok '网络抖动：说了在重试' ;;
+  *) bad '网络抖动：说了在重试' '含「秒后重试」' "$out" ;;
+esac
+
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/n2" DBG_MODE=down DOCKER_BUILD_RETRY_BASE=0 docker_build_retrying "$DLOG" -t x . 2>&1); rc=$?
+eq '网络一直不好：重试完发 error（返回 2）' '2' "$rc"
+eq '网络一直不好：试满 3 次' '3' "$(cat "$DB/n2")"
+case "$out" in
+  *"环境未就绪"*) ok '网络一直不好：描述里写清是环境未就绪' ;;
+  *) bad '网络一直不好：描述里写清是环境未就绪' '含「环境未就绪」' "$out" ;;
+esac
+case "$out" in
+  *"i/o timeout"*) ok '网络一直不好：原始错误照样打出来' ;;
+  *) bad '网络一直不好：原始错误照样打出来' '含 i/o timeout' "$out" ;;
+esac
+
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/n3" DBG_MODE=code DOCKER_BUILD_RETRY_BASE=0 docker_build_retrying "$DLOG" -t x . 2>&1); rc=$?
+eq 'Dockerfile 写错：发 failure（返回 1）' '1' "$rc"
+eq 'Dockerfile 写错：**不重试**（只跑 1 次）' '1' "$(cat "$DB/n3")"
+case "$out" in
+  *"环境未就绪"*) bad 'Dockerfile 写错：不能说成环境未就绪' '不含「环境未就绪」' "$out" ;;
+  *) ok 'Dockerfile 写错：不能说成环境未就绪' ;;
+esac
+
+# 编排器把 2 发成 error、把 1 发成 failure —— 这是 #193 的落脚点。
+eq '编排器：2 → error（环境未就绪）' 'error' "$(status_state_for_rc 2)"
+eq '编排器：1 → failure（代码红）' 'failure' "$(status_state_for_rc 1)"
+eq '编排器：0 → success' 'success' "$(status_state_for_rc 0)"
+eq '编排器：3 → error（脚本自身出错）' 'error' "$(status_state_for_rc 3)"
+
+rm -rf "$DK" "$DB" "$DLOG"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "OK: $0 全过"; exit 0; fi
 echo "FAILED: $fails 条"; exit 1

@@ -226,6 +226,76 @@ context_ready() {
 }
 
 # ---------------------------------------------------------------------------
+# docker build 拉镜像失败：是「环境/镜像源没就绪」还是「代码有问题」（#193）
+# ---------------------------------------------------------------------------
+# `docker build` 要先从镜像源拉基础镜像，网络一抖就整个红。这属于 §4.2 说的「环境没就绪」，
+# 该发 error 而不是 failure —— 发成 failure 的话和「Dockerfile 写坏了」在 PR 上长得一模一样，
+# 复审和 coord 每次都得翻日志才能分辨。
+
+# 拉基础镜像 / 取 token 时的网络与镜像源报错原文（docker 24+ / buildkit 的措辞）。
+# 命中这些且**没有** RUN 步骤的退出码（见下）时，算环境问题。
+DOCKER_NETWORK_RE='i/o timeout|no such host|TLS handshake timeout|context deadline exceeded|DeadlineExceeded|failed to authorize|failed to fetch oauth token|failed to resolve source metadata|temporary failure in name resolution|connection reset by peer|network is unreachable|no route to host|Bad Gateway|Service Unavailable|Internal Server Error|Too Many Requests|toomanyrequests'
+
+# run_context 的返回码 → 上报的 state。0 = success；2 / 3 = error（环境未就绪 / 脚本自身出错，
+# 都挡合并，只是描述不同）；其余 = failure（代码红）。
+#
+# 抽成纯函数是为了**能测**：#193 要修的正是「拉镜像失败该发 error 而不是 failure」，
+# 埋在编排器的 if/elif 里的话这条断言碰不到，改错了也没有测试会红。
+status_state_for_rc() {
+  case "${1:-}" in
+    0)   echo success ;;
+    2|3) echo error ;;
+    *)   echo failure ;;
+  esac
+}
+
+# 判定这次 docker build 失败属于哪一类。参数：$1 = 失败日志的文件路径。
+# 回显：network（环境/镜像源）| code（代码问题）。
+#
+# 判据只有一条是硬的：**日志里出现「某个 RUN 步骤退出码非 0」就一定是代码问题**
+# （Dockerfile 写错、编译不过、测试挂了、`RUN npm ci` 装不上），先拦掉再谈网络特征。
+# 少了这一道，Dockerfile 里 RUN 打一行 "502 Bad Gateway" 就会被当成环境问题 —— 那就成假绿了。
+#
+# 反过来故意保守：认不出来的一律算 code。把环境问题记成代码红，人翻一眼日志就明白；
+# 把代码红记成环境未就绪则正好相反，和 dirty_tree_action 防的是同一种错。
+docker_failure_kind() {
+  local log="${1:?docker_failure_kind 需要日志文件路径}"
+  [ -s "$log" ] || { echo code; return 0; }
+  if grep -qE 'did not complete successfully|exit code: [1-9]' "$log"; then
+    echo code
+    return 0
+  fi
+  if grep -qE "$DOCKER_NETWORK_RE" "$log"; then
+    echo network
+    return 0
+  fi
+  echo code
+}
+
+# docker build，碰上网络/镜像源问题自动重试几次。参数：$1 = 日志文件，其余原样转给 docker build。
+# 返回：0 = 成功；1 = 代码红；2 = 环境未就绪（重试完还是拉不到镜像）。
+# 进度照常打到 stdout（内建 tee 到日志），不会因为要判定而憋住输出。
+# DOCKER_BUILD_RETRY_BASE：退避基数（秒），第 n 次失败后等 n*BASE 秒。自测里设 0，别真等。
+docker_build_retrying() {
+  local log="$1"; shift
+  local attempts="${DOCKER_BUILD_RETRIES:-3}" base="${DOCKER_BUILD_RETRY_BASE:-5}" i=1 rc
+  while :; do
+    docker build "$@" 2>&1 | tee "$log"
+    rc="${PIPESTATUS[0]}"
+    [ "$rc" -eq 0 ] && return 0
+    [ "$(docker_failure_kind "$log")" = network ] || return 1
+    if [ "$i" -ge "$attempts" ]; then
+      printf '\n环境未就绪：docker build 拉基础镜像失败（网络或镜像源），重试 %d 次仍不行。\n' "$attempts" >&2
+      printf '  最后一次的原始错误见上面的日志。**这不是代码问题**，不用改 Dockerfile。\n' >&2
+      return 2
+    fi
+    printf '\ndocker build 拉镜像失败（网络/镜像源，第 %d 次）；%d 秒后重试…\n' "$i" "$((i * base))" >&2
+    sleep "$((i * base))"
+    i=$((i + 1))
+  done
+}
+
+# ---------------------------------------------------------------------------
 # 真正执行；cwd 必须是仓库根。返回 0 = 绿，1 = 代码红，2 = 环境未就绪，3 = 脚本自身出错。
 # ---------------------------------------------------------------------------
 # 为什么不自己锚定 cwd：`context_command` 打印的命令就是给人看的「跑了什么」，
@@ -235,6 +305,8 @@ context_ready() {
 #
 # 各支一律 `|| return 1`：把子命令的退出码**归一成 1**。不这么做的话，哪天某个工具
 # 用 2 表示测试失败，代码坏了就会被发成 `error`（环境未就绪）。**只有显式的前置检查才返回 2。**
+# 唯一的例外是 docker 那支的 `docker_build_retrying`（#193）：拉基础镜像的网络/镜像源问题
+# 也返回 2。它同样是个显式判定（`docker_failure_kind`），不是「子命令碰巧返回了 2」。
 #
 # LOCAL_CI_SHA：被测提交，docker 那支要拿它当构建号（容器冒烟要核 X-App-Build 头）。
 run_context() {
@@ -255,12 +327,19 @@ run_context() {
       ( cd app/minigame && npm ci && npm run typecheck && npm test && npm run build ) || return 1 ;;
     local-ci/nginx)    scripts/check-nginx.sh deploy/nginx/guandan.synon.ai.conf || return 1 ;;
     local-ci/docker)
-      local sha="${LOCAL_CI_SHA:-$(git rev-parse HEAD)}" image rc
+      local sha="${LOCAL_CI_SHA:-$(git rev-parse HEAD)}" image rc log
       # 镜像名带上进程号：同一台机器上几个会话同时跑，别互相覆盖同一个 tag。
       image="guandan:local-ci-$$"
-      if ! docker build --build-arg "BUILD=$sha" -t "$image" .; then
+      log="$(mktemp "${TMPDIR:-/tmp}/local-ci-docker.XXXXXX")"
+      # 拉基础镜像的网络抖动不该记成代码红（#193）：自动重试，重试完还不行返回 2，
+      # 编排器把 2 发成 error（环境未就绪）。后面那几条是本机跑已有镜像的测试，
+      # 失败就是真的代码问题，一律 1。
+      docker_build_retrying "$log" --build-arg "BUILD=$sha" -t "$image" .
+      rc=$?
+      rm -f "$log"
+      if [ "$rc" -ne 0 ]; then
         docker rmi "$image" >/dev/null 2>&1
-        return 1
+        return "$rc"
       fi
       scripts/container-smoke.sh "$image" "$sha" \
         && scripts/test-deploy.sh "$image" \

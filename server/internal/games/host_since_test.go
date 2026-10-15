@@ -70,4 +70,21 @@ func TestBecameHostAt(t *testing.T) {
 	t.Run("转交之后：新局头有这一项", func(t *testing.T) { check(t, b1, became) })
 	t.Run("转交之后：没接手的人还是没有这一项", func(t *testing.T) { check(t, b2, 0) })
 	t.Run("原来的局头（已经退出）：没有", func(t *testing.T) { check(t, f.http, 0) })
+
+	// 再转交一次：**这一列要覆盖成这一次的时刻**，不能留着上一位的。留着的话新局头拿到的
+	// 是别人接手的时间，而这一项在客户端是「你成了局头」的触发条件 —— 会拿别人的时刻弹给他。
+	// （#189 复审意见：补一条连续转交的。）
+	f.clk.Advance(5 * time.Minute)
+	if r := f.do(b1, http.MethodDelete, "/api/games/"+code+"/seat", nil, nil); r.status != http.StatusOK {
+		t.Fatalf("第二任局头退出失败：%d %s", r.status, r.raw)
+	}
+	became2 := f.clk.Now().Unix()
+
+	t.Run("连续转交两次：第二任拿到的是第二次的时刻，不是第一次的", func(t *testing.T) {
+		if became2 <= became {
+			t.Fatalf("时钟没往前走（第一次 %d、第二次 %d），这条测试就没有意义了", became, became2)
+		}
+		check(t, b2, became2)
+	})
+	t.Run("连续转交两次：第一任（已经退出）不再是局头", func(t *testing.T) { check(t, b1, 0) })
 }
