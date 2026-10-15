@@ -388,6 +388,13 @@ func newContentGuard(cfg config.Config, st *store.Store, tokens wxapi.TokenSourc
 	g := &secheck.Guard{Store: st}
 	switch {
 	case cfg.WxEnabled():
+		if tokens == nil {
+			// 配了 AppID / Secret 却没给 token 源：调用方接错了。**这里不自己建** —— 自己建就
+			// 又是两份缓存，正是 #159 要修的。宁可不查（日志里看得见），也不要两份 token 互相顶，
+			// 更不能拿着 nil 接口等第一次检测时 panic（和 NewWxChannel 的防守对称）。
+			slog.Error("内容安全检测：没有传 token 源，检测关闭（#159 要求与订阅消息共用同一个）")
+			return nil
+		}
 		g.AppID, g.Checker = cfg.WxAppID, secheck.WxChecker{API: &wxapi.Client{Tokens: tokens}}
 		slog.Info("微信内容安全检测已开启")
 	case cfg.Dev:
@@ -407,10 +414,15 @@ func newContentGuard(cfg config.Config, st *store.Store, tokens wxapi.TokenSourc
 func setupWxSubscribe(svc *notify.Service, cfg config.Config, tokens wxapi.TokenSource) {
 	ch := notify.NewWxChannel(cfg, tokens)
 	if ch == nil {
-		if cfg.WxTmplFull.ID != "" || cfg.WxTmplRemind.ID != "" {
-			slog.Warn("配了订阅消息模板但没配 GUANDAN_WX_APPID / GUANDAN_WX_SECRET，订阅消息关闭")
-		} else {
+		switch {
+		case cfg.WxTmplFull.ID == "" && cfg.WxTmplRemind.ID == "":
 			slog.Info("没有配置订阅消息模板，订阅消息关闭")
+		case cfg.WxEnabled():
+			// 模板配了、AppID / Secret 也配了，那就是 token 源没接上 —— 是接线的问题，
+			// 说成「没配 GUANDAN_WX_APPID / GUANDAN_WX_SECRET」会把人带偏（其实配了）。
+			// NewWxChannel 里已经记了 Error，这里不重复报。
+		default:
+			slog.Warn("配了订阅消息模板但没配 GUANDAN_WX_APPID / GUANDAN_WX_SECRET，订阅消息关闭")
 		}
 		return
 	}
