@@ -480,6 +480,32 @@ post_status_retry() {
   done
 }
 
+# 手动补发命令（汇总里 status 没兜住时给人抄的）。$1=gh 命令 $2=40 位全长 sha $3=RESULTS 文件
+# 每个 context 一行，state 取**这个 context 的实际结论**（同一 context 取最后一条）。
+#
+# ⚠️ 别在这里写死 `state=success`：跑了红的 context 会被抄成绿的 —— 正是这套 CI 要防的事。
+# 抽成函数是为了能被测到（原来写在 local-ci.sh 里，测试碰不到）。
+manual_repair_commands() {
+  local gh="$1" sha="$2" results="$3" ctx st desc
+  while IFS=' ' read -r ctx st desc; do
+    [ -n "$ctx" ] || continue
+    printf '  %s api -X POST repos/{owner}/{repo}/statuses/%s -f state=%s -f context=%s -f description=%s\n' \
+      "$gh" "$sha" "$st" "$ctx" "$desc"
+  done <<EOF
+$(awk '{last[$1]=$0} END{for (c in last) print last[c]}' "$results")
+EOF
+}
+
+# 带上报时，PR 的 head 必须就是本地 HEAD（#186 复审）：不然协议检查拿的是**别的 PR** 的
+# 标题和描述，结论却发到这个 HEAD 上 —— `--pr` 号码填错就会这样。
+#   $1=POST(1/0) $2=PR 的 headRefOid（空 = 没取到 PR） $3=本地 HEAD
+# 该拒绝返回 0。
+should_reject_pr_head_mismatch() {
+  [ "${1:-0}" -eq 1 ] || return 1
+  [ -n "${2:-}" ] || return 1
+  [ "$2" != "${3:-}" ]
+}
+
 # 分离头指针（detached HEAD）上带着上报跑、又没给 `--pr` 时要拒绝吗？（#186）
 #   $1=POST(1/0) $2=--pr 给的号（空 = 没给） $3=`git symbolic-ref -q HEAD` 的退出码（0=在分支上）
 # 该拒绝返回 0，否则返回 1。抽成纯函数是为了能逐条断言 —— 这段以前会让协议检查发出一条

@@ -188,9 +188,13 @@ for _ in range(600):        # 最多守 60 秒：脚本异常退出时也不会�
   # 上面必须把 stdout/stderr 接到 /dev/null：这个后台进程会继承调用方的管道，
   # 而套在外面的 `out=$(scripts/test-deploy-names.sh)` 会一直等管道关闭 —— 不重定向的话
   # 测试会卡到那个 python 自己超时为止（实测卡满 60 秒）。
+  HOLD_PID=$!
   sleep 1   # 等它真的绑上
 }
-release_port() { : > "$work/hold.stop"; }
+# 放开之后**等它真的退出**再往下：只建哨兵的话，它最多还要 60 秒才走，那段时间这几个口
+# 一直被占着 —— 紧接着再跑一次同一编号（比如把编号钉在 1248 测边界）就会「凑不出端口」，
+# 看起来像随机的红。
+release_port() { : > "$work/hold.stop"; wait "$HOLD_PID" 2>/dev/null || true; }
 
 # 把一整段端口占住。$1=起始端口 $2=几个 $3=哨兵文件
 hold_range() {
@@ -220,8 +224,11 @@ for _ in range(600):        # 最多守 60 秒
         break
     time.sleep(0.1)
 ' "$1" "$2" "$3" >/dev/null 2>&1 &
+  RANGE_PID=$!
   sleep 1
 }
+# 同 release_port：放开之后等它真的退出，别让这几个口悬着 60 秒。
+release_range_holder() { : > "$work/hold2.stop"; wait "$RANGE_PID" 2>/dev/null || true; }
 
 C_ID=$A_ID
 C_BASE=$((20000 + (C_ID % 1250) * 8))
@@ -276,7 +283,6 @@ else
            "$(printf '%s' "$C2_OUT" | tr '\n' ' ')" ;;
   esac
 fi
-release_range_holder() { : > "$work/hold2.stop"; }
 release_range_holder
 
 D2_OUT=$(run_once "$work/d2.log" "$((C_ID + 1))")

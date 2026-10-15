@@ -199,15 +199,20 @@ for _ in range(600):        # 最多守 60 秒：脚本异常退出也不会一�
         break
     time.sleep(0.1)
 ' "$1" "$2" "$3" >/dev/null 2>&1 &
+  HOLD_PID=$!
   sleep 1
 }
+
+# 放开之后**等它真的退出**再往下（$1=哨兵文件）：只建哨兵的话它最多还要 60 秒才走，
+# 那段时间这几个口一直被占着 —— 紧接着再跑一次同一编号就会「凑不出端口」，看起来像随机的红。
+release_holder() { : > "$1"; wait "$HOLD_PID" 2>/dev/null || true; }
 
 C_ID=$A_ID
 C_BASE=$((30000 + (C_ID % 1250) * 8))
 hold_port "$C_BASE" 1 "$work/hold1.stop"
 C_OUT=$(run_once "$work/c.log" "$C_ID")
 D_OUT=$(run_once "$work/d.log" "$((C_ID + 1))")
-: > "$work/hold1.stop"   # 放开
+release_holder "$work/hold1.stop"   # 放开
 
 C_PORTS=$(field PORTS "$C_OUT")
 D_PORTS=$(field PORTS "$D_OUT")
@@ -252,7 +257,7 @@ else
            "$(printf '%s' "$C2_OUT" | tr '\n' ' ')" ;;
   esac
 fi
-: > "$work/hold2.stop"
+release_holder "$work/hold2.stop"
 
 D2_OUT=$(run_once "$work/d2.log" "$((C_ID + 1))")
 D2_PORTS=$(field PORTS "$D2_OUT")

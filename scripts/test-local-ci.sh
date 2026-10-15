@@ -409,6 +409,17 @@ case "$out" in
   *"补发失败"*) ok '复核：补发失败时大声报错' ;;
   *) bad '复核：补发失败时大声报错' '含「补发失败」' "$out" ;;
 esac
+# 这一对才是拦「只看 repaired」那条假绿的：全都没补上时**不能**说「都比对过 / 没有要补」。
+# 旧逻辑（只看 repaired）下这两条会红 —— 见 PR 里的红/绿输出。
+case "$out" in
+  *"都比对过"*|*"没有要补"*)
+    bad '复核：全都没补上时不能说「都不用补」' '不含「都比对过」「没有要补」' "$out" ;;
+  *) ok '复核：全都没补上时不能说「都不用补」' ;;
+esac
+case "$out" in
+  *"还有 1 条没补上"*) ok '复核：说清了还有几条没补上' ;;
+  *) bad '复核：说清了还有几条没补上' '含「还有 1 条没补上」' "$out" ;;
+esac
 
 # 6) 复核：连当前 status 都取不到 → 非 0（宁可让人去看一眼，也别当成都对得上）
 STATE=$(mktemp -d "$TMPG/state.XXXXXX"); export STATE FAIL_POST=0 GET_JSON=''
@@ -468,6 +479,76 @@ case "$out" in
   *) bad '--pr：按号认出 PR 并打出来' '含 PR #999' "$out" ;;
 esac
 rm -rf "$PG"
+
+# 8) 手动补发命令要按**实际结论**打印（#186 复审）。原来写死在 local-ci.sh 里，
+#    测试碰不到；改成 `manual_repair_commands` 之后这里能断言。
+REP=$(mktemp)
+printf '%s\n' 'local-ci/test failure 挂了' > "$REP"
+out=$(manual_repair_commands ghost "$SHA40" "$REP")
+case "$out" in
+  *"state=failure"*) ok '手动补发：按实际结论打 state=failure' ;;
+  *) bad '手动补发：按实际结论打 state=failure' '含 state=failure' "$out" ;;
+esac
+case "$out" in
+  *"state=success"*) bad '手动补发：红的 context 不能打 state=success' '不含 state=success' "$out" ;;
+  *) ok '手动补发：红的 context 不能打 state=success' ;;
+esac
+# 同一个 context 先记 pending 再记 failure：要用**最后**那条（failure）。
+printf '%s\n' 'local-ci/test pending 运行中' 'local-ci/test failure 挂了' > "$REP"
+out=$(manual_repair_commands ghost "$SHA40" "$REP")
+case "$out" in
+  *"state=failure"*) ok '手动补发：同一 context 取最后一条结论' ;;
+  *) bad '手动补发：同一 context 取最后一条结论' '含 state=failure' "$out" ;;
+esac
+eq '手动补发：一个 context 只打一行' '1' "$(printf '%s\n' "$out" | grep -c 'statuses/')"
+rm -f "$REP"
+
+# 9) 带上报时 PR 的 head 必须等于本地 HEAD（#186 复审）
+mismatch_rc() { should_reject_pr_head_mismatch "$1" "$2" "$3"; printf '%s' "$?"; }
+eq 'PR head 对不上 + 带上报 → 拒绝' '0' "$(mismatch_rc 1 abc def)"
+eq 'PR head 一样 → 放行' '1' "$(mismatch_rc 1 abc abc)"
+eq '没取到 PR（head 空）→ 放行' '1' "$(mismatch_rc 1 '' abc)"
+eq '--no-post → 放行' '1' "$(mismatch_rc 0 abc def)"
+
+# 真跑一次 local-ci.sh 看它是不是真的拒了（假 gh 给的 headRefOid 和本地 HEAD 不一样）。
+# ⚠️ 这一条要求工作区干净（带上报时脏树会被更早的那道检查拦下、退出码也是 64，
+# 但信息不一样）—— CI 里跑一定是干净的。
+PG=$(mktemp -d)
+cat > "$PG/gh" <<'GH'
+#!/bin/sh
+if [ "$1 $2" = "pr view" ]; then
+  printf '%s\n' '{"number":999,"title":"T","body":"[impl] x\n\nFixes #1\n","headRefOid":"0000000000000000000000000000000000000000"}'
+  exit 0
+fi
+exit 0
+GH
+chmod +x "$PG/gh"
+out=$(cd "$ROOT" && PATH="$PG:$PATH" bash scripts/local-ci.sh --base HEAD --pr 999 2>&1); rc=$?
+eq '--pr：head 对不上时带上报直接拒绝（64）' '64' "$rc"
+case "$out" in
+  *"对不上"*) ok '--pr：head 对不上时说清了原因' ;;
+  *) bad '--pr：head 对不上时说清了原因' '含「对不上」' "$out" ;;
+esac
+# 只看退出码是不够的：工作区不干净那道检查**也是** exit 64。所以还要确认这次拒绝来自
+# head 核对。少了这一条，把核对整个删掉（演示过）这条测试照样会过。
+case "$out" in
+  *"工作区不干净"*) bad '--pr：拒绝来自 head 核对（不是脏树那道检查）' '不含「工作区不干净」' "$out" ;;
+  *) ok '--pr：拒绝来自 head 核对（不是脏树那道检查）' ;;
+esac
+rm -rf "$PG"
+
+# 10) 自测编号的边界（#186）：1248 是最后一个不绕回的编号；1249 会被拒（names 自测用假 docker，
+#     很便宜，所以直接在这里真跑一遍）。
+X=$(cd "$ROOT" && DEPLOYTEST_RUN=1248 sh scripts/test-deploy-names.sh 2>&1); rc=$?
+eq 'names 自测：编号 1248（边界）不误报' '0' "$rc"
+X=$(cd "$ROOT" && DEPLOYTEST_RUN=1249 sh scripts/test-deploy-names.sh 2>&1); rc=$?
+[ "$rc" -ne 0 ] && ok 'names 自测：编号 1249 越界被拒' || bad 'names 自测：编号 1249 越界被拒' '非 0' "退出码 $rc"
+
+# 11) 重试次数给非数字时不要死循环（#186 复审里的小问题）
+STATE=$(mktemp -d "$TMPG/state.XXXXXX"); export STATE FAIL_POST=99 GET_JSON=''
+out=$(post_status_retry "$TMPG/gh" "$SHA40" local-ci/test success 描述 abc 2>&1); rc=$?
+eq '重试：次数给非数字 → 退回默认、不死循环' '1' "$rc"
+eq '重试：非数字时确实试了 4 次' '4' "$(wc -l < "$STATE/posts" | tr -d ' ')"
 
 unset STATE FAIL_POST GET_JSON POST_STATUS_BACKOFF POST_STATUS_REPAIR_DELAY
 rm -rf "$TMPG" "$R"

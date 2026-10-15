@@ -69,6 +69,44 @@ fi
 HEAD_SHA=$(git rev-parse HEAD)
 export LOCAL_CI_SHA="$HEAD_SHA"
 
+# --- 取 PR：只为拿 number/title/body（没有 PR 不致命）-----------------------
+# `--pr <n>` 给了就按号取（detached HEAD、或者分支被别的 worktree 占着时用，见上面 #186 那段）。
+PR_JSON=''
+PR_NUM=''
+PR_HEAD=''
+if command -v gh >/dev/null 2>&1; then
+  GH_ERR=$(mktemp)
+  if [ -n "$PR_OPT" ]; then
+    PR_JSON=$(gh pr view "$PR_OPT" --json number,title,body,headRefOid 2>"$GH_ERR")
+  else
+    PR_JSON=$(gh pr view --json number,title,body,headRefOid 2>"$GH_ERR")
+  fi
+  if [ -n "$PR_JSON" ]; then
+    PR_NUM=$(printf '%s' "$PR_JSON" | jq -r .number)
+    PR_HEAD=$(printf '%s' "$PR_JSON" | jq -r '.headRefOid // ""')
+  elif grep -qi 'no pull requests found\|no open pull requests\|not on any branch' "$GH_ERR"; then
+    PR_JSON=''                    # gh 明说没有 PR —— 这才是「真的没有」
+  else
+    # **瞬时失败 ≠ 没有 PR。** 一律当「没有 PR」的话，带上报时会发出一条假红的
+    # `protocol error`。所以要认人话，其余一律报错退出。
+    printf '取 PR 失败（可能是网络或瞬时错误，别当成「没有 PR」）：\n' >&2
+    sed 's/^/  /' "$GH_ERR" >&2
+    rm -f "$GH_ERR"
+    exit 2
+  fi
+  rm -f "$GH_ERR"
+fi
+
+# --- 带上报时，PR 的 head 必须就是本地 HEAD（#186 复审）----------------------
+# 对不上就拒绝：协议检查用的是**那个 PR** 的标题和描述，结论却发到本地 HEAD 上 ——
+# `--pr` 号码填错就会发生，而且发出来的 status 看着完全正常。
+if should_reject_pr_head_mismatch "$POST" "$PR_HEAD" "$HEAD_SHA"; then
+  printf '这个 PR（#%s）的 head 是 %s，本地 HEAD 是 %s —— 对不上。\n' "$PR_NUM" "$PR_HEAD" "$HEAD_SHA" >&2
+  printf '带上报跑的话，协议检查会用**那个 PR** 的标题和描述，结论却发到本地 HEAD 上。\n' >&2
+  printf '先把本地提交 push 上去；如果只是想自检，用 --no-post。\n' >&2
+  exit 64
+fi
+
 # --- 工作区必须干净，结论才算数 ---------------------------------------------
 # status 是发给**某个 SHA** 的，而各检查跑的是**工作区**。带 --post 时工作区不干净直接拒；
 # --no-post 只警告（那个用法本来就常在有改动的树上跑）。
@@ -82,32 +120,6 @@ if [ "$ACTION" = refuse ]; then
   exit 64
 elif [ "$ACTION" = warn ]; then
   printf '⚠️ 工作区不干净 —— 下面的结论描述的是**工作区**，不是 %s 这个提交。\n' "$HEAD_SHA" >&2
-fi
-
-# --- 取 PR：只为拿 number/title/body（没有 PR 不致命）-----------------------
-# `--pr <n>` 给了就按号取（detached HEAD、或者分支被别的 worktree 占着时用，见上面 #186 那段）。
-PR_JSON=''
-PR_NUM=''
-if command -v gh >/dev/null 2>&1; then
-  GH_ERR=$(mktemp)
-  if [ -n "$PR_OPT" ]; then
-    PR_JSON=$(gh pr view "$PR_OPT" --json number,title,body 2>"$GH_ERR")
-  else
-    PR_JSON=$(gh pr view --json number,title,body 2>"$GH_ERR")
-  fi
-  if [ -n "$PR_JSON" ]; then
-    PR_NUM=$(printf '%s' "$PR_JSON" | jq -r .number)
-  elif grep -qi 'no pull requests found\|no open pull requests\|not on any branch' "$GH_ERR"; then
-    PR_JSON=''                    # gh 明说没有 PR —— 这才是「真的没有」
-  else
-    # **瞬时失败 ≠ 没有 PR。** 一律当「没有 PR」的话，带上报时会发出一条假红的
-    # `protocol error`。所以要认人话，其余一律报错退出。
-    printf '取 PR 失败（可能是网络或瞬时错误，别当成「没有 PR」）：\n' >&2
-    sed 's/^/  /' "$GH_ERR" >&2
-    rm -f "$GH_ERR"
-    exit 2
-  fi
-  rm -f "$GH_ERR"
 fi
 
 # --- 算改动范围 -------------------------------------------------------------
@@ -230,15 +242,8 @@ if [ "$POST_REPAIR_FAILED" -eq 1 ]; then
   printf 'status 没兜住 —— **GitHub 上会有 context 停在 pending，挡住合并**。\n'
   printf '手动补发（sha 必须 40 位全长）。⚠️ state 按每个 context 的**实际结论**写，\n'
   printf '别一律抄 success —— 那会把红发成绿：\n'
-  # 每个 context 一行，状态取自本次跑的**实际结论**（#186：原来写死 state=success，
-  # 照抄会把失败的 context 发成绿，正好是这套 CI 要防的事）。
-  while IFS=' ' read -r ctx st desc; do
-    [ -n "$ctx" ] || continue
-    printf '  %s api -X POST repos/{owner}/{repo}/statuses/%s -f state=%s -f context=%s -f description=%s\n' \
-      "$GH" "$HEAD_SHA" "$st" "$ctx" "$desc"
-  done <<EOF
-$(awk '{last[$1]=$0} END{for (c in last) print last[c]}' "$RESULTS")
-EOF
+  # 每个 context 一行，状态取自本次跑的**实际结论**。逻辑在 lib 里（可测）。
+  manual_repair_commands "$GH" "$HEAD_SHA" "$RESULTS"
 fi
 CODE=$(final_exit_code "$FAILED" "$ENVNOTREADY" "$SCRIPTBUG" "$POST_REPAIR_FAILED")
 if [ "$CODE" -eq 0 ]; then
