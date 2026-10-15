@@ -23,7 +23,7 @@ import (
 type fixedToken struct{}
 
 func (fixedToken) Token(context.Context) (string, error) { return "tok", nil }
-func (fixedToken) Invalidate()                           {}
+func (fixedToken) Invalidate(string)                     {}
 
 // wxServer 是假的 msg_sec_check：记下收到的请求体，按 reply 回应。
 func wxServer(t *testing.T, reply func(body map[string]any) string) (*secheck.WxChecker, *[]map[string]any) {
