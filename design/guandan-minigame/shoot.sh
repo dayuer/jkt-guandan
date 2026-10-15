@@ -16,3 +16,5 @@ for id in M1 M2 M3 M4 M5 M6 N1 N2 N3 N4 T1 T2 T3; do shot "$id" 390 844; done
 for id in F1 F2; do shot "$id" 780 620; done
 shot C0 820 400
 for id in C1 C2 C3 C4 C5; do shot "$id" 500 400; done
+for id in S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14; do shot "$id" 390 844; done
+shot S15 500 400

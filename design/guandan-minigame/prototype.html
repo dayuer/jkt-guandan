@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>随时掼掼蛋 · 小游戏适配稿（#142）</title>
+<title>随时掼掼蛋 · 小游戏适配稿（#142）· 牌桌计分（#162）</title>
 <style>
 /* 浏览页本身的样式，不属于产品。产品画面全部画在 <canvas> 里，和小游戏一样只用 Canvas 2D。 */
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -338,15 +338,20 @@ function detailTop(ctx, y, opts = {}) {
   fillRR(ctx, x, ty, size, size, 24, C.redDeep);
   strokeRR(ctx, x + 3, ty + 3, size - 6, size - 6, 21, C.redInk, 6);
   strokeRR(ctx, x + 22, ty + 22, size - 44, size - 44, 14, "rgba(233,196,106,0.45)", 1, [4, 3]);
-  text(ctx, "3/4", cx, mid - 6, font(40, "900", true), C.cream, "center");
-  text(ctx, "对家为搭档", cx, mid + 26, font(12), "rgba(255,247,236,0.8)", "center");
+  text(ctx, opts.center ?? "3/4", cx, mid - 6, font(40, "900", true), C.cream, "center");
+  text(ctx, opts.sub ?? "对家为搭档", cx, mid + 26, font(12), "rgba(255,247,236,0.8)", "center");
   const at = [[cx, ty], [x + size, mid], [cx, ty + size], [x, mid]];
-  SEATS.forEach((s, i) => {
+  (opts.seats ?? SEATS).forEach((s, i) => {
     const [sx, sy] = at[i];
     if (!s) { circle(ctx, sx, sy, 30, C.paper); circle(ctx, sx, sy, 30, null, C.khaki, 2, [5, 4]); text(ctx, "+", sx, sy, font(24, "300"), C.khaki, "center"); return; }
     circle(ctx, sx, sy, 36, C.paper);
     circle(ctx, sx, sy, 32, s[1] === "host" ? C.redTint : C.beige, s[1] === "host" ? "#e3b5ae" : "#e6dccd", 3);
     text(ctx, s[0], sx, sy + 1, font(26, "900", true), s[1] === "host" ? C.red : C.ink, "center");
+    if (opts.teams) { // 计分（#162）：座位右下角的花色角标，1、3 号红方 ♥，2、4 号黑方 ♠
+      const bx = sx + 24, by = sy + 24, red = i % 2 === 0;
+      circle(ctx, bx, by, 11, C.card, C.line2, 1.5);
+      icon[red ? "heart" : "spade"](ctx, bx, by + .5, 12, red ? C.red : C.ink);
+    }
   });
   return ty + size + 46;
 }
@@ -816,6 +821,453 @@ add("五、转发卡片", "C0", "规格：5:4 卡片版式", "逻辑尺寸 500×
   [[1, 250, 72], [2, 250, 126], [3, 400, 200], [4, 380, 238], [5, 70, 330], [6, 400, 330]].forEach(([n, x, y]) => marker(ctx, n, x, y));
 }, "card", [820, 400]);
 for (const c of CARDS) add("五、转发卡片", c.id, c.t, c.note || "", (ctx) => shareCard(ctx, c.d), "card", [500, 400]);
+
+// ════════ 七、牌桌计分（#162）════════
+// 例子贯穿全部画面：红方 ♥ = 1 号老王（局头）+ 3 号阿杰（我）；黑方 ♠ = 2 号 Lily + 4 号小周。
+// 前 5 局：①打2 红双上 2→5 ②打5 黑头+三 2→4 ③打4 红头+末 5→6 ④打6 红双上 6→9 ⑤打9 黑双上 4→7。
+// 第 6 局打黑方的 7；阿杰头游、老王三游，红方 9→J。
+const LV = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
+const TEAM = {
+  r: { name: "红方", suit: "heart", c: C.red, tint: C.redTint, edge: "#e3b5ae", members: ["老王", "阿杰"] },
+  b: { name: "黑方", suit: "spade", c: C.ink, tint: C.beige, edge: "#e6dccd", members: ["Lily", "小周"] },
+};
+const PLAYERS = [ // 座位顺序：1 上、2 右、3 下、4 左
+  { seat: 1, name: "老王", ch: "老", t: "r", host: true },
+  { seat: 2, name: "Lily", ch: "L", t: "b" },
+  { seat: 3, name: "阿杰", ch: "阿", t: "r", me: true },
+  { seat: 4, name: "小周", ch: "小", t: "b" },
+];
+const CREAM = (a) => `rgba(255,247,236,${a})`;
+
+/** 牌桌绒面：和详情页牌桌同一套描边 */
+function felt(ctx, x, y, w, h) {
+  fillRR(ctx, x, y + 6, w, h, 24, "rgba(142,42,35,0.25)");
+  fillRR(ctx, x, y, w, h, 24, C.redDeep);
+  strokeRR(ctx, x + 3, y + 3, w - 6, h - 6, 21, C.redInk, 6);
+  strokeRR(ctx, x + 16, y + 16, w - 32, h - 32, 14, "rgba(233,196,106,0.45)", 1, [4, 3]);
+}
+/** 级牌：一张立在牌桌上的扑克牌。inPlay = 本局打这一级（抬高 10、金边、顶上「本局打这级」签）；flip = 翻牌动画中途的 scaleX */
+function levelCard(ctx, cx, top, lv, t, o = {}) {
+  const w = 104, h = 140, r = 12, T = TEAM[t];
+  const y = top - (o.inPlay ? 10 : 0), x = cx - w / 2;
+  ctx.save();
+  if (o.flip !== undefined) { ctx.translate(cx, y + h / 2); ctx.scale(o.flip, 1); ctx.translate(-cx, -(y + h / 2)); }
+  fillRR(ctx, x, y + (o.inPlay ? 9 : 3), w, h, r, "rgba(40,10,8,0.35)");
+  if (o.inPlay) strokeRR(ctx, x - 3.5, y - 3.5, w + 7, h + 7, r + 3, C.gold, 3);
+  fillRR(ctx, x, y, w, h, r, C.cream);
+  strokeRR(ctx, x + .5, y + .5, w - 1, h - 1, r, C.line2, 1);
+  // 左上角标 = 级 + 花色；右下只放倒置的花色——倒过来的 9 会被看成 6，计分界面不能有歧义
+  text(ctx, lv, x + 10, y + 18, font(16, "900"), T.c); icon[T.suit](ctx, x + 17, y + 38, 14, T.c);
+  ctx.save(); ctx.translate(x + w - 17, y + h - 20); ctx.rotate(Math.PI); icon[T.suit](ctx, 0, 0, 14, T.c); ctx.restore();
+  text(ctx, lv, cx, y + h / 2 + 4, font(lv.length > 1 ? 50 : 60, "900", true), T.c, "center");
+  ctx.restore();
+  if (o.inPlay) {
+    const f = font(11, "900"), pw = measure(ctx, "本局打这级", f) + 18;
+    fillRR(ctx, cx - pw / 2, y - 12, pw, 22, 11, C.gold);
+    text(ctx, "本局打这级", cx, y - 1, f, C.redInk, "center");
+  }
+}
+/** 计分主面板。st = { round, r, b, play, aFail: { r: n } } */
+function scoreboard(ctx, y, st) {
+  const x = PAD, w = E.W - PAD * 2, h = 284;
+  felt(ctx, x, y, w, h);
+  const playLv = st[st.play];
+  text(ctx, `第 ${st.round} 局 · 打${TEAM[st.play].name}的 ${playLv}`, E.W / 2, y + 32, font(13, "700"), CREAM(0.85), "center");
+  [["r", x + w * 0.27], ["b", x + w * 0.73]].forEach(([t, cx]) => {
+    const T = TEAM[t];
+    levelCard(ctx, cx, y + 64, st[t], t, { inPlay: st.play === t, flip: st.flip?.[t] });
+    const ny = y + 64 + 140 + 24, nf = font(15, "700"), tw = measure(ctx, T.name, nf);
+    circle(ctx, cx - tw / 2 - 12, ny, 9, C.cream);
+    icon[T.suit](ctx, cx - tw / 2 - 12, ny + .5, 11, T.c);
+    text(ctx, T.name, cx - tw / 2 + 2, ny, nf, C.cream);
+    const mem = T.members.map((m) => (PLAYERS.find((p) => p.name === m).me && !st.spectator ? m + "（我）" : m)).join(" · ");
+    text(ctx, mem, cx, ny + 22, font(12), CREAM(0.75), "center");
+    const n = st.aFail?.[t];
+    if (n !== undefined) text(ctx, n ? `打 A · 已没过 ${n} 次` : "打 A · 第 1 次", cx, ny + 42, font(12, "700"), C.gold, "center");
+  });
+  return y + h + 16;
+}
+/** 升级路线：2 到 A 共 13 格，两队各一条 */
+function ladder(ctx, y, st) {
+  const x = PAD, w = E.W - PAD * 2;
+  card(ctx, x, y, w, 108, 18);
+  const x0 = x + 62, x1 = x + w - 20, step = (x1 - x0) / 12;
+  LV.forEach((l, i) => text(ctx, l, x0 + i * step, y + 22, font(11, l === "A" ? "700" : "normal"), l === "A" ? C.ink2 : C.ink4, "center"));
+  [["r", y + 54], ["b", y + 84]].forEach(([t, ry]) => {
+    const T = TEAM[t], idx = LV.indexOf(st[t]);
+    icon[T.suit](ctx, x + 22, ry + .5, 13, T.c);
+    text(ctx, T.name, x + 32, ry, font(12, "700"), C.ink2);
+    line(ctx, x0, ry, x1, ry, C.line, 4);
+    if (idx > 0) line(ctx, x0, ry, x0 + idx * step, ry, T.c, 4);
+    for (let i = idx + 1; i < 13; i++) circle(ctx, x0 + i * step, ry, 2, C.line2);
+    if (st.play === t) circle(ctx, x0 + idx * step, ry, 12, null, C.gold, 2.5);
+    circle(ctx, x0 + idx * step, ry, 9.5, T.c);
+    text(ctx, st[t], x0 + idx * step, ry + .5, font(st[t].length > 1 ? 9 : 11, "900"), C.cream, "center");
+  });
+  return y + 108 + 12;
+}
+/** 上一局一行 */
+function lastRound(ctx, y, title, main, from, to, t) {
+  const x = PAD, w = E.W - PAD * 2;
+  card(ctx, x, y, w, 68, 18);
+  text(ctx, title, x + 16, y + 22, font(12), C.ink3);
+  text(ctx, main, x + 16, y + 46, font(15, "700"), C.ink);
+  const f = font(20, "900", true), s = `${from} → ${to}`;
+  text(ctx, s, x + w - 34, y + 35, f, TEAM[t].c, "right");
+  icon.chevron(ctx, x + w - 18, y + 35, C.ink4);
+  return y + 68 + 12;
+}
+function avatar(ctx, cx, cy, r, p, o = {}) {
+  const T = TEAM[p.t];
+  if (p.me) circle(ctx, cx, cy, r + 3, null, C.gold, 3);
+  circle(ctx, cx, cy, r, T.tint, T.edge, 2);
+  text(ctx, p.ch, cx, cy + 1, font(Math.round(r * 0.8), "900", r * 0.8 >= 20), T.c, "center");
+}
+/** 计分页（S3、S11、S13、S14 共用骨架） */
+function scorePage(ctx, st, o = {}) {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  const barH = o.barH ?? 76, by = E.H - barH - E.safeBottom;
+  ctx.save(); ctx.beginPath(); ctx.rect(0, E.contentTop, E.W, by - E.contentTop); ctx.clip();
+  let y = (o.board ?? scoreboard)(ctx, E.contentTop + 18, st);
+  if (o.ladder !== false) y = ladder(ctx, y, st);
+  if (o.last) y = lastRound(ctx, y, ...o.last);
+  ctx.restore();
+  nav(ctx, o.title ?? "牌桌记分 · 经典掼蛋", "back");
+  bar(ctx, barH);
+  return by;
+}
+function recordBar(ctx, by, round) {
+  button(ctx, PAD, by + 12, 110, 52, "每局记录", "ghost", { size: 15 });
+  button(ctx, PAD + 122, by + 12, E.W - PAD * 2 - 122, 52, `记一局 · 第 ${round} 局`, "primary");
+}
+/** 记一局 / 改一局的弹层。o = { title, sub, head, partner, at, preview, cta, ctaOn, impact } */
+function recordSheet(ctx, o) {
+  const H = o.impact ? 640 : 572, y = E.H - H;
+  scrim(ctx);
+  sheetBox(ctx, y, H);
+  let cy = sheetHeader(ctx, y, o.title, o.sub);
+  // 第一步：谁是头游——按队排两行，同一行就是搭档
+  text(ctx, "① 谁是头游？", 20, cy + 14, font(14, "700"), C.ink);
+  cy += 32;
+  const tw = (E.W - 40 - 10) / 2, th = 64;
+  [["r", 0], ["b", 1]].forEach(([t, row]) => {
+    PLAYERS.filter((p) => p.t === t).forEach((p, col) => {
+      const tx = 20 + col * (tw + 10), ty = cy + row * (th + 10), on = o.head === p.name;
+      fillRR(ctx, tx, ty, tw, th, 14, on ? C.cream : C.card);
+      strokeRR(ctx, tx + (on ? 1 : .5), ty + (on ? 1 : .5), tw - (on ? 2 : 1), th - (on ? 2 : 1), 14, on ? C.red : C.line, on ? 2 : 1);
+      avatar(ctx, tx + 34, ty + th / 2, 20, p);
+      text(ctx, p.name, tx + 64, ty + 24, font(15, "700"), C.ink); // 「我」只靠头像金圈，不加（我），给「头游」签让位
+      icon[TEAM[t].suit](ctx, tx + 70, ty + 44, 11, TEAM[t].c);
+      text(ctx, TEAM[t].name, tx + 80, ty + 44, font(12), C.ink3);
+      if (on) { const f = font(11, "900"); fillRR(ctx, tx + tw - 50, ty + 10, 40, 20, 10, C.red); text(ctx, "头游", tx + tw - 30, ty + 20, f, C.cream, "center"); }
+    });
+  });
+  cy += th * 2 + 10 + 22;
+  // 第二步：头游的搭档第几——三个选项；打 A 时副标题直接写「过 A / 没过」
+  const headP = PLAYERS.find((p) => p.name === o.head);
+  const mate = headP && PLAYERS.find((p) => p.t === headP.t && p !== headP);
+  text(ctx, mate ? `② ${mate.name}是第几个出完的？` : "② 头游的搭档第几？", 20, cy, font(14, "700"), mate ? C.ink : C.ink4);
+  if (!mate) text(ctx, "先选头游", E.W - 20, cy, font(12), C.ink4, "right");
+  cy += 18;
+  const ow = (E.W - 40 - 16) / 3, oh = 72;
+  const opts = o.at ? [["二游", "过 A"], ["三游", "过 A"], ["末游", "没过"]] : [["二游", "双上 · 升 3 级"], ["三游", "升 2 级"], ["末游", "升 1 级"]];
+  opts.forEach(([a, b], i) => {
+    const ox = 20 + i * (ow + 8), on = o.partner === a, dis = !mate;
+    fillRR(ctx, ox, cy, ow, oh, 14, on ? C.red : C.card);
+    if (!on) strokeRR(ctx, ox + .5, cy + .5, ow - 1, oh - 1, 14, C.line, 1, dis ? [3, 3] : undefined);
+    text(ctx, a, ox + ow / 2, cy + 28, font(18, "700"), on ? C.cream : dis ? C.khaki : C.ink, "center");
+    text(ctx, b, ox + ow / 2, cy + 52, font(12, on ? "700" : "normal"), on ? CREAM(0.9) : dis ? C.khaki : C.ink3, "center");
+  });
+  cy += oh + 14;
+  // 预览：选完两步才出现，位置固定（没选完时画占位，避免弹层跳动）
+  const pw = E.W - 40, ph = 60, p = o.preview;
+  if (!p) {
+    strokeRR(ctx, 20.5, cy + .5, pw - 1, ph - 1, 14, C.line2, 1, [4, 4]);
+    text(ctx, "选完两步，这里显示升几级", E.W / 2, cy + ph / 2, font(13), C.ink4, "center");
+  } else if (p.kind === "pass") {
+    fillRR(ctx, 20, cy, pw, ph, 14, C.gold);
+    text(ctx, p.main, 36, cy + 22, font(17, "900"), C.redInk);
+    text(ctx, p.sub, 36, cy + 44, font(12), C.redInk);
+  } else if (p.kind === "fail") {
+    fillRR(ctx, 20, cy, pw, ph, 14, C.errTint);
+    strokeRR(ctx, 20.5, cy + .5, pw - 1, ph - 1, 14, "#e3b5ae", 1);
+    text(ctx, p.main, 36, cy + 22, font(16, "700"), C.red);
+    text(ctx, p.sub, 36, cy + 44, font(12), C.ink2);
+  } else {
+    fillRR(ctx, 20, cy, pw, ph, 14, C.paper);
+    icon[TEAM[p.t].suit](ctx, 40, cy + ph / 2, 16, TEAM[p.t].c);
+    text(ctx, p.main, 56, cy + ph / 2, font(20, "900", true), TEAM[p.t].c);
+    text(ctx, p.sub, E.W - 36, cy + ph / 2, font(13), C.ink3, "right");
+  }
+  cy += ph + 14;
+  if (o.impact) {
+    fillRR(ctx, 20, cy, pw, 54, 14, C.sand);
+    o.impact.forEach((s, i) => text(ctx, s, 36, cy + 17 + i * 20, font(12, i === 0 ? "700" : "normal"), C.ink2));
+    cy += 54 + 14;
+  }
+  button(ctx, 20, cy, pw, 52, o.cta, "primary", { disabled: !o.ctaOn });
+  homeBar(ctx);
+  return { y, cy };
+}
+
+const ST6 = { round: 6, r: "9", b: "7", play: "b" };
+const ST_A = { round: 13, r: "A", b: "Q", play: "r", aFail: { r: 1 } };
+
+add("七、牌桌计分（#162）", "S1", "入口：已成局的详情页", "局满座（full）且离开局不到 30 分钟起，牌桌下方出现「开始记分」条，座位上的人都能点。座位右下角用花色角标提前告诉大家怎么分队：1、3 号红方 ♥，2、4 号黑方 ♠", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  const by = E.H - 76 - E.safeBottom;
+  ctx.save(); ctx.beginPath(); ctx.rect(0, E.contentTop, E.W, by - E.contentTop); ctx.clip();
+  let y = detailTop(ctx, E.contentTop + 4, { seats: [["老", "host"], ["L", "other"], ["阿", "other"], ["小", "other"]], center: "4/4", sub: "已成局", teams: true });
+  y = detailNames(ctx, y, ["局头 · 老王", "Lily", "阿杰（我）", "小周"]);
+  const x = PAD, w = E.W - PAD * 2;
+  card(ctx, x, y, w, 76, 18);
+  text(ctx, "人齐了，开打就记分", x + 16, y + 28, font(16, "700"), C.ink);
+  text(ctx, "四个人都能记，一局点两下", x + 16, y + 52, font(12), C.ink3);
+  button(ctx, x + w - 16 - 112, y + 16, 112, 44, "开始记分", "primary", { size: 15 });
+  noteTag(ctx, "开局前 30 分钟起出现；已在记分时变成「回到记分 · 第 6 局」", x, y + 92);
+  y += 76 + 40;
+  detailInfo(ctx, y);
+  ctx.restore();
+  nav(ctx, "牌局详情", "back");
+  bar(ctx, 76);
+  button(ctx, PAD, by + 12, 110, 52, "分享", "dark", { icon: icon.share });
+  button(ctx, PAD + 122, by + 12, E.W - PAD * 2 - 122, 52, "已报名 · 退出", "ghost");
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+});
+
+add("七、牌桌计分（#162）", "S2", "开始记分：确认分队和约定", "分队由座位决定，不用选对家。只有一个约定要定：打 A 几次不过回 2（默认 3 次，和学牌页说法一致）。谁先点「开始」都行，其他三人实时进入记分页", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  detailTop(ctx, E.contentTop + 4, { seats: [["老", "host"], ["L", "other"], ["阿", "other"], ["小", "other"]], center: "4/4", sub: "已成局", teams: true });
+  nav(ctx, "牌局详情", "back");
+  const H = 470, y = E.H - H;
+  scrim(ctx);
+  sheetBox(ctx, y, H);
+  let cy = sheetHeader(ctx, y, "开始记分", "按座位分队：对家是搭档");
+  const pw = E.W - 40;
+  ["r", "b"].forEach((t) => {
+    const T = TEAM[t];
+    fillRR(ctx, 20, cy, pw, 62, 14, C.paper);
+    circle(ctx, 44, cy + 31, 14, C.card, T.edge, 1.5);
+    icon[T.suit](ctx, 44, cy + 31.5, 15, T.c);
+    text(ctx, T.name, 68, cy + 31, font(16, "700"), T.c);
+    let ax = 130;
+    PLAYERS.filter((p) => p.t === t).forEach((p) => {
+      avatar(ctx, ax + 16, cy + 31, 16, p);
+      const s = `${p.seat}号 ${p.name}`;
+      text(ctx, s, ax + 38, cy + 31, font(13), C.ink2);
+      ax += 38 + measure(ctx, s, font(13)) + 14;
+    });
+    cy += 62 + 10;
+  });
+  cy += 12;
+  text(ctx, "打 A 几次不过，回到 2", 20, cy + 10, font(14, "700"), C.ink);
+  cy += 28;
+  let x = 20; for (const [k, on] of [["3 次", 1], ["不回 2", 0]]) x += chip(ctx, x, cy, k, !!on) + 8;
+  cy += 36 + 16;
+  text(ctx, "过 A：打本队的 A 时拿头游，搭档不是末游。过了这场结束", 20, cy, font(12), C.ink3);
+  cy += 24;
+  button(ctx, 20, cy, pw, 52, "开始 · 第 1 局打 2", "primary");
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+});
+
+add("七、牌桌计分（#162）", "S3", "记分页：两张级牌立在牌桌上", "本局打的那一队的级牌抬高、加金边、顶上挂「本局打这级」——竞品都不记这一条，我们把它做成最显眼的东西。下面是 2 到 A 的升级路线和上一局；主按钮「记一局」", (ctx) => {
+  const by = scorePage(ctx, ST6, { last: ["上一局 · 第 5 局 · 打 9", "黑方 头游＋二游 · 双上", "4", "7", "b"] });
+  recordBar(ctx, by, 6);
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+});
+
+add("七、牌桌计分（#162）", "S4", "记一局 ①：先点头游", "四个人按队排两行，同一行就是搭档。点了头游才能选第二步；预览位置先用虚线占住，选完不跳动", (ctx) => {
+  scorePage(ctx, ST6);
+  statusBar(ctx); capsule(ctx);
+  recordSheet(ctx, { title: "记第 6 局", sub: "本局打黑方的 7", cta: "记下第 6 局" });
+});
+
+add("七、牌桌计分（#162）", "S5", "记一局 ②：点搭档第几，看预览", "两下点完：头游阿杰、搭档老王三游 → 红方 9 → J，下一局打 J。确认后级牌翻牌（S11）", (ctx) => {
+  scorePage(ctx, ST6);
+  statusBar(ctx); capsule(ctx);
+  recordSheet(ctx, { title: "记第 6 局", sub: "本局打黑方的 7", head: "阿杰", partner: "三游", preview: { t: "r", main: "红方 9 → J", sub: "升 2 级 · 下一局打 J" }, cta: "记下第 6 局", ctaOn: true });
+});
+
+add("七、牌桌计分（#162）", "S6", "打 A：过了", "打本队的 A 时，选项副标题直接写「过 A / 没过」，不用记规则。头游＋二游或三游 → 金色预览「过 A」，确认后进入本场结束（S8）", (ctx) => {
+  scorePage(ctx, ST_A);
+  statusBar(ctx); capsule(ctx);
+  recordSheet(ctx, { title: "记第 13 局", sub: "本局打红方的 A · 第 2 次", head: "老王", partner: "二游", at: true, preview: { kind: "pass", main: "过 A！红方赢下这一场", sub: "老王头游、阿杰二游 · 一共 13 局" }, cta: "记下 · 本场结束", ctaOn: true });
+});
+
+add("七、牌桌计分（#162）", "S7", "打 A：没过", "头游＋末游不算过。预览写清楚还剩几次：3 次不过回到 2。对方拿头游时同样算本队这次没过，同时对方照常升级", (ctx) => {
+  scorePage(ctx, ST_A);
+  statusBar(ctx); capsule(ctx);
+  recordSheet(ctx, { title: "记第 13 局", sub: "本局打红方的 A · 第 2 次", head: "老王", partner: "末游", at: true, preview: { kind: "fail", main: "没过 A · 红方下一局还打 A", sub: "已没过 2 次，第 3 次再不过就回到 2" }, cta: "记下第 13 局", ctaOn: true });
+});
+
+add("七、牌桌计分（#162）", "S8", "本场结束", "赢的一方级牌换成金底 A。只给局数、用时、双上次数——不出现任何分数、筹码、金额（#91 合规）。「再来一场」两队都从 2 开始，记录接着存在这一局下面", (ctx) => {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  const by = E.H - 76 - E.safeBottom, x = PAD, w = E.W - PAD * 2;
+  let y = E.contentTop + 18;
+  felt(ctx, x, y, w, 330);
+  text(ctx, "第 1 场 · 13 局", E.W / 2, y + 32, font(13, "700"), CREAM(0.85), "center");
+  levelCard(ctx, E.W / 2, y + 64, "A", "r", { inPlay: false });
+  strokeRR(ctx, E.W / 2 - 55.5, y + 60.5, 111, 147, 15, C.gold, 3);
+  text(ctx, "红方 过 A", E.W / 2, y + 246, font(34, "900", true), C.cream, "center");
+  text(ctx, "老王 · 阿杰（我）", E.W / 2, y + 284, font(14), CREAM(0.8), "center");
+  y += 330 + 16;
+  card(ctx, x, y, w, 132, 18);
+  const cells = [["13", "局"], ["1:52", "用时"], ["4 : 2", "双上 红 : 黑"]], cw = w / 3;
+  cells.forEach(([v, l], i) => {
+    text(ctx, v, x + cw * i + cw / 2, y + 40, font(26, "900", true), C.ink, "center");
+    text(ctx, l, x + cw * i + cw / 2, y + 70, font(12), C.ink3, "center");
+    if (i) { ctx.fillStyle = C.line2; ctx.fillRect(x + cw * i, y + 20, 1, 64); }
+  });
+  ctx.fillStyle = C.line2; ctx.fillRect(x + 16, y + 92, w - 32, 1);
+  icon.spade(ctx, x + 26, y + 112.5, 12, C.ink);
+  text(ctx, "黑方 停在 Q", x + 38, y + 112, font(13), C.ink2);
+  text(ctx, "每局记录", x + w - 34, y + 112, font(13, "600"), C.red, "right");
+  icon.chevron(ctx, x + w - 20, y + 112, C.red);
+  y += 132 + 16;
+  button(ctx, x, y, w, 48, "结束记分", "ghost", { size: 15 });
+  nav(ctx, "本场结束", "back");
+  bar(ctx, 76);
+  button(ctx, PAD, by + 12, 130, 52, "分享战报", "dark", { icon: icon.share, size: 15 });
+  button(ctx, PAD + 142, by + 12, E.W - PAD * 2 - 142, 52, "再来一场 · 从 2 打起", "primary", { size: 15 });
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+});
+
+const ROUNDS = [ // 新的在上
+  [6, "7", "b", "r", "头游＋三游", "阿杰 头游 · 老王 三游", "9", "J", "Lily 21:42"],
+  [5, "9", "r", "b", "头游＋二游 · 双上", "Lily 头游 · 小周 二游", "4", "7", "老王 21:31"],
+  [4, "6", "r", "r", "头游＋二游 · 双上", "老王 头游 · 阿杰 二游", "6", "9", "阿杰 21:18"],
+  [3, "4", "b", "r", "头游＋末游", "阿杰 头游 · 老王 末游", "5", "6", "Lily 21:05"],
+  [2, "5", "r", "b", "头游＋三游", "小周 头游 · Lily 三游", "2", "4", "老王 20:51"],
+  [1, "2", "", "r", "头游＋二游 · 双上", "老王 头游 · 阿杰 二游", "2", "5", "老王 20:38"],
+];
+function recordsPage(ctx) {
+  ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
+  const x = PAD, w = E.W - PAD * 2;
+  let y = E.contentTop + 12;
+  text(ctx, "共 6 局 · 第 1 场", x, y + 12, font(13), C.ink3);
+  icon.heart(ctx, x + w - 112, y + 12.5, 12, C.red); text(ctx, "J", x + w - 100, y + 12, font(14, "900"), C.red);
+  icon.spade(ctx, x + w - 60, y + 12.5, 12, C.ink); text(ctx, "7", x + w - 48, y + 12, font(14, "900"), C.ink);
+  y += 32;
+  card(ctx, x, y, w, 84 * ROUNDS.length, 18);
+  ROUNDS.forEach(([n, lv, pt, wt, how, who, a, b, rec], i) => {
+    const ry = y + i * 84, T = TEAM[wt];
+    circle(ctx, x + 32, ry + 42, 16, C.paper);
+    text(ctx, String(n), x + 32, ry + 43, font(15, "900"), C.ink2, "center");
+    const tag = pt ? `打${TEAM[pt].name.slice(0, 1)} ${lv}` : `打 ${lv}`, tf = font(11, "700"), tgw = measure(ctx, tag, tf) + 12;
+    fillRR(ctx, x + 60, ry + 13, tgw, 20, 6, C.beige); text(ctx, tag, x + 66, ry + 23, tf, C.ink2);
+    icon[T.suit](ctx, x + 68 + tgw, ry + 23.5, 11, T.c);
+    text(ctx, `${T.name} ${how}`, x + 78 + tgw, ry + 23, font(14, "700"), C.ink);
+    text(ctx, who, x + 60, ry + 46, font(12), C.ink2);
+    text(ctx, `${rec} 记`, x + 60, ry + 66, font(11), C.ink4);
+    text(ctx, `${a}→${b}`, x + w - 30, ry + 42, font(17, "900"), T.c, "right");
+    icon.chevron(ctx, x + w - 16, ry + 42, C.ink4);
+    if (i < ROUNDS.length - 1) { ctx.fillStyle = C.line2; ctx.fillRect(x + 60, ry + 84, w - 76, 1); }
+  });
+  nav(ctx, "每局记录", "back");
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+  return y;
+}
+add("七、牌桌计分（#162）", "S9", "每局记录", "每行：打谁的几、谁赢怎么赢、级数变化、谁记的。点任意一局都能改（S10）。新的在上", (ctx) => {
+  const y = recordsPage(ctx), w = E.W - PAD * 2;
+  noteBox(ctx, PAD, y + 84 * 2, w, 84, "");
+  noteTag(ctx, "点一局 → S10 改这一局", PAD + w - 4, y + 84 * 2 + 14, "right");
+});
+
+add("七、牌桌计分（#162）", "S10", "改一局：说清楚会连带改什么", "改第 4 局（双上改成头游＋三游）。服务端从第 1 局重算，弹层先列出连带变化：现在的级数、下一局打几。所有人实时看到，记录里标「已改」", (ctx) => {
+  recordsPage(ctx);
+  recordSheet(ctx, { title: "改第 4 局", sub: "原来：红方 头游＋二游 · 6 → 9", head: "老王", partner: "三游", preview: { t: "r", main: "红方 6 → 8", sub: "原来 → 9" }, impact: ["后面 2 局跟着重新算", "现在 红方 J → 10 · 黑方 7 不变 · 下一局打 10"], cta: "改成这样", ctaOn: true });
+});
+
+add("七、牌桌计分（#162）", "S11", "实时：别人刚记了一局", "Lily 在她手机上记了第 6 局：顶部条说是谁记的、记了什么；红方级牌翻牌 9 → J（翻到一半的样子）。翻牌 220ms --ease-out；系统减少动态效果时直接换", (ctx) => {
+  const by = scorePage(ctx, { round: 7, r: "J", b: "7", play: "r", flip: { r: 0.35 } }, { last: ["上一局 · 第 6 局 · 打 7", "红方 头游＋三游", "9", "J", "r"] });
+  recordBar(ctx, by, 7);
+  const ty = E.contentTop + 6;
+  fillRR(ctx, PAD, ty, E.W - PAD * 2, 56, 14, C.ink);
+  circle(ctx, PAD + 24, ty + 28, 13, TEAM.b.tint);
+  text(ctx, "L", PAD + 24, ty + 29, font(12, "900"), C.ink, "center");
+  text(ctx, "Lily 记了第 6 局", PAD + 46, ty + 18, font(12), CREAM(0.7));
+  text(ctx, "红方 头游＋三游，9 → J", PAD + 46, ty + 38, font(14, "700"), C.cream);
+  noteTag(ctx, "顶部条 3 秒后收起", E.W - PAD, ty + 70, "right");
+  noteTag(ctx, "翻牌中：scaleX 1 → 0 换字 → 1", PAD + 6, E.contentTop + 300);
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+});
+
+add("七、牌桌计分（#162）", "S12", "两人同时记了同一局", "提交时服务端发现第 6 局已有人记过（409）。结果一样：静默合并，只弹 toast「和 Lily 记的一样」。结果不一样：弹这个框，两边并排给出，以谁为准由点的人决定（改成我的 = 走 S10 的修改）", (ctx) => {
+  scorePage(ctx, ST6);
+  statusBar(ctx); capsule(ctx);
+  recordSheet(ctx, { title: "记第 6 局", sub: "本局打黑方的 7", head: "阿杰", partner: "二游", preview: { t: "r", main: "红方 9 → Q", sub: "双上 · 下一局打 Q" }, cta: "记下第 6 局", ctaOn: true });
+  scrim(ctx);
+  const dw = E.W - 48, dh = 276, dx = 24, dy = (E.H - dh) / 2;
+  fillRR(ctx, dx, dy, dw, dh, 20, C.card);
+  text(ctx, "第 6 局 Lily 已经记了", E.W / 2, dy + 36, font(18, "700"), C.ink, "center");
+  text(ctx, "两边记的不一样，用哪个？", E.W / 2, dy + 62, font(13), C.ink3, "center");
+  const rows = [["Lily 记的", "阿杰 头游 · 老王 三游", "9 → J"], ["你记的", "阿杰 头游 · 老王 二游", "9 → Q"]];
+  rows.forEach(([a, b, c], i) => {
+    const ry = dy + 84 + i * 56;
+    fillRR(ctx, dx + 16, ry, dw - 32, 48, 12, C.paper);
+    text(ctx, a, dx + 30, ry + 16, font(12, "700"), C.ink2);
+    text(ctx, b, dx + 30, ry + 34, font(13), C.ink);
+    text(ctx, c, dx + dw - 30, ry + 25, font(17, "900"), C.red, "right");
+  });
+  const bw = (dw - 32 - 10) / 2;
+  button(ctx, dx + 16, dy + dh - 64, bw, 48, "用 Lily 的", "soft", { size: 15 });
+  button(ctx, dx + 26 + bw, dy + dh - 64, bw, 48, "改成我的", "primary", { size: 15 });
+});
+
+add("七、牌桌计分（#162）", "S13", "不升级玩法：只记赢了几局", "开局选「不升级」的局不记级数：两张牌换成胜局数，下面记双上次数。记一局的弹层只要点头游（搭档第几只影响「双上」统计，可选）", (ctx) => {
+  const board = (ctx, y) => {
+    const x = PAD, w = E.W - PAD * 2, h = 236;
+    felt(ctx, x, y, w, h);
+    text(ctx, "不升级 · 已打 8 局", E.W / 2, y + 32, font(13, "700"), CREAM(0.85), "center");
+    [["r", x + w * 0.27, "5"], ["b", x + w * 0.73, "3"]].forEach(([t, cx, v]) => {
+      const T = TEAM[t];
+      text(ctx, v, cx, y + 112, font(76, "900", true), C.cream, "center");
+      const nf = font(15, "700"), tw = measure(ctx, T.name, nf), ny = y + 172;
+      circle(ctx, cx - tw / 2 - 12, ny, 9, C.cream); icon[T.suit](ctx, cx - tw / 2 - 12, ny + .5, 11, T.c);
+      text(ctx, T.name, cx - tw / 2 + 2, ny, nf, C.cream);
+      text(ctx, T.members.join(" · "), cx, ny + 22, font(12), CREAM(0.75), "center");
+    });
+    text(ctx, ":", E.W / 2, y + 108, font(40, "900", true), CREAM(0.6), "center");
+    return y + h + 16;
+  };
+  const by = scorePage(ctx, {}, { board, ladder: false, title: "牌桌记分 · 不升级", last: ["上一局 · 第 8 局", "红方 头游＋二游 · 双上", "4", "5", "r"] });
+  const x = PAD, w = E.W - PAD * 2, y = E.contentTop + 18 + 236 + 16 + 68 + 12;
+  card(ctx, x, y, w, 56, 18);
+  text(ctx, "双上", x + 16, y + 28, font(13), C.ink3);
+  icon.heart(ctx, x + 70, y + 28.5, 12, C.red); text(ctx, "2 次", x + 82, y + 28, font(14, "700"), C.ink);
+  icon.spade(ctx, x + 150, y + 28.5, 12, C.ink); text(ctx, "1 次", x + 162, y + 28, font(14, "700"), C.ink);
+  recordBar(ctx, by, 9);
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+});
+
+add("七、牌桌计分（#162）", "S14", "旁观：不在座位上只能看", "候补和别的牌友打开同一局也能实时看比分，但没有「记一局」，也不能改。操作栏只有分享和一行说明", (ctx) => {
+  const by = scorePage(ctx, { ...ST6, spectator: true }, { last: ["上一局 · 第 5 局 · 打 9", "黑方 头游＋二游 · 双上", "4", "7", "b"] });
+  button(ctx, PAD, by + 12, 110, 52, "分享", "dark", { icon: icon.share });
+  text(ctx, "只有座位上的四个人能记分", PAD + 128, by + 38, font(13), C.ink3);
+  homeBar(ctx); statusBar(ctx); capsule(ctx);
+});
+
+/** 战报卡片：沿用 C0 的 5:4 版式规则（满版、内描边、文字区左右 48、座位圆心 H−70） */
+function reportCard(ctx, W = 500, H = 400) {
+  ctx.fillStyle = C.redDeep; ctx.fillRect(0, 0, W, H);
+  strokeRR(ctx, 8, 8, W - 16, H - 16, 22, C.redInk, 8);
+  strokeRR(ctx, 24, 24, W - 48, H - 48, 14, "rgba(233,196,106,0.45)", 2, [6, 5]);
+  text(ctx, "今天 · 周三 10/14 · SCBD", 48, 66, font(22, "700"), C.gold);
+  text(ctx, "红方 过 A", 48, 140, font(64, "900", true), C.cream);
+  text(ctx, "老王 · 阿杰  胜  Lily · 小周", 48, 202, font(20, "700"), C.cream);
+  text(ctx, "13 局 · 1 小时 52 分 · 双上 4 次", 48, 238, font(17), CREAM(0.75));
+  const cy = H - 70;
+  PLAYERS.forEach((p, i) => {
+    const cx = 70 + i * 52, T = TEAM[p.t];
+    circle(ctx, cx, cy, 22, T.tint);
+    text(ctx, p.ch, cx, cy + 1, font(18, "900"), T.c, "center");
+    circle(ctx, cx + 15, cy + 15, 8, C.card); icon[T.suit](ctx, cx + 15, cy + 15.5, 9, T.c);
+  });
+  const f = font(20, "700"), s = "黑方停在 Q", pw = measure(ctx, s, f) + 32;
+  fillRR(ctx, W - 48 - pw, cy - 22, pw, 44, 22, "rgba(255,247,236,0.16)");
+  text(ctx, s, W - 48 - pw / 2, cy, f, C.cream, "center");
+}
+add("七、牌桌计分（#162）", "S15", "战报卡片（转发）", "本场结束后「分享战报」用的 5:4 卡片，版式规则同 C0。只写谁过了 A、几局、多久、双上几次；不写分数、倍率、金额，也不用「输赢多少」这类词", (ctx) => reportCard(ctx), "card", [500, 400]);
 
 // ════════ 渲染 ════════
 function render() {
