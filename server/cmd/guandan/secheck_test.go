@@ -15,7 +15,7 @@ import (
 type fixedTokenSource struct{}
 
 func (fixedTokenSource) Token(context.Context) (string, error) { return "tok", nil }
-func (fixedTokenSource) Invalidate(string)                     {}
+func (fixedTokenSource) Invalidate(string, string)             {}
 
 // #146：内容安全检测的开关跟着 GUANDAN_WX_APPID / GUANDAN_WX_SECRET 走；开发模式用假检测器。
 func TestNewContentGuard(t *testing.T) {
