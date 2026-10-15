@@ -11,6 +11,10 @@ function respond(status: number, body: unknown) {
   return { ok: status >= 200 && status < 300, status, text: async () => text, json: async () => body } as unknown as Response;
 }
 
+// 每个用例挂上的 App 都要在用例结束时卸掉：只清 DOM 的话 App 还活着，还在听路由、改 document.title，
+// 它排在下一帧之后的 effect 会落进下一个用例（#167）。
+const mounted: HTMLElement[] = [];
+
 function renderAt(path: string): HTMLElement {
   window.history.replaceState(null, "", path);
   vi.stubGlobal(
@@ -24,6 +28,7 @@ function renderAt(path: string): HTMLElement {
   const container = document.createElement("div");
   document.body.appendChild(container);
   render(<App />, container);
+  mounted.push(container);
   return container;
 }
 
@@ -36,7 +41,9 @@ function button(c: HTMLElement, text: string): HTMLButtonElement {
 beforeEach(() => installFakeSocket());
 
 afterEach(() => {
+  for (const c of mounted.splice(0)) render(null, c);
   document.body.innerHTML = "";
+  document.title = "";
   localStorage.clear();
   vi.unstubAllGlobals();
   window.history.replaceState(null, "", "/");
@@ -92,7 +99,7 @@ describe("05 学牌列表 / 06 规则速览", () => {
 
     await vi.waitFor(() => expect(c.querySelector("[data-testid=learn-progress]")).not.toBeNull());
     expect(window.location.pathname).toBe("/learn");
-    expect(document.title).toBe("学牌 · 随时掼掼蛋");
+    await vi.waitFor(() => expect(document.title).toBe("学牌 · 随时掼掼蛋"));
     expect(c.querySelector(".tabbar .tab.on")?.textContent).toContain("学牌");
     expect(c.textContent).toContain("已学 0 / 9 课");
     expect(c.textContent).toContain("从第一课开始：规则速览");
@@ -115,7 +122,8 @@ describe("05 学牌列表 / 06 规则速览", () => {
 
     await vi.waitFor(() => expect(c.querySelector("[data-testid=quiz]")).not.toBeNull());
     expect(window.location.pathname).toBe("/learn/overview");
-    expect(document.title).toBe("规则速览 · 学牌 · 随时掼掼蛋");
+    // 标题在 App 的 useEffect 里改，排在下一帧之后，要等（#167）。
+    await vi.waitFor(() => expect(document.title).toBe("规则速览 · 学牌 · 随时掼掼蛋"));
     expect(c.querySelector(".felt figcaption")?.textContent).toContain("逢人配");
     expect(button(c, "先做练习题")).toBeTruthy();
 
@@ -149,6 +157,6 @@ describe("05 学牌列表 / 06 规则速览", () => {
   it("不存在的课给出提示，不白屏", async () => {
     const c = renderAt("/learn/nope");
     await vi.waitFor(() => expect(c.textContent).toContain("没有这一课"));
-    expect(document.title).toBe("学牌 · 随时掼掼蛋");
+    await vi.waitFor(() => expect(document.title).toBe("学牌 · 随时掼掼蛋"));
   });
 });

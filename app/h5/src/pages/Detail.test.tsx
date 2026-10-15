@@ -41,6 +41,10 @@ function respond(status: number, body: unknown) {
   } as unknown as Response;
 }
 
+// 用例结束时把挂上的详情页卸掉：只清 DOM 的话组件还活着，它排在下一帧之后的 effect
+// （比如记 detail_view）会落进下一个用例（#167）。
+const mounted: HTMLElement[] = [];
+
 /** 起一个详情页：GET 返回 initial，PATCH 按 patchResponses 依次返回。 */
 function setup(initial: GameDetail, patchResponses: Response[]) {
   const patches: { body: GamePatch; ifMatch: string | null }[] = [];
@@ -75,6 +79,7 @@ function setup(initial: GameDetail, patchResponses: Response[]) {
     />,
     container,
   );
+  mounted.push(container);
   return { container, patches, toasts, getGets: () => gets };
 }
 
@@ -99,6 +104,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const c of mounted.splice(0)) render(null, c);
   document.body.innerHTML = "";
   vi.unstubAllGlobals();
 });
@@ -246,6 +252,9 @@ describe("加入日历", () => {
     const join = [...container.querySelectorAll(".actionbar button")].find((b) =>
       b.textContent?.includes("报名占座"),
     ) as HTMLButtonElement;
+    // detail_view 在 useEffect 里记，Preact 把它排在下一帧之后：先等它记上再清，
+    // 否则机器一忙它会落在清空之后、混进下面的漏斗断言（#167）。
+    await vi.waitFor(() => expect(telemetry.track).toHaveBeenCalledWith("detail_view", { game: "ABC123" }));
     telemetry.track.mockClear();
     join.click();
     await vi.waitFor(() => expect(container.querySelector(".sheet.joined")).not.toBeNull());
