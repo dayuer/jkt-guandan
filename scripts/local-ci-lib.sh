@@ -106,7 +106,7 @@ context_command() {
   case "${1:-}" in
     local-ci/test)     echo 'make test  # go vet + 前端构建 + go test -race + 前端测试' ;;
     local-ci/vuln)     echo 'make vuln  # govulncheck' ;;
-    local-ci/h5-audit) echo 'cd app/h5 && npm audit --omit=dev' ;;
+    local-ci/h5-audit) echo 'cd app/h5 && npm audit --omit=dev --registry=https://registry.npmjs.org' ;;
     local-ci/minigame) echo 'cd app/minigame && npm ci && npm run typecheck && npm test && npm run build' ;;
     local-ci/nginx)    echo 'scripts/check-nginx.sh deploy/nginx/guandan.synon.ai.conf' ;;
     local-ci/docker)   echo 'docker build + scripts/container-smoke.sh + scripts/test-deploy.sh + scripts/restore-drill.sh' ;;
@@ -242,7 +242,9 @@ run_context() {
     local-ci/vuln)     make vuln || return 1 ;;
     local-ci/h5-audit)
       # audit 只读 package-lock.json，不需要先装依赖。
-      ( cd app/h5 && npm audit --omit=dev ) || return 1 ;;
+      # 显式用官方源：本机常配 npmmirror 之类的镜像加速安装，而镜像大多没实现
+      # /-/npm/v1/security/*，audit 会 404 —— 那是环境问题，却会被记成代码红。
+      ( cd app/h5 && npm audit --omit=dev --registry=https://registry.npmjs.org ) || return 1 ;;
     local-ci/minigame)
       ( cd app/minigame && npm ci && npm run typecheck && npm test && npm run build ) || return 1 ;;
     local-ci/nginx)    scripts/check-nginx.sh deploy/nginx/guandan.synon.ai.conf || return 1 ;;
