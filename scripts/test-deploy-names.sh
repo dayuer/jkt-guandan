@@ -35,8 +35,13 @@ SHIM
 chmod +x "$work/shim/docker"
 
 # 跑一次 --print-names。$1 = 这次运行的 docker 调用日志；stdout 是键值对。
+#
+# **必须把 PORT / PORT_OLD 清掉**：本脚本通常是 test-deploy.sh 调起来的，而 test-deploy.sh
+# 把 PORT export 出去了（deploy-remote.sh 要读）。不清的话两次探测都继承同一个 PORT，
+# 走的是「显式指定端口」那条分支，两次当然一样 —— 本地单独跑看不出来，只有从
+# test-deploy.sh 里跑才会露。清成空串即可：test-deploy.sh 那边是 `[ -n "${PORT:-}" ]`。
 run_once() {
-  DOCKER_LOG="$1" PATH="$work/shim:$PATH" sh "$SELF" --print-names
+  DOCKER_LOG="$1" PATH="$work/shim:$PATH" PORT= PORT_OLD= sh "$SELF" --print-names
 }
 
 # 从键值对里取一个字段（值里没有空格）。
