@@ -4,14 +4,48 @@
 # 在本机或 CI 上验证 scripts/deploy-remote.sh（服务器端的发布逻辑），不需要 nginx 和 ssh：
 # 用一个临时目录当 /var/www/guandan，用容器自己的端口当 SITE_URL。
 # 用法：scripts/test-deploy.sh <已经 build 好的镜像，如 guandan:ci>
+#       scripts/test-deploy.sh --print-names   只打印本次运行用的名字和端口（给自测/排障看）
 # 在仓库根目录执行：场景 6 要用当前提交的源码另外构建一个带额外迁移的镜像。
 set -eu
-GOOD=${1:?"用法：scripts/test-deploy.sh <镜像>"}
-PORT=${PORT:-28480}
-REPO=guandan-deploytest
+
+# 每次运行一套自己的名字和端口（#181）。本机经常同时跑好几个 local-ci/docker —— impl 自测、
+# auditor 复审、coord 的 pre-merge-check。原来名字写死成 guandan-deploytest*：另一路进程的
+# cleanup 会把这一路正在用的容器删掉，这一路接着 rename 就报
+# `No such container: guandan-deploytest-prev`，docker 那项随机误报。
+#
+# **端口也得每路自己的**：只改名字的话，两路会同时去绑 127.0.0.1:28480，只是把失败从
+# `No such container` 换成 `port is already allocated`。所以两个端口都用内核分配
+# （照 container-smoke.sh 的做法）。容器名、卷名、镜像标签同理。
+#
+# 生产 deploy.sh / deploy-remote.sh 的命名一个字不动 —— 线上就是 guandan，这里只改测试注入的变量。
+RUN=$$
+NAME="guandan-deploytest-$RUN"
+VOLUME="guandan-deploytest-$RUN-data"
+REPO="guandan-deploytest-$RUN"
+
+# 两个**互不相同**的空闲端口：先都扣住再一起关，免得内核把同一个号给两次。
+if [ -n "${PORT:-}" ]; then
+  PORTS="$PORT $((PORT + 1))"   # 显式指定时保持原来的行为
+else
+  PORTS=$(python3 -c '
+import socket
+held, ports = [], []
+for _ in range(2):
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    held.append(s)
+    ports.append(s.getsockname()[1])
+for s in held:
+    s.close()
+print(" ".join(str(p) for p in ports))
+')
+fi
+PORT=${PORTS%% *}
+PORT_OLD=${PORTS#* }
+export PORT PORT_OLD
 
 work=$(mktemp -d)
-export NAME=guandan-deploytest VOLUME=guandan-deploytest-data IMAGE_REPO=$REPO PORT \
+export NAME VOLUME IMAGE_REPO=$REPO \
   WEB_ROOT="$work/www" ENV_FILE="$work/none.env" PUBLIC_URL="http://127.0.0.1:$PORT" \
   READY_TIMEOUT=30
 cleanup() {
@@ -25,6 +59,20 @@ cleanup() {
 trap cleanup EXIT
 docker rm -f "$NAME" "$NAME-prev" >/dev/null 2>&1 || true
 docker volume rm "$VOLUME" >/dev/null 2>&1 || true
+
+# 打印本次的名字和端口就退出 —— 上面那两行 rm 已经跑过了，退出时 trap 里的 cleanup 也会照常
+# 执行：配合 test-deploy-names.sh 的假 docker，正好能看出「这一次运行碰了哪些资源」。
+if [ "${1:-}" = '--print-names' ]; then
+  printf 'RUN=%s\nNAME=%s\nVOLUME=%s\nREPO=%s\nPORT=%s\nPORT_OLD=%s\n' \
+    "$RUN" "$NAME" "$VOLUME" "$REPO" "$PORT" "$PORT_OLD"
+  exit 0
+fi
+
+GOOD=${1:?"用法：scripts/test-deploy.sh <镜像> | --print-names"}
+
+# 并发隔离自测（#181）：毫秒级，放在前面 —— 名字或端口一旦退回去写死，先在这里就红，
+# 不用等后面几分钟的场景跑完。
+"$(dirname "$0")"/test-deploy-names.sh || { echo "失败：并发隔离自测没过"; exit 1; }
 
 # 三个好版本，加两个坏版本。
 for t in good1 good2 good3; do docker tag "$GOOD" "$REPO:$t"; done
@@ -124,8 +172,9 @@ docker build -q -t "$REPO:prod" "$prod" >/dev/null
 stage prod
 (
   # 子 shell：换一套容器名、数据卷和端口，不影响上面的场景。
+  # 端口用另一个本次运行自己找的空闲端口（原来是 PORT+1，并发时不一定是空的）。
   # 注意 ( … ) || 里 set -e 不生效，每一步都要自己判失败。
-  NAME="$NAME-old" VOLUME="$VOLUME-old" PORT=$((PORT + 1))
+  NAME="$NAME-old" VOLUME="$VOLUME-old" PORT="$PORT_OLD"
   PUBLIC_URL="http://127.0.0.1:$PORT" SITE_URL="http://127.0.0.1:$PORT"
   export NAME VOLUME PORT PUBLIC_URL SITE_URL
   # 0e45b18 的镜像没有 backup 子命令：默认拒绝发布；空数据卷上首次发布它要显式允许不备份。
