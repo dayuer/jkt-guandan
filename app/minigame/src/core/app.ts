@@ -163,9 +163,12 @@ export class App {
   /** 立刻整屏重画（借主画布导出图片之后，要在同一个 tick 里把页面画回来）。 */
   repaint() { this.draw(Date.now()); }
 
-  animate(dur: number, onFrame: (p: number) => void, done?: () => void) {
-    this.anims.push({ t0: Date.now(), dur, onFrame, done });
+  /** 返回取消函数：场景离开时停掉还没跑完的动画（取消后 done 不再调用）。 */
+  animate(dur: number, onFrame: (p: number) => void, done?: () => void): () => void {
+    const a: Anim = { t0: Date.now(), dur, onFrame, done };
+    this.anims.push(a);
     this.redraw();
+    return () => { this.anims = this.anims.filter((x) => x !== a); };
   }
 
   toast(msg: string, ms = 2000) {

@@ -10,9 +10,10 @@ import { ApiError, editRound, getGame, getScore, newIdempotencyKey, recordRound,
 import { cardDay, kindLabel, slashDate, timeHM, weekday } from "../lib/fmt";
 import { realtime } from "../lib/realtime";
 import {
-  A, RevisionGate, TEAM_NAME, aTip, boardState, boardTitle, compute, decideConflict, durationLong, durationShort,
-  factOf, howText, isStarted, levelName, mateOf, matchDuration, other, placeName, playingTag, previewEdit, previewText,
-  resultLine, sameFact, teamOf, whoLine,
+  A, RevisionGate, TEAM_NAME, aTip, boardState, boardTitle, canAppendRound, compute, decideConflict, durationLong, durationShort,
+  editAlreadyApplied, factOf, howText, isStarted, levelName, mateOf, matchDuration, other, placeName, playingTag, previewEdit, previewText,
+  resultLine, roundIsMe, roundNames, sameOutcome, teamOf, whoLine,
+  type Names,
   type Preview, type RoundFact, type ScoreEventData, type ScoreRound, type ScoreState, type Side, type StartedScore,
 } from "../lib/scoring";
 import { currentUser } from "../lib/session";
@@ -102,6 +103,7 @@ export class ScoreScene implements Scene {
   /** 本场结束后点了「再来一场」：两队按 2 显示，等第一局记下 */
   private nextMatch = false;
   private flip: Flip | null = null;
+  private stopFlip: (() => void) | null = null;
   private strip: Strip | null = null;
   private scroll = new Scroller();
   private unreg: (() => void) | null = null;
@@ -121,13 +123,21 @@ export class ScoreScene implements Scene {
       refresh: () => void this.load(), // 重连、降级轮询：只重画，不翻牌
     });
   }
-  onLeave() { this.unreg?.(); }
+  onLeave() {
+    this.unreg?.();
+    // 离开时停掉翻牌、收起顶部条（#170 复审意见 5）
+    this.stopFlip?.();
+    this.stopFlip = null;
+    this.flip = null;
+    this.strip = null;
+  }
 
-  async load() {
+  /** flip：实时事件漏了一段、改成整份重拉时，新记的那一局照样翻牌 */
+  async load(flip = false) {
     try {
       const [d, s] = await Promise.all([getGame(this.code), getScore(this.code)]);
       this.detail = d;
-      this.setScore(s, false);
+      this.setScore(s, flip);
       this.error = "";
     } catch (err) {
       this.error = err instanceof ApiError && err.status === 404 ? "这一局不在了" : "记分没打开，下拉重试";
@@ -154,8 +164,9 @@ export class ScoreScene implements Scene {
 
   private startFlip(from: ScoreState) {
     if (reduceMotion()) return;
+    this.stopFlip?.();
     this.flip = { from, p: 0 };
-    this.app.animate(FLIP_MS, (p) => { if (this.flip) this.flip.p = p; }, () => { this.flip = null; });
+    this.stopFlip = this.app.animate(FLIP_MS, (p) => { if (this.flip) this.flip.p = p; }, () => { this.flip = null; this.stopFlip = null; });
   }
 
   private onEvent(type: string, data: any) {
@@ -164,16 +175,18 @@ export class ScoreScene implements Scene {
     const ev = data as ScoreEventData;
     if (!this.gate.accept(ev?.revision)) return; // 计分事件没有顶层 v，按 data.revision 去重（自己提交的那次也在这里丢掉）
     const s = this.score, r = ev.round;
-    if (type === "score.round" && s && r && r.round_no === s.rounds.length + 1) {
-      const next = { ...s, revision: ev.revision, settings: ev.settings, state: ev.state, rounds: [...s.rounds, r] };
-      this.applyScore(next, true);
-      this.showStrip(ev, `记了第 ${r.round_no} 局`, resultLine(next.settings.kind, r));
+    if (type === "score.round" && s && r) {
+      this.showStrip(ev, `记了第 ${r.round_no} 局`, resultLine(ev.settings?.kind ?? s.settings.kind, r));
+      // 局号和 revision 都正好接上才拼；中间漏了事件（比如一次 score.edited）就拉整份，前面的行才不会是旧的
+      if (canAppendRound(s, ev)) {
+        this.applyScore({ ...s, revision: ev.revision, settings: ev.settings, state: ev.state, rounds: [...s.rounds, r] }, true);
+      } else void this.load(true);
       return;
     }
     if (type === "score.edited" && r && s) {
       this.showStrip(ev, `改了第 ${r.round_no} 局`, resultLine(s.settings.kind, r));
     }
-    void this.load(); // 改一局后面各局都可能变了；开始记分、跳号：拉整份
+    void this.load(); // 改一局后面各局都可能变了；开始记分：拉整份
   }
 
   /** S11：顶部深色条，谁记的、记了什么，3 秒收起。自己记的不提示。 */
@@ -181,8 +194,9 @@ export class ScoreScene implements Scene {
     const me = currentUser();
     if (!ev.by || (me && ev.by.id === me.id)) return;
     const seat = this.detail?.seats.find((x) => x.user.id === ev.by.id);
+    // 到点由 step() 收起，不另起动画；离开页面时 onLeave 清掉
     this.strip = { by: ev.by.nickname, team: seat ? teamOf(seat.seat_no) : "black", title: `${ev.by.nickname} ${what}`, line, until: Date.now() + 3000 };
-    this.app.animate(3000, () => {}, () => { if (this.strip && Date.now() >= this.strip.until) { this.strip = null; this.app.redraw(); } });
+    this.app.redraw();
   }
 
   // ── 谁是谁 ──
@@ -193,11 +207,15 @@ export class ScoreScene implements Scene {
     const me = currentUser();
     return !!me && this.detail?.seats.find((x) => x.seat_no === seat)?.user.id === me.id;
   };
+  /** 某一局当时的称呼（#172）：seats 里没有的座号退回现在的人 */
+  namesAt = (r: ScoreRound | null | undefined): Names => roundNames(r, this.names);
+  isMeAt = (r: ScoreRound | null | undefined, seat: number): boolean => roundIsMe(r, seat, currentUser()?.id, this.isMeSeat);
   get seated(): boolean { return this.detail?.me.role === "seat"; }
   get canRecord(): boolean { return !!this.score?.can_record; }
-  members(t: Side, withMe: boolean): string {
-    const seats = t === "red" ? [1, 3] : [2, 4];
-    return seats.map((n) => this.names(n) + (withMe && this.isMeSeat(n) ? "（我）" : "")).join(" · ");
+  /** 一队两个人的称呼。at：按这一局当时的座位（S8、S15 传本场最后一局）；不传就是现在的座位 */
+  members(t: Side, withMe: boolean, at?: ScoreRound): string {
+    const seats = t === "red" ? [1, 3] : [2, 4], names = this.namesAt(at);
+    return seats.map((n) => names(n) + (withMe && this.isMeAt(at, n) ? "（我）" : "")).join(" · ");
   }
   get ended(): boolean { return !!this.score?.state.match_over && !this.nextMatch; }
   /** 下一局（记一局要看的）状态 */
@@ -208,7 +226,10 @@ export class ScoreScene implements Scene {
   scrollerAt(_x: number, y: number) {
     return y > this.app.contentTop && y < this.app.H - this.barH - this.app.safeBottom ? { s: this.scroll, axis: "y" as const } : null;
   }
-  step() { return this.scroll.step() || (!!this.strip && Date.now() < this.strip.until); }
+  step() {
+    if (this.strip && Date.now() >= this.strip.until) { this.strip = null; return true; } // 收起后再画一帧
+    return this.scroll.step() || !!this.strip;
+  }
 
   draw(ctx: Ctx) {
     const a = this.app, W = a.W, s = this.score;
@@ -328,7 +349,7 @@ export class ScoreScene implements Scene {
     if (pressed) fillRR(ctx, x + 1, y + 1, w - 2, 66, 17, C.paper);
     const title = `上一局 · 第 ${r.round_no} 局${s.settings.kind === "no-level" ? "" : ` · ${playingTag(r).replace(/^打[红黑] /, "打 ")}`}`;
     text(ctx, title, x + 16, y + 22, font(12), C.ink3);
-    const main = `${TEAM_NAME[r.winner]} ${howText(r.partner_place)}${aNote(r)}`;
+    const main = `${TEAM_NAME[r.winner]} ${howText(r.partner_place, s.settings.kind)}${aNote(r)}`;
     const right = s.settings.kind === "no-level" ? "" : `${levelName(r.level_before)} → ${levelName(r.level_after)}`;
     const rw = right ? measure(ctx, right, font(20, "900", true)) + 12 : 0;
     text(ctx, ellipsize(ctx, main, w - 56 - rw, font(15, "700")), x + 16, y + 46, font(15, "700"), C.ink);
@@ -346,7 +367,7 @@ export class ScoreScene implements Scene {
     // 赢方的 A 牌：奶油底加金边（README 7.5）
     levelCard(ctx, a.W / 2, y + 64, "A", win, { gold: true });
     text(ctx, `${TEAM_NAME[win]} 过 A`, a.W / 2, y + 246, font(34, "900", true), C.cream, "center");
-    text(ctx, ellipsize(ctx, this.members(win, this.seated), w - 40, font(14)), a.W / 2, y + 284, font(14), CREAM(0.8), "center");
+    text(ctx, ellipsize(ctx, this.members(win, this.seated, s.rounds[s.rounds.length - 1]), w - 40, font(14)), a.W / 2, y + 284, font(14), CREAM(0.8), "center");
     y += 330 + 16;
     card(ctx, x, y, w, 132, 18);
     const dur = durationShort(matchDuration(s.started_at, s.rounds, st.match));
@@ -468,7 +489,12 @@ function recordSheet(sc: ScoreScene, editing: ScoreRound | null) {
     const s = sc.score!;
     return s.rounds.length === no - 1 ? s.state : compute(settings, s.rounds.slice(0, no - 1).map(factOf)).state;
   };
-  const st = { head: editing?.head_seat ?? 0, partner: editing?.partner_place ?? 0, busy: false, err: "", key: "", keyFor: "" };
+  // 不升级玩法里名次只看是不是双上：原来不是双上就当没选（名次可能是没选时占位传的 3）
+  const partner0 = !editing ? 0 : noLevel && editing.partner_place !== 2 ? 0 : editing.partner_place;
+  const st = { head: editing?.head_seat ?? 0, partner: partner0, busy: false, err: "", key: "", keyFor: "" };
+  // 称呼：改一局用那一局当时的座位（#172），记新的一局用现在的
+  const names = editing ? sc.namesAt(editing) : sc.names;
+  const isMe = (seat: number) => (editing ? sc.isMeAt(editing, seat) : sc.isMeSeat(seat));
   const fact = (): RoundFact | null => (st.head && (st.partner || noLevel) ? { head_seat: st.head, partner_place: st.partner || 3 } : null);
 
   const submit = async () => {
@@ -494,7 +520,7 @@ function recordSheet(sc: ScoreScene, editing: ScoreRound | null) {
     draw(ctx, y, w) {
       const s = sc.score!, pre = before(), playA = !noLevel && pre.playing !== "" && pre[pre.playing].level === A;
       const sub = editing
-        ? `原来：${TEAM_NAME[editing.winner]} ${howText(editing.partner_place)}${noLevel ? "" : ` · ${levelName(editing.level_before)} → ${levelName(editing.level_after)}`}`
+        ? `原来：${TEAM_NAME[editing.winner]} ${howText(editing.partner_place, settings.kind)}${noLevel ? "" : ` · ${levelName(editing.level_before)} → ${levelName(editing.level_after)}`}`
         : noLevel ? "不升级 · 点头游就行" : pre.match_over ? "新一场 · 打 2"
         : pre.playing ? `本局打${TEAM_NAME[pre.playing]}的 ${levelName(pre.playing_level)}${playA ? ` · 第 ${pre[pre.playing].a_fails + 1} 次` : ""}` : "本局打 2";
       let cy = y + 30;
@@ -511,9 +537,9 @@ function recordSheet(sc: ScoreScene, editing: ScoreRound | null) {
         const tx = 20 + ci * (tw + 10), ty = cy + ri * (th + 10), on = st.head === seat, t = teamOf(seat), id = `rs-head:${seat}`;
         fillRR(ctx, tx, ty, tw, th, 14, on ? C.cream : app.isPressed(id) ? C.paper : C.card);
         strokeRR(ctx, tx + (on ? 1 : 0.5), ty + (on ? 1 : 0.5), tw - (on ? 2 : 1), th - (on ? 2 : 1), 14, on ? C.red : C.line, on ? 2 : 1);
-        teamAvatar(ctx, tx + 34, ty + th / 2, 20, sc.names(seat), t, sc.isMeSeat(seat));
+        teamAvatar(ctx, tx + 34, ty + th / 2, 20, names(seat), t, isMe(seat));
         // 「我」只靠头像金圈，不写「（我）」，给「头游」签让位
-        text(ctx, ellipsize(ctx, sc.names(seat), tw - 64 - (on ? 52 : 10), font(15, "700")), tx + 64, ty + 24, font(15, "700"), C.ink);
+        text(ctx, ellipsize(ctx, names(seat), tw - 64 - (on ? 52 : 10), font(15, "700")), tx + 64, ty + 24, font(15, "700"), C.ink);
         icon[TEAM[t].suit](ctx, tx + 70, ty + 44, 11, TEAM[t].c);
         text(ctx, TEAM_NAME[t], tx + 80, ty + 44, font(12), C.ink3);
         if (on) { fillRR(ctx, tx + tw - 50, ty + 10, 40, 20, 10, C.red); text(ctx, "头游", tx + tw - 30, ty + 20, font(11, "900"), C.cream, "center"); }
@@ -523,7 +549,7 @@ function recordSheet(sc: ScoreScene, editing: ScoreRound | null) {
 
       // ② 头游的搭档第几：打本队的 A 时副标题直接写「过 A / 没过」
       const mate = st.head ? mateOf(st.head) : 0;
-      text(ctx, mate ? `② ${ellipsize(ctx, sc.names(mate), 120, font(14, "700"))}是第几个出完的？` : "② 头游的搭档第几？", 20, cy, font(14, "700"), mate ? C.ink : C.ink4);
+      text(ctx, mate ? `② ${ellipsize(ctx, names(mate), 120, font(14, "700"))}是第几个出完的？` : "② 头游的搭档第几？", 20, cy, font(14, "700"), mate ? C.ink : C.ink4);
       if (!mate) text(ctx, "先选头游", w - 20, cy, font(12), C.ink4, "right");
       else if (noLevel) text(ctx, "可以不选", w - 20, cy, font(12), C.ink4, "right");
       cy += 18;
@@ -546,14 +572,14 @@ function recordSheet(sc: ScoreScene, editing: ScoreRound | null) {
       const f = fact(), pw = w - 40, ph = 60;
       let pv: Preview | null = null;
       if (f) {
-        pv = previewText(settings, pre, f, sc.names);
+        pv = previewText(settings, pre, f, names);
         if (editing && pv.kind === "normal" && editing.winner === pv.team) pv = { ...pv, sub: `原来 → ${levelName(editing.level_after)}` };
       }
       drawPreview(ctx, 20, cy, pw, ph, pv);
       cy += ph + 14;
 
       // S10：改一局的连带变化（本地按规则重算的预览，提交后以服务端为准）
-      const unchanged = !!editing && !!f && sameFact(f, editing);
+      const unchanged = !!editing && !!f && sameOutcome(settings.kind, f, editing);
       if (editing && f && !unchanged) {
         const p = previewEdit(settings, s.rounds, no, f);
         const lines = [
@@ -628,10 +654,11 @@ async function submitRecord(sc: ScoreScene, no: number, mine: RoundFact, key: st
     sc.setScore(body, true);
     app.closeSheet(sheet);
     if (!existing) return;
-    const d = decideConflict(existing, mine, currentUser()?.id);
-    if (d === "mine") return; // 自己重复提交：就是成功了
+    const d = decideConflict(existing, mine, currentUser()?.id, sc.score?.settings.kind);
+    if (d === "mine") return; // 自己重复提交、结果一样：就是成功了
     if (d === "same") { app.toast(`和 ${existing.recorded_by.nickname} 记的一样`); return; }
-    conflictDialog(sc, existing, mine);
+    // differ：别人记的不一样；mine-differ：弱网下第一次其实记上了，这次改了选择——都让用户选
+    conflictDialog(sc, existing, mine, d === "mine-differ");
   }
 }
 
@@ -641,14 +668,13 @@ async function submitEdit(sc: ScoreScene, no: number, mine: RoundFact, was: Roun
     const s = await editRound(sc.code, no, mine, was);
     sc.setScore(s, false);
     if (sheet) app.closeSheet(sheet);
-    const st = sc.score?.state;
-    if (st) app.toast(sc.score!.settings.kind === "no-level"
-      ? `改好了 · 现在 红方 ${st.red.wins} : ${st.black.wins} 黑方`
-      : `改好了 · 现在 红方 ${levelName(st.red.level)} · 黑方 ${levelName(st.black.level)}`, 2600);
+    editedToast(sc);
   } catch (err) {
     if (err instanceof ApiError && err.status === 409 && err.code === "round_changed") {
       sc.setScore(err.body, false);
       if (sheet) app.closeSheet(sheet);
+      // 上一次 PUT 其实写成功了、只是响应丢了：这一局已经是我要的结果，按成功处理
+      if (editAlreadyApplied(err.body, no, mine)) { editedToast(sc); return; }
       app.toast("这一局刚被别人改过，看一下再改", 2600);
       return;
     }
@@ -657,9 +683,20 @@ async function submitEdit(sc: ScoreScene, no: number, mine: RoundFact, was: Roun
   }
 }
 
-/** S12：两边记的不一样，并排给出，让点的人选 */
-function conflictDialog(sc: ScoreScene, existing: ScoreRound, mine: RoundFact) {
-  const app = sc.app, by = existing.recorded_by.nickname, no = existing.round_no;
+function editedToast(sc: ScoreScene) {
+  const st = sc.score?.state;
+  if (st) sc.app.toast(sc.score!.settings.kind === "no-level"
+    ? `改好了 · 现在 红方 ${st.red.wins} : ${st.black.wins} 黑方`
+    : `改好了 · 现在 红方 ${levelName(st.red.level)} · 黑方 ${levelName(st.black.level)}`, 2600);
+}
+
+/**
+ * S12：两边记的不一样，并排给出，让点的人选。byMe：记下的那一局是我自己刚才记的（弱网下第一次其实
+ * 记上了，这次换了选择），左边写「你刚才记的」。称呼用这一局当时的座位（#172）。
+ */
+function conflictDialog(sc: ScoreScene, existing: ScoreRound, mine: RoundFact, byMe = false) {
+  const app = sc.app, no = existing.round_no, names = sc.namesAt(existing);
+  const by = byMe ? "你刚才" : existing.recorded_by.nickname;
   const s0 = sc.score!, kind = s0.settings.kind;
   const myRound = previewEdit(s0.settings, s0.rounds, no, mine).round;
   const range = (r: { winner: Side; level_before: number; level_after: number; double_up: boolean }) =>
@@ -669,28 +706,28 @@ function conflictDialog(sc: ScoreScene, existing: ScoreRound, mine: RoundFact) {
     dialog: true,
     draw(ctx, y, w) {
       let cy = y + 36;
-      text(ctx, ellipsize(ctx, `第 ${no} 局 ${by} 已经记了`, w - 32, font(18, "700")), w / 2, cy, font(18, "700"), C.ink, "center");
+      text(ctx, ellipsize(ctx, `第 ${no} 局 ${by}${byMe ? "" : " "}已经记了`, w - 32, font(18, "700")), w / 2, cy, font(18, "700"), C.ink, "center");
       cy += 26;
-      text(ctx, "两边记的不一样，用哪个？", w / 2, cy, font(13), C.ink3, "center");
+      text(ctx, byMe ? "和这次选的不一样，用哪个？" : "两边记的不一样，用哪个？", w / 2, cy, font(13), C.ink3, "center");
       cy += 22;
       const rows: [string, RoundFact, { winner: Side; level_before: number; level_after: number; double_up: boolean }][] = [
-        [`${by} 记的`, existing, existing], ["你记的", mine, myRound],
+        [byMe ? "你刚才记的" : `${by} 记的`, existing, existing], [byMe ? "你这次选的" : "你记的", mine, myRound],
       ];
       rows.forEach(([label, f, r]) => {
         fillRR(ctx, 16, cy, w - 32, 48, 12, C.paper);
         text(ctx, label, 30, cy + 16, font(12, "700"), C.ink2);
         const rt = range(r), rw = measure(ctx, rt, font(17, "900"));
-        text(ctx, ellipsize(ctx, whoLine(f, sc.names), w - 76 - rw, font(13)), 30, cy + 34, font(13), C.ink);
+        text(ctx, ellipsize(ctx, whoLine(f, names, kind), w - 76 - rw, font(13)), 30, cy + 34, font(13), C.ink);
         text(ctx, rt, w - 30, cy + 25, font(17, "900"), TEAM[r.winner].c, "right");
         cy += 56;
       });
       cy += 8;
       const bw = (w - 32 - 10) / 2;
-      button(app, ctx, "cf-theirs", 16, cy, bw, 48, `用 ${ellipsize(ctx, by, bw - 60, font(15, "700"))} 的`, "soft", () => {
+      button(app, ctx, "cf-theirs", 16, cy, bw, 48, byMe ? "用刚才的" : `用 ${ellipsize(ctx, by, bw - 60, font(15, "700"))} 的`, "soft", () => {
         app.closeSheet(dlg);
-        app.toast(`用了 ${by} 记的`);
+        app.toast(byMe ? "用了你刚才记的" : `用了 ${by} 记的`);
       }, { size: 15 });
-      button(app, ctx, "cf-mine", 26 + bw, cy, bw, 48, busy ? "正在改…" : "改成我的", "primary", async () => {
+      button(app, ctx, "cf-mine", 26 + bw, cy, bw, 48, busy ? "正在改…" : byMe ? "改成这次的" : "改成我的", "primary", async () => {
         if (busy) return;
         busy = true; app.redraw();
         try { await submitEdit(sc, no, mine, factOf(existing), null); } finally { busy = false; app.closeSheet(dlg); }
@@ -747,9 +784,9 @@ export class RecordsScene implements Scene {
           icon[T.suit](ctx, tx + 6, ry + 23.5, 11, T.c);
           const right = kind === "no-level" ? "" : `${levelName(r.level_before)}→${levelName(r.level_after)}`;
           const rw = right ? measure(ctx, right, font(17, "900")) + 32 : 30;
-          const how = `${TEAM_NAME[r.winner]} ${howText(r.partner_place)}${aNote(r)}`;
+          const how = `${TEAM_NAME[r.winner]} ${howText(r.partner_place, kind)}${aNote(r)}`;
           text(ctx, ellipsize(ctx, how, x + w - rw - tx - 16, font(14, "700")), tx + 16, ry + 23, font(14, "700"), C.ink);
-          text(ctx, ellipsize(ctx, whoLine(r, this.sc.names), w - 60 - rw, font(12)), x + 60, ry + 46, font(12), C.ink2);
+          text(ctx, ellipsize(ctx, whoLine(r, this.sc.namesAt(r), kind), w - 60 - rw, font(12)), x + 60, ry + 46, font(12), C.ink2);
           const rec = `${r.recorded_by.nickname} ${timeHM(r.recorded_at)} 记`;
           text(ctx, ellipsize(ctx, rec, w - 60 - rw - 40, font(11)), x + 60, ry + 66, font(11), C.ink4);
           if (r.edited_by) {
@@ -799,13 +836,15 @@ export function renderReportCard(app: App, paint: (ctx: Ctx) => void): string | 
 export function drawReportCard(ctx: Ctx, sc: ScoreScene, W = 500, H = 400) {
   const s = sc.score!, d = sc.detail!, st = s.state, win = (st.winner || "red") as Side, lose = other(win);
   const g = d.game, day = cardDay(g.starts_at);
+  // 称呼用这一场最后一局（过 A 那一局）当时的座位（#172）
+  const last = s.rounds[s.rounds.length - 1], names = sc.namesAt(last);
   ctx.fillStyle = C.redDeep; ctx.fillRect(0, 0, W, H);
   strokeRR(ctx, 8, 8, W - 16, H - 16, 22, C.redInk, 8);
   strokeRR(ctx, 24, 24, W - 48, H - 48, 14, "rgba(233,196,106,0.45)", 2, [6, 5]);
   const date = `${day === "今天" || day === "明天" ? day + " · " : ""}${weekday(g.starts_at)} ${slashDate(g.starts_at)} · ${g.area}`;
   text(ctx, ellipsize(ctx, date, W - 96, font(22, "700")), 48, 66, font(22, "700"), C.gold);
   text(ctx, `${TEAM_NAME[win]} 过 A`, 48, 140, font(64, "900", true), C.cream);
-  const vs = `${sc.members(win, false)}  胜  ${sc.members(lose, false)}`;
+  const vs = `${sc.members(win, false, last)}  胜  ${sc.members(lose, false, last)}`;
   text(ctx, ellipsize(ctx, vs, W - 96, font(20, "700")), 48, 202, font(20, "700"), C.cream);
   const stats = `${st.match_rounds} 局 · ${durationLong(matchDuration(s.started_at, s.rounds, st.match))} · ${TEAM_NAME[win]}双上 ${st[win].double_ups} 次`;
   text(ctx, ellipsize(ctx, stats, W - 96, font(17)), 48, 238, font(17), CREAM(0.75));
@@ -813,7 +852,7 @@ export function drawReportCard(ctx: Ctx, sc: ScoreScene, W = 500, H = 400) {
   for (let seat = 1; seat <= 4; seat++) {
     const cx = 70 + (seat - 1) * 52, t = teamOf(seat), T = TEAM[t];
     circle(ctx, cx, cy, 22, T.tint);
-    text(ctx, initial(sc.names(seat)), cx, cy + 1, font(18, "900"), T.c, "center");
+    text(ctx, initial(names(seat)), cx, cy + 1, font(18, "900"), T.c, "center");
     circle(ctx, cx + 15, cy + 15, 8, C.card); icon[T.suit](ctx, cx + 15, cy + 15.5, 9, T.c);
   }
   let fs = 20;

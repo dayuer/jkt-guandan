@@ -18,7 +18,7 @@ import { rescheduleText } from "./home";
 import type { Nav } from "./nav";
 import { addToCalendar, friendPicker, joinedSheet, promotedSheet, requireIdentity, shareSheet } from "./sheets";
 import { askSubscribe, remindOn, reportAccepted } from "../lib/subscribe";
-import { TEAM_NAME, canStartNow, isStarted, levelName, teamOf, type Score } from "../lib/scoring";
+import { TEAM_NAME, isStarted, levelName, startRecheckDelay, teamOf, type Score } from "../lib/scoring";
 
 const POS = ["top", "right", "bottom", "left"] as const;
 
@@ -33,6 +33,9 @@ export class Detail implements Scene {
   private unreg: (() => void) | null = null;
   private unretry: (() => void) | null = null;
   private unstatus: (() => void) | null = null;
+  /** 快到开局前 30 分钟时再拉一次，让「开始记分」入口条按服务端的 can_start 自己出来 */
+  private recheck: ReturnType<typeof setTimeout> | null = null;
+  private active = false;
   private seen = new Set<string>();
   private drop: Record<string, number> = {};
   private promotedOpen = false;
@@ -47,6 +50,7 @@ export class Detail implements Scene {
   }
 
   onEnter() {
+    this.active = true;
     void this.load();
     this.unreg = realtime.register({
       topics: [`game:${this.code}`],
@@ -67,7 +71,9 @@ export class Detail implements Scene {
     this.unstatus = realtime.onStatus((s) => { if (s !== "online") { this.viewers = 0; this.app.redraw(); } });
   }
   onLeave() {
+    this.active = false;
     this.unreg?.(); this.unretry?.(); this.unstatus?.();
+    if (this.recheck) { clearTimeout(this.recheck); this.recheck = null; }
   }
 
   private async load() {
@@ -77,11 +83,23 @@ export class Detail implements Scene {
       if (sc) this.score = sc;
       this.set(d);
       this.error = "";
+      this.scheduleRecheck();
     } catch (err) {
       this.error = err instanceof ApiError && err.status === 404 ? "这一局不在了" : "打不开这一局，下拉重试";
     } finally {
       this.app.redraw();
     }
+  }
+
+  private scheduleRecheck() {
+    if (this.recheck) { clearTimeout(this.recheck); this.recheck = null; }
+    const d = this.detail, sc = this.score;
+    if (!this.active || !d || !sc) return; // 离开后才回来的响应不再挂定时器
+    const ms = startRecheckDelay({
+      startsAt: d.game.starts_at, nowSec: Math.floor(Date.now() / 1000), canStart: !!sc.can_start, started: !!sc.started,
+      eligible: !this.closed && d.game.status === "full" && this.seatedHere,
+    });
+    if (ms !== null) this.recheck = setTimeout(() => { this.recheck = null; void this.load(); }, ms);
   }
 
   /** 拿到新数据：播落座动画、和本机快照比出提示（#114）。 */
@@ -434,7 +452,7 @@ export class Detail implements Scene {
   }
 
   /**
-   * 入口条：满座、我在座位上、离开局 ≤ 30 分钟（按服务端的 starts_at 自己算——GET /score 的 can_record 不看这个窗口）。
+   * 入口条：GET /score 的 can_start 为真（在座位上、满座、已到开局前 30 分钟，服务端算，#174）。
    * 已经开始记分时变成「回到记分 · 第 N 局」；不在座位上的人看到「看记分」（S14）。
    */
   private drawScoreEntry(ctx: Ctx, d: GameDetail, y: number): number {
@@ -448,7 +466,7 @@ export class Detail implements Scene {
       label = this.seatedHere && sc.can_record ? `回到记分 · 第 ${n} 局` : "看记分";
       onTap = () => this.nav.score(this.code);
     } else {
-      if (this.closed || d.game.status !== "full" || !this.seatedHere || !canStartNow(d.game.starts_at, Math.floor(Date.now() / 1000))) return y;
+      if (this.closed || !sc?.can_start) return y;
       title = "人齐了，开打就记分";
       sub = "四个人都能记，一局点两下";
       label = "开始记分";

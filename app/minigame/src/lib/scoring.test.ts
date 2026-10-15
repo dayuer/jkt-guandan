@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  RevisionGate, aTip, apply, boardState, boardTitle, canStartNow, compute, decideConflict, durationLong, durationShort,
-  levelName, mateOf, matchDuration, playingTag, previewEdit, previewText, resultLine, teamOf,
-  type RoundFact, type ScoreRound, type ScoreSettings,
+  RevisionGate, aTip, apply, boardState, boardTitle, canAppendRound, compute, decideConflict, durationLong, durationShort,
+  editAlreadyApplied, howText, levelName, mateOf, matchDuration, playingTag, previewEdit, previewText, resultLine, roundIsMe,
+  roundNames, sameOutcome, startRecheckDelay, teamOf, whoLine,
+  type RoundFact, type Score, type ScoreRound, type ScoreSettings, type StartedScore,
 } from "./scoring";
 
 const classic: ScoreSettings = { kind: "classic", a_fail_limit: 3 };
@@ -113,8 +114,22 @@ describe("规则照抄（只做预览）与设计稿例子一致", () => {
 
 describe("S12 冲突", () => {
   const existing = { head_seat: 3, partner_place: 3, recorded_by: { id: "lily", nickname: "Lily" } } as ScoreRound;
-  it("记下的那一局是我自己记的：当成功", () => {
-    expect(decideConflict(existing, f(3, 2), "lily")).toBe("mine");
+  it("记下的那一局是我自己记的、结果一样：当成功", () => {
+    expect(decideConflict(existing, f(3, 3), "lily")).toBe("mine");
+  });
+  it("是我自己记的但这次选的不一样（弱网下第一次其实记上了）：不能静默，弹框", () => {
+    expect(decideConflict(existing, f(3, 2), "lily")).toBe("mine-differ");
+    expect(decideConflict(existing, f(1, 3), "lily", "classic")).toBe("mine-differ");
+  });
+  it("不升级玩法：三游、末游没有区别，只比头游和是不是双上", () => {
+    expect(decideConflict(existing, f(3, 4), "ajie", "no-level")).toBe("same");
+    expect(decideConflict(existing, f(3, 4), "lily", "no-level")).toBe("mine");
+    expect(decideConflict(existing, f(3, 2), "ajie", "no-level")).toBe("differ");
+    expect(decideConflict(existing, f(1, 3), "ajie", "no-level")).toBe("differ");
+    expect(decideConflict(existing, f(3, 4), "ajie", "classic")).toBe("differ");
+    expect(sameOutcome("no-level", f(2, 3), f(2, 4))).toBe(true);
+    expect(sameOutcome("no-level", f(2, 2), f(2, 4))).toBe(false);
+    expect(sameOutcome("classic", f(2, 3), f(2, 4))).toBe(false);
   });
   it("结果一样：静默合并", () => {
     expect(decideConflict(existing, f(3, 3), "ajie")).toBe("same");
@@ -122,6 +137,75 @@ describe("S12 冲突", () => {
   it("结果不一样：让用户选", () => {
     expect(decideConflict(existing, f(3, 2), "ajie")).toBe("differ");
     expect(decideConflict(existing, f(1, 3), undefined)).toBe("differ");
+  });
+});
+
+describe("改一局重试收到 round_changed", () => {
+  const latest = (rounds: RoundFact[], kind: ScoreSettings["kind"] = "classic"): Score => {
+    const settings = { kind, a_fail_limit: 3 }, c = compute(settings, rounds);
+    return { started: true, can_record: true, settings, started_at: 0, revision: 9, started_by: { id: "x", nickname: "x" },
+      rounds: c.rounds.map((r) => ({ ...r, recorded_by: { id: "x", nickname: "x" }, recorded_at: 0 })), state: c.state };
+  };
+  it("最新的这一局已经是我要改成的：上一次其实写成功了，当成功", () => {
+    expect(editAlreadyApplied(latest([f(1, 2), f(2, 3), f(1, 3)]), 2, f(2, 3))).toBe(true);
+  });
+  it("不一样：真的是别人改过", () => {
+    expect(editAlreadyApplied(latest([f(1, 2), f(2, 3), f(1, 3)]), 2, f(4, 3))).toBe(false);
+    expect(editAlreadyApplied(latest([f(1, 2)]), 2, f(2, 3))).toBe(false); // 没有这一局
+    expect(editAlreadyApplied({ started: false, can_record: false }, 1, f(1, 2))).toBe(false);
+    expect(editAlreadyApplied(undefined, 1, f(1, 2))).toBe(false);
+  });
+  it("不升级：三游改末游算同一个结果", () => {
+    expect(editAlreadyApplied(latest([f(1, 3)], "no-level"), 1, f(1, 4))).toBe(true);
+  });
+});
+
+describe("实时 score.round 拼接", () => {
+  const local = { revision: 7, rounds: [{ round_no: 1 }, { round_no: 2 }] } as unknown as StartedScore;
+  const ev = (revision: number, round_no: number) => ({ revision, round: { round_no } as ScoreRound });
+  it("局号和 revision 都接上才拼", () => {
+    expect(canAppendRound(local, ev(8, 3))).toBe(true);
+  });
+  it("revision 跳了（中间漏了一次 score.edited）：不拼，重新拉", () => {
+    expect(canAppendRound(local, ev(9, 3))).toBe(false);
+  });
+  it("局号接不上、没有本地计分、事件没带这一局：不拼", () => {
+    expect(canAppendRound(local, ev(8, 4))).toBe(false);
+    expect(canAppendRound(null, ev(8, 3))).toBe(false);
+    expect(canAppendRound(local, { revision: 8 })).toBe(false);
+  });
+});
+
+describe("按每局当时的座位显示称呼（#172）", () => {
+  const now = (s: number) => ({ 1: "老王", 2: "Lily", 3: "阿杰", 4: "小周" })[s] as string;
+  const r = { seats: [{ id: "u1", nickname: "老王" }, { id: "u9", nickname: "大刘" }, null, { id: "u4", nickname: "小周" }] };
+  it("用这一局的 seats；null 的座号退回现在的人；没有 seats 全用现在的", () => {
+    const n = roundNames(r, now);
+    expect([1, 2, 3, 4].map(n)).toEqual(["老王", "大刘", "阿杰", "小周"]);
+    expect([1, 2, 3, 4].map(roundNames({}, now))).toEqual(["老王", "Lily", "阿杰", "小周"]);
+    expect([1, 2, 3, 4].map(roundNames(undefined, now))).toEqual(["老王", "Lily", "阿杰", "小周"]);
+    expect(whoLine(f(2, 3), n)).toBe("大刘 头游 · 小周 三游");
+  });
+  it("「我」也按那一局算", () => {
+    const isMeNow = (s: number) => s === 2; // 现在 2 号是我
+    expect(roundIsMe(r, 2, "u2", isMeNow)).toBe(false); // 那一局 2 号是大刘
+    expect(roundIsMe(r, 2, "u9", isMeNow)).toBe(true);
+    expect(roundIsMe(r, 3, "u2", isMeNow)).toBe(false); // null 的座号看现在
+    expect(roundIsMe({}, 2, "u2", isMeNow)).toBe(true);
+  });
+});
+
+describe("不升级玩法不写搭档名次（#174 第 6 项）", () => {
+  it("不是双上只写头游；双上照写", () => {
+    expect(howText(3, "no-level")).toBe("头游");
+    expect(howText(4, "no-level")).toBe("头游");
+    expect(howText(2, "no-level")).toBe("头游＋二游 · 双上");
+    expect(howText(3)).toBe("头游＋三游");
+    expect(whoLine(f(1, 3), names, "no-level")).toBe("老王 头游");
+    expect(whoLine(f(1, 2), names, "no-level")).toBe("老王 头游 · 阿杰 二游");
+    const { rounds } = compute(noLevel, [f(1, 3), f(2, 2)]);
+    expect(resultLine("no-level", rounds[0])).toBe("红方 头游");
+    expect(resultLine("no-level", rounds[1])).toBe("黑方 头游＋二游 · 双上");
   });
 });
 
@@ -141,10 +225,14 @@ describe("按 revision 去重", () => {
 
 describe("时间", () => {
   const starts = 1_800_000_000;
-  it("开局前 30 分钟起才能开始记分", () => {
-    expect(canStartNow(starts, starts - 31 * 60)).toBe(false);
-    expect(canStartNow(starts, starts - 30 * 60)).toBe(true);
-    expect(canStartNow(starts, starts + 3600)).toBe(true);
+  it("能不能开始看服务端 can_start；本机时钟只挑重新问的时刻", () => {
+    const o = { startsAt: starts, canStart: false, started: false, eligible: true };
+    expect(startRecheckDelay({ ...o, nowSec: starts - 31 * 60 })).toBe(62_000); // 到点后 2 秒问
+    expect(startRecheckDelay({ ...o, nowSec: starts - 5 * 3600 })).toBe(600_000); // 离得远：最多 10 分钟问一次
+    expect(startRecheckDelay({ ...o, nowSec: starts - 10 * 60 })).toBe(60_000); // 本机算着到了、服务端说不行：每分钟问
+    expect(startRecheckDelay({ ...o, nowSec: starts - 31 * 60, canStart: true })).toBeNull();
+    expect(startRecheckDelay({ ...o, nowSec: starts - 31 * 60, started: true })).toBeNull();
+    expect(startRecheckDelay({ ...o, nowSec: starts - 31 * 60, eligible: false })).toBeNull();
   });
   it("一场的用时从开始记分或上一场最后一局算", () => {
     const r = (match: number, at: number) => ({ match, recorded_at: at }) as ScoreRound;
