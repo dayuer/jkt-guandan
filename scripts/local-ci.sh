@@ -211,7 +211,13 @@ fi
 #
 # 失败时把完整日志留下来（#202）：只留失败的，成功就把文件删掉 —— 不然目录很快堆满。
 LOGDIR="$(local_ci_log_dir)"
-mkdir -p "$LOGDIR" 2>/dev/null || { printf '建不了日志目录 %s，这一轮不留日志。\n' "$LOGDIR" >&2; LOGDIR=''; }
+# 目录也要收紧：Linux 上没设 TMPDIR 时默认是共享的 `/tmp/local-ci-logs`。
+if (umask 077; mkdir -p "$LOGDIR") 2>/dev/null; then
+  chmod 700 "$LOGDIR" 2>/dev/null || true
+else
+  printf '建不了日志目录 %s，这一轮不留日志。\n' "$LOGDIR" >&2
+  LOGDIR=''
+fi
 FAILLOGS=''
 for ctx in $CONTEXTS; do
   printf '\n=== %s ===\n' "$ctx"
@@ -225,20 +231,21 @@ for ctx in $CONTEXTS; do
   fi
   if [ "$rc" -eq 0 ]; then
     printf '%s 通过。\n' "$ctx"
-    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" "$(context_command "$ctx" | cut -c1-135)"
+    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" "$(truncate_desc "$(context_command "$ctx")")"
   elif [ "$rc" -eq 2 ]; then
     printf '%s 环境未就绪（不是代码问题，看上面的说明）。\n' "$ctx"
     # 具体原因优先（比如「拉镜像失败（网络或镜像源）」）—— 比「跑了什么命令」有用得多。
     post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" \
-      "$(env_not_ready_desc "$ENV_REASON" "$(context_command "$ctx")")$(log_note "$LOGFILE")"
+      "$(truncate_desc "$(env_not_ready_desc "$ENV_REASON" "$(context_command "$ctx")")$(log_note "$LOGFILE")")"
     ENVNOTREADY="$ENVNOTREADY $ctx"
   elif [ "$rc" -eq 3 ]; then
     printf '%s 脚本自身出错（不是环境、也不是代码）。\n' "$ctx"
-    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" "脚本自身出错：未知 context 或与 context_command 漂移$(log_note "$LOGFILE")"
+    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" \
+      "$(truncate_desc "脚本自身出错：未知 context 或与 context_command 漂移$(log_note "$LOGFILE")")"
     SCRIPTBUG="$SCRIPTBUG $ctx"
   else
     printf '%s 失败。\n' "$ctx"
-    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" "见终端输出$(log_note "$LOGFILE")"
+    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" "$(truncate_desc "见终端输出$(log_note "$LOGFILE")")"
     FAILED="$FAILED $ctx"
   fi
   # 失败（含环境未就绪、脚本自身出错）的日志才留着，并记下来在汇总里再报一次路径。

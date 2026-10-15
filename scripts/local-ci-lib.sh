@@ -399,6 +399,8 @@ docker_build_retrying() {
 run_context() {
   local ctx="${1:-}"
   ENV_REASON='' # 上一次跑留下的原因不能带到这一次（#196 复审意见）
+  # 跑在 capture_to_log 的子壳里时，原因要靠这个文件带出去 —— 先把上一轮的清掉。
+  [ -n "${LOCAL_CI_ENV_REASON_FILE:-}" ] && : > "$LOCAL_CI_ENV_REASON_FILE"
   case "$ctx" in
     local-ci/test|local-ci/vuln|local-ci/h5-audit|local-ci/minigame|local-ci/nginx|local-ci/docker|local-ci/e2e|local-ci/meta)
       context_ready "$ctx" || return 2 ;;
@@ -426,7 +428,7 @@ run_context() {
       rc=$?
       rm -f "$log"
       if [ "$rc" -ne 0 ]; then
-        [ "$rc" -eq 2 ] && ENV_REASON='拉镜像失败（网络或镜像源）'
+        [ "$rc" -eq 2 ] && set_env_reason '拉镜像失败（网络或镜像源）'
         docker rmi "$image" >/dev/null 2>&1
         return "$rc"
       fi
@@ -445,7 +447,7 @@ run_context() {
       scripts/test-deploy.sh "$image" || rc=$?   # `|| rc=$?`：不依赖调用方有没有开 `set -e`
       rc="$(docker_step_rc "$rc")"
       if [ "$rc" -ne 0 ]; then
-        [ "$rc" -eq 2 ] && ENV_REASON='拉镜像失败（网络或镜像源）'
+        [ "$rc" -eq 2 ] && set_env_reason '拉镜像失败（网络或镜像源）'
         docker rmi "$image" >/dev/null 2>&1
         return "$rc"
       fi
@@ -507,9 +509,11 @@ local_ci_keep_logs() { printf '%s' "${LOCAL_CI_KEEP_LOGS:-20}"; }
 # 日志文件名：`<sha 前 7 位>-<context 短名>-<时间戳>.log`。
 # 短名（去掉 `local-ci/` 前缀）是为了 status 描述塞得下 —— GitHub 那边只有 140 字，
 # 而 macOS 的 $TMPDIR 本身就占 45 个字左右。
-log_file_name() { # $1 = sha  $2 = context  $3 = 时间戳（如 20261016-061500）
+# ⚠️ 末尾那个 `$$` 不能省：同一个 SHA、**同一秒**、同一个 context 跑两次（两个会话同时跑
+# 就很容易撞）会生成同名文件 —— 后跑的那次成功、把先跑那次的失败日志删掉，等于白留。
+log_file_name() { # $1 = sha  $2 = context  $3 = 时间戳（如 20261016-061500）  [$4 = pid]
   local short="${2:-}"
-  printf '%s-%s-%s.log' "$(printf '%s' "${1:-}" | cut -c1-7)" "${short#local-ci/}" "${3:-}"
+  printf '%s-%s-%s-%s.log' "$(printf '%s' "${1:-}" | cut -c1-7)" "${short#local-ci/}" "${3:-}" "${4:-$$}"
 }
 
 # 只留最近 N 份（同一次运行的 `.docker.txt` 跟着一起删）。
@@ -529,6 +533,8 @@ prune_logs() { # $1 = 目录  $2 = 保留几份
 # 免得把一整台机器上别人的东西都抄进日志里。
 docker_scene() {
   printf '===== docker 现场 =====\n'
+  printf '（这份快照是在失败脚本**自己清理之后**拍的，所以本次运行的容器/卷多半已经没了 ——\n'
+  printf ' 这里能看到的主要是**别的会话**的资源，用来判断有没有互相干扰。）\n'
   printf '$ docker ps -a （只列 deploytest / drill / smoke）\n'
   docker ps -a --format '  {{.Names}}  {{.Status}}  {{.Ports}}' 2>&1 |
     grep -E 'deploytest|drill|smoke' || printf '  （没有）\n'
@@ -543,14 +549,24 @@ docker_scene() {
 # 成功 → **把日志删掉**（不留垃圾）；失败 → 留下日志、打印路径，docker 那项另外写一份现场。
 capture_to_log() {
   local ctx="$1" log="$2"; shift 2
-  local rc rcf scene
+  local rc rcf reasonf scene
   rcf="$(mktemp "${TMPDIR:-/tmp}/local-ci-rc.XXXXXX")"
+  reasonf="$(mktemp "${TMPDIR:-/tmp}/local-ci-reason.XXXXXX")"
+  : > "$reasonf"
+  # 先把日志文件建出来把权限定死（`tee` 沿用**已存在**文件的模式）。Linux 上没设 TMPDIR 时
+  # 默认会落到共享的 `/tmp/local-ci-logs` —— 里面有容器名、端口、路径，别人不该读到。
+  : > "$log" 2>/dev/null && chmod 600 "$log" 2>/dev/null
   # 输出要实时可见（tee），退出码用「子壳写进文件」拿 —— `PIPESTATUS` 是 bash 专有，
   # 而这个 lib 也被 `#!/bin/sh` 的 test-deploy.sh source。
   # 子壳里 `|| rc=$?` 是必须的：调用方开了 `set -e` 时裸的失败命令会让子壳当场退出。
-  ( rc=0; "$@" 2>&1 || rc=$?; printf '%s' "$rc" > "$rcf" ) | tee "$log"
+  #
+  # ⚠️ **`ENV_REASON` 也得这么传**：命令跑在子壳里，`run_context` 那边设的变量带不出来，
+  # 描述就会退回成通用的「环境未就绪：<命令>」，「拉镜像失败（网络或镜像源）」这句白写了。
+  # 用 LOCAL_CI_ENV_REASON_FILE 指个文件给它写（#203 复审）。
+  ( rc=0; LOCAL_CI_ENV_REASON_FILE="$reasonf" "$@" 2>&1 || rc=$?; printf '%s' "$rc" > "$rcf" ) | tee "$log"
   rc="$(cat "$rcf")"
-  rm -f "$rcf"
+  ENV_REASON="$(cat "$reasonf" 2>/dev/null)"
+  rm -f "$rcf" "$reasonf"
   if [ "$rc" -eq 0 ]; then
     rm -f "$log"
     return 0
@@ -558,10 +574,29 @@ capture_to_log() {
   if [ "$ctx" = local-ci/docker ]; then
     scene="${log%.log}.docker.txt"
     { docker_scene; printf '\n===== 这一项日志的最后 200 行 =====\n'; tail -n 200 "$log"; } >"$scene" 2>&1
+    chmod 600 "$scene" 2>/dev/null || true
     printf '\ndocker 现场：%s\n' "$scene" >&2
   fi
   printf '\n这一项的完整日志：%s\n' "$log" >&2
   return "$rc"
+}
+
+# `run_context` 里设「环境未就绪的具体原因」。**同时写进文件**：它现在跑在 capture_to_log
+# 的子壳里，光设变量带不出来（#203 复审）。
+set_env_reason() {
+  ENV_REASON="$1"
+  [ -n "${LOCAL_CI_ENV_REASON_FILE:-}" ] && printf '%s' "$1" > "$LOCAL_CI_ENV_REASON_FILE"
+  return 0
+}
+
+# status 描述最长 140 个**字符**（GitHub 的上限；按字符不是字节，中文一个字算一个）。
+# 拼出来超了就砍尾巴加「…」—— 结论和原因在前、路径在后，所以砍掉的正好是路径那截。
+# 用 bash 的 `${#s}` / `${s:0:n}` 而不是 `cut -c`：两者的「字符」口径一致，
+# 也不依赖 cut 的实现（BSD 的 -c 在有些版本上是按字节）。
+truncate_desc() {
+  local s="${1:-}"
+  [ "${#s}" -le 140 ] && { printf '%s' "$s"; return 0; }
+  printf '%s…' "${s:0:139}"
 }
 
 # status 描述里那句「日志在 <路径>」。文件不在了就是空串（成功时日志会被删掉）。

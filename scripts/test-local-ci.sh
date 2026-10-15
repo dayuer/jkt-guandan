@@ -587,12 +587,30 @@ echo '--- 失败时留下完整日志和现场（#202）---'
 # 文件名：sha 前 7 位 + context 短名 + 时间戳。短名是为了 status 描述塞得下
 #（GitHub 只有 140 字，而 macOS 的 $TMPDIR 本身就占 45 个字）。
 eq '日志名：sha 取前 7 位、context 去掉 local-ci/ 前缀' \
-  'ac6c141-docker-20261016-061500.log' \
-  "$(log_file_name ac6c14176552e526641a12de1d0ae66f8d6b1eb2 local-ci/docker 20261016-061500)"
+  'ac6c141-docker-20261016-061500-777.log' \
+  "$(log_file_name ac6c14176552e526641a12de1d0ae66f8d6b1eb2 local-ci/docker 20261016-061500 777)"
 eq '日志名：别的 context 也一样' \
-  'ac6c141-test-20261016-061500.log' \
-  "$(log_file_name ac6c1417 local-ci/test 20261016-061500)"
-eq '日志名：sha 短于 7 位也不炸' 'abc-x-t.log' "$(log_file_name abc x t)"
+  'ac6c141-test-20261016-061500-777.log' \
+  "$(log_file_name ac6c1417 local-ci/test 20261016-061500 777)"
+eq '日志名：sha 短于 7 位也不炸' 'abc-x-t-777.log' "$(log_file_name abc x t 777)"
+# 同一个 SHA、同一秒、同一个 context 跑两次不能撞名 —— 后跑的那次成功会把先跑那次
+# 失败日志删掉，等于白留。所以文件名末尾带 $$。
+eq '日志名：同一个 sha/秒/context，不同进程也不撞名' '1' \
+  "$([ "$(log_file_name abc1234 local-ci/docker t 111)" != "$(log_file_name abc1234 local-ci/docker t 222)" ] && echo 1 || echo 0)"
+eq '日志名：不传 pid 时默认用 $$' "$(log_file_name abc1234 local-ci/docker t)" "$(log_file_name abc1234 local-ci/docker t $$)"
+
+# 描述上限 140 个**字符**（GitHub 的规格）。中文一个字算一个，砍的是尾巴（路径在后）。
+eq '描述：不超就不动' 'abc' "$(truncate_desc abc)"
+d140="$(printf 'x%.0s' $(seq 1 140))"
+eq '描述：刚好 140 不动' "$d140" "$(truncate_desc "$d140")"
+long="$(printf 'x%.0s' $(seq 1 200))"
+eq '描述：超了砍到 140 字符（139 + …）' '1' \
+  "$([ "${#long}" = 200 ] && [ "$(truncate_desc "$long" | wc -c | tr -d ' ')" = 142 ] && echo 1 || echo 0)"
+eq '描述：中文按**字符**算（140 个汉字不被砍）' '1' \
+  "$(cn=$(printf '环%.0s' $(seq 1 140)); [ "${#cn}" = 140 ] && [ "$(truncate_desc "$cn")" = "$cn" ] && echo 1 || echo 0)"
+eq '描述：141 个汉字要砍' '1' \
+  "$(cn=$(printf '环%.0s' $(seq 1 141)); [ "$(truncate_desc "$cn")" != "$cn" ] && echo 1 || echo 0)"
+
 
 # macOS 的 $TMPDIR 结尾**自带一个 `/`**，不去掉路径就成 `/var/…/T//local-ci-logs`：
 # 打印难看，而且 status 描述只有 140 字，白占一格。真跑红的那次就是这么发现的。
@@ -664,6 +682,45 @@ case "$out" in
   *"docker 现场：$CL/d.docker.txt"*) ok 'docker 失败 → 也打印现场路径' ;;
   *) bad 'docker 失败 → 也打印现场路径' "含「docker 现场：$CL/d.docker.txt」" "$out" ;;
 esac
+# ⚠️ **经过 `run_context` 的真调用方式**（#203 复审的阻塞）：`capture_to_log` 在子壳里跑命令，
+# `run_context` 设的 `ENV_REASON` 带不出来，描述会退回成通用的「环境未就绪：<命令>」——
+# 「拉镜像失败（网络或镜像源）」那句白写了。
+# 前面那些 `true` / `sh -c 'exit 1'` 都**不经过 run_context**，所以一条都没抓到。
+# 这又是「测试的调用方式和真实调用方式不一致」。
+FD2=$(mktemp -d)
+cat > "$FD2/docker" <<'DK'
+#!/bin/sh
+case "$1" in
+  info)  exit 0 ;;                                    # 前置检查：守护进程在
+  build) printf 'ERROR: failed to authorize: dial tcp: lookup auth.docker.io: i/o timeout\n' >&2; exit 1 ;;
+  rmi)   exit 0 ;;
+esac
+exit 0
+DK
+chmod +x "$FD2/docker"
+# ⚠️ **不能写成 `out=$(… capture_to_log …)`**：命令替换本身就是子壳，`ENV_REASON`
+# 一样带不出来 —— 那样这条会**假红**（代码是对的）。重定向到文件再看。
+PATH="$FD2:$PATH" DOCKER_BUILD_RETRY_BASE=0 capture_to_log local-ci/docker "$CL/ctx.log" run_context local-ci/docker > "$CL/ctxout.txt" 2>&1
+rc=$?
+out="$(cat "$CL/ctxout.txt")"
+eq '真调用方式：拉镜像网络问题 → 2（环境未就绪）' '2' "$rc"
+eq '真调用方式：原因是「拉镜像失败」（改用文件带出来，不再被丢在子壳里）' \
+  '拉镜像失败（网络或镜像源）' "$ENV_REASON"
+desc="$(env_not_ready_desc "$ENV_REASON" 'docker build + scripts/container-smoke.sh')$(log_note "$CL/ctx.log")"
+case "$desc" in
+  *"拉镜像失败"*) ok '真调用方式：拼出来的描述里有「拉镜像失败」' ;;
+  *) bad '真调用方式：拼出来的描述里有「拉镜像失败」' '含「拉镜像失败」' "$desc" ;;
+esac
+eq '真调用方式：docker 现场也生成了' '1' "$(ls "$CL"/ctx.docker.txt 2>/dev/null | wc -l | tr -d ' ')"
+case "$(cat "$CL/ctx.docker.txt" 2>/dev/null)" in
+  *"自己清理之后"*) ok '现场里注明了快照是清理之后拍的' ;;
+  *) bad '现场里注明了快照是清理之后拍的' '含「自己清理之后」' "$(cat "$CL/ctx.docker.txt" 2>/dev/null)" ;;
+esac
+rm -rf "$FD2"
+
+# 日志文件权限：别人不该读到（Linux 上没 TMPDIR 时默认落在共享的 /tmp）。
+eq '日志文件权限是 600（别人读不到）' 'rw-------' "$(ls -l "$CL/ctx.log" 2>/dev/null | cut -c2-10)"
+
 rm -rf "$CL" "$FD"
 
 # status 描述里那句「日志在 …」：文件在才有，成功时日志已删所以是空串。
