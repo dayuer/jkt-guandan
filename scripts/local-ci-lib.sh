@@ -297,9 +297,11 @@ dirty_tree_action() {
 }
 
 # ---------------------------------------------------------------------------
-# 协议三项（迁移自 .github/workflows/protocol.yml）
+# 协议三项（迁移自 .github/workflows/protocol.yml）+ 脚本卫生（#178）
 # 第 ③ 项**去掉了「仅 impl/* 与 audit/*」的前置条件**：COORDINATION.md §4 的
 # 「PR 描述写清关联的 issue」本来就不限分支前缀。
+# 第 ④ 项（脚本里的 `$VAR` 紧跟多字节字符）不是原 protocol.yml 里的，见下面
+# unsafe_var_expansions 的说明 —— 放在这一组是因为 protocol 每个 PR 都跑，而且很便宜。
 # ---------------------------------------------------------------------------
 
 # 扫「不得含署名」之前先剥掉**围栏代码块**。
@@ -318,14 +320,45 @@ _strip_code_fences() {
 # 里的 ai 会被拦。作者 / 提交者身份另外按裸名字查（见 protocol_failures）。
 PROTO_ATTR_RE='co-authored-by:.*(claude|anthropic)|<noreply@anthropic\.com>|generated (with|by) .*\b(claude|anthropic|ai|assistant)\b'
 
-# 参数：$1=标题 $2=描述 $3=提交信息 $4=作者与提交者身份
+# 脚本卫生：`$VAR` 后面紧跟多字节字符（#178）。protocol 的第 ④ 项用它。
+#
+# macOS 自带的 bash 3.2 在 UTF-8 locale 下会把 `"$IMAGE，"` 里那个全角逗号当成变量名的
+# 一部分，`set -u` 直接 `IMAGE，: unbound variable` 中止。后果是**同一个提交绿不绿，
+# 取决于跑的人用什么 locale** —— local-ci/docker 就会因为 deploy-remote.sh:108 这一行
+# 在 UTF-8 locale 下必红。所以 scripts/ 下一律写 `${VAR}`。
+#
+# 修法不是「在 local-ci 里固定 locale」：那只是把问题盖住，脚本本身在 UTF-8 的机器上
+# （比如谁在 macOS 上直接 sh scripts/deploy.sh）照样会炸。
+#
+# 两条判定，都是为了不误报：
+#   · 整行注释不算 —— 注释不展开，而且 test-local-ci.sh 里要**故意**写出错的形式当例子；
+#   · 单引号里的不算 —— 不展开。
+# 纯文本扫描，不执行任何脚本。
+#
+# 用 LC_ALL=C **按字节**扫：`[^ -~]` 这种括号表达式在 UTF-8 locale 下是 locale 相关的，
+# 而这里要的正好是「美元符号后面那个字节不是可打印 ASCII」。grep -I 跳过二进制文件。
+unsafe_var_expansions() { # $1 = 要扫的目录；每一处打一行 `文件:行号:内容`
+  local dir="${1:?unsafe_var_expansions 需要一个目录}"
+  [ -d "$dir" ] || return 0
+  LC_ALL=C find "$dir" -type f -print 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
+    # sed 不增删行，所以 grep -n 的行号和原文件对得上。
+    LC_ALL=C sed -e 's/^[[:space:]]*#.*$//' -e "s/'[^']*'//g" "$f" \
+      | LC_ALL=C grep -nIE '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' \
+      | while IFS= read -r hit; do printf '%s:%s\n' "$f" "$hit"; done
+  done
+}
+
+# 参数：$1=标题 $2=描述 $3=提交信息 $4=作者与提交者身份 $5=要扫脚本卫生的目录（scripts/）
 # 通过：无输出、返回 0。失败：每条问题打到 stdout、返回 1（不提前返回，一次列全）。
 #
 # ⚠️ **$3 必须是含正文的完整提交信息**（`git log --format='%h %B'`）。只给主题行会漏掉
 # 正文里的署名尾注 —— 而那正是最常见的违规形态。
+#
+# $5 用 `${5:?…}` 强制传：漏传的话第 ④ 项会**静默不跑**，那就成了「一条绿 status
+# 底下什么都没查」——正是这套 CI 一直在防的假绿。
 protocol_failures() {
-  local title="$1" body="$2" commits="$3" authors="$4"
-  local fail=0 first
+  local title="$1" body="$2" commits="$3" authors="$4" scripts_dir="${5:?protocol_failures 需要 scripts 目录}"
+  local fail=0 first dirty
 
   # ① 描述第一行（跳过空行与 HTML 注释）必须是角色标签
   first=$(printf '%s\n' "$body" | sed -e 's/\r$//' \
@@ -354,6 +387,17 @@ protocol_failures() {
   # ③ 关联 issue —— 对所有 PR 生效。冒号可有可无（GitHub 支持 `Fixes: #10`）。
   if ! printf '%s' "$body" | grep -Eiq '(fixes|closes|resolves|refs):?[[:space:]]*#[0-9]+'; then
     printf 'PR 描述必须关联 issue（Fixes #N / Fixes: #N / Refs #N 均可）\n'
+    fail=1
+  fi
+
+  # ④ scripts/ 里没有「$VAR 紧跟多字节字符」（#178）。和前三项不同，这条查的是**工作区**
+  #    而不是 PR 文本；放这一组是因为 protocol 每个 PR 都跑。范围是整个 scripts/，
+  #    包括 scripts/agents —— board.sh 那次也中招了。
+  dirty=$(unsafe_var_expansions "$scripts_dir")
+  if [ -n "$dirty" ]; then
+    printf 'scripts/ 里有「$VAR 紧跟多字节字符」的写法：bash 3.2 在 UTF-8 locale 下会把那个字符\n'
+    printf '当成变量名的一部分，set -u 直接中止（#178，同一份提交绿不绿只取决于跑的人用什么\n'
+    printf 'locale）。改成 ${VAR}：\n%s\n' "$dirty"
     fail=1
   fi
 

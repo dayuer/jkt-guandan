@@ -131,10 +131,10 @@ FAILED=''
 ENVNOTREADY=''
 SCRIPTBUG=''
 
-# --- protocol 三项 ----------------------------------------------------------
+# --- protocol 三项 + 脚本卫生 -----------------------------------------------
 printf '\n=== protocol ===\n'
 if [ -z "$PR_JSON" ]; then
-  printf '当前分支没有开的 PR，跳过协议三项（--no-post 时属正常）。\n'
+  printf '当前分支没有开的 PR，跳过协议检查（--no-post 时属正常）。\n'
   [ "$POST" -eq 1 ] && post_status "$HEAD_SHA" protocol error '没有找到本分支的 PR'
 else
   TITLE=$(printf '%s' "$PR_JSON" | jq -r .title)
@@ -145,9 +145,10 @@ else
   # **`%h %B` 不是 `%h %s`**：署名尾注在提交正文里，只取主题行会漏掉。
   COMMITS=$(git log --format='%h %B' "$MB..$HEAD_SHA" 2>/dev/null || true)
   AUTHORS=$(git log --format='%an <%ae>%n%cn <%ce>' "$MB..$HEAD_SHA" 2>/dev/null || true)
-  if OUT=$(protocol_failures "$TITLE" "$BODY" "$COMMITS" "$AUTHORS"); then
+  # 第 ⑤ 个参数是第 ④ 项（脚本卫生）要扫的目录。传的是**工作区**的 scripts/，不是某个提交的。
+  if OUT=$(protocol_failures "$TITLE" "$BODY" "$COMMITS" "$AUTHORS" "$ROOT/scripts"); then
     printf '通过。\n'
-    post_status "$HEAD_SHA" protocol success '角色标签 / 无 AI 署名 / 关联 issue'
+    post_status "$HEAD_SHA" protocol success '角色标签 / 无 AI 署名 / 关联 issue / scripts 无 $VAR 贴多字节字符'
   else
     [ -n "$OUT" ] || OUT='协议检查没有任何输出 —— 可能是脚本自身出错，看上面的报错'
     printf '%s\n' "$OUT"
