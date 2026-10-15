@@ -62,12 +62,19 @@ export interface ScoreRound extends RoundResult {
   recorded_at: number;
   edited_by?: UserRef;
   edited_at?: number;
+  /**
+   * 这一局当时 1–4 号座上的人（#172，下标 0 是 1 号）。中途换过人，换人前的局仍是原来的人。
+   * 0009 迁移前记的局、那时空着的座号是 null，退回用现在的座位；更早的服务端没有这个字段。
+   */
+  seats?: (UserRef | null)[];
 }
 
 /** GET /api/games/{code}/score 和三个写接口的响应（docs/server-design.md §5.6）。 */
 export interface Score {
   started: boolean;
   can_record: boolean;
+  /** 现在点「开始记分」会成功：在座位上、满座、还没开始、已到开局前 30 分钟（服务端算，客户端不看本机时钟） */
+  can_start?: boolean;
   settings?: ScoreSettings;
   started_by?: UserRef;
   started_at?: number;
@@ -115,8 +122,13 @@ export function levelName(n: number): string {
 export function placeName(p: number): string {
   return p === 2 ? "二游" : p === 3 ? "三游" : "末游";
 }
-/** 「头游＋三游」「头游＋二游 · 双上」 */
-export function howText(partnerPlace: number): string {
+/**
+ * 「头游＋三游」「头游＋二游 · 双上」。
+ * 不升级玩法只关心是不是双上：服务端要求 partner_place 是 2–4，没选时客户端只能占位传 3，
+ * 所以不是双上就只写「头游」，不冒充「三游」（#174 第 6 项）。
+ */
+export function howText(partnerPlace: number, kind: ScoreSettings["kind"] = "classic"): string {
+  if (kind === "no-level") return partnerPlace === 2 ? "头游＋二游 · 双上" : "头游";
   return `头游＋${placeName(partnerPlace)}${partnerPlace === 2 ? " · 双上" : ""}`;
 }
 
@@ -188,6 +200,14 @@ export function compute(s: ScoreSettings, facts: RoundFact[]): { rounds: RoundRe
 
 export const factOf = (r: RoundFact): RoundFact => ({ head_seat: r.head_seat, partner_place: r.partner_place });
 export const sameFact = (a: RoundFact, b: RoundFact) => a.head_seat === b.head_seat && a.partner_place === b.partner_place;
+/**
+ * 两个结果在这个玩法下是不是一回事：不升级玩法里三游、末游都只算「不是双上」，没有区别
+ * （名次没选时客户端占位传 3，见 howText）。
+ */
+export function sameOutcome(kind: ScoreSettings["kind"], a: RoundFact, b: RoundFact): boolean {
+  if (kind !== "no-level") return sameFact(a, b);
+  return a.head_seat === b.head_seat && (a.partner_place === 2) === (b.partner_place === 2);
+}
 
 /** 改第 no 局之后会怎样（S10「连带变化」）。 */
 export function previewEdit(s: ScoreSettings, rounds: RoundFact[], no: number, fact: RoundFact) {
@@ -277,29 +297,68 @@ function failCountText(s: ScoreSettings, r: RoundResult): string {
 
 /** 一局的结果写成一行：「红方 头游＋三游，9 → J」（S11 顶部条、S12 并排）。 */
 export function resultLine(kind: ScoreSettings["kind"], r: RoundResult): string {
-  const base = `${TEAM_NAME[r.winner]} ${howText(r.partner_place)}`;
+  const base = `${TEAM_NAME[r.winner]} ${howText(r.partner_place, kind)}`;
   if (kind === "no-level") return base;
   if (r.passed_a) return `${base}，过 A`;
   return `${base}，${levelName(r.level_before)} → ${levelName(r.level_after)}`;
 }
 
-/** 「阿杰 头游 · 老王 三游」 */
-export function whoLine(fact: RoundFact, names: Names): string {
-  return `${names(fact.head_seat)} 头游 · ${names(mateOf(fact.head_seat))} ${placeName(fact.partner_place)}`;
+/** 「阿杰 头游 · 老王 三游」；不升级玩法不是双上时只写「阿杰 头游」 */
+export function whoLine(fact: RoundFact, names: Names, kind: ScoreSettings["kind"] = "classic"): string {
+  const head = `${names(fact.head_seat)} 头游`;
+  if (kind === "no-level" && fact.partner_place !== 2) return head;
+  return `${head} · ${names(mateOf(fact.head_seat))} ${placeName(fact.partner_place)}`;
+}
+
+/**
+ * 某一局的称呼：用这一局当时的座位（#172 的 seats），那个座号是 null 或者服务端没给，
+ * 退回用现在坐在那里的人（current）。S9 每局记录、S10 改一局、S12 并排、S15 战报都用它。
+ */
+export function roundNames(round: { seats?: (UserRef | null)[] } | null | undefined, current: Names): Names {
+  return (seat) => round?.seats?.[seat - 1]?.nickname || current(seat);
+}
+/** 某一局当时这个座号上是不是我；seats 没有这个座号时退回看现在的座位（isMeNow）。 */
+export function roundIsMe(round: { seats?: (UserRef | null)[] } | null | undefined, seat: number, myId: string | undefined, isMeNow: (seat: number) => boolean): boolean {
+  const who = round?.seats?.[seat - 1];
+  return who ? !!myId && who.id === myId : isMeNow(seat);
 }
 
 // ── 两人同时记同一局（S12）──
 
-export type ConflictDecision = "mine" | "same" | "differ";
+export type ConflictDecision = "mine" | "same" | "differ" | "mine-differ";
 
 /**
- * 409 round_taken 之后怎么办：记下的那一局是我自己记的（比如没带幂等键的双击）就当成功；
- * 和我选的一样就静默合并，toast「和 X 记的一样」；不一样才弹框让用户选。
- * 不升级玩法里三游、末游只差在「双上」统计上也算不一样。
+ * 409 round_taken 之后怎么办：
+ * - mine：是我自己记的、结果也一样（弱网下第一次其实写进去了）→ 就是成功了；
+ * - mine-differ：是我自己记的，但和这次选的不一样（第一次写进去了，用户以为没成，改了选择再提交，
+ *   换了新的幂等键）→ 不能静默当成功，弹 S12 并排框，左边写「你刚才记的」；
+ * - same：别人记的、结果一样 → 静默合并，toast「和 X 记的一样」；
+ * - differ：别人记的、不一样 → 弹 S12。
+ * 「一样」按玩法比（sameOutcome）：不升级玩法里三游、末游没有区别。
  */
-export function decideConflict(existing: ScoreRound, mine: RoundFact, myId: string | undefined): ConflictDecision {
-  if (myId && existing.recorded_by?.id === myId) return "mine";
-  return sameFact(existing, mine) ? "same" : "differ";
+export function decideConflict(existing: ScoreRound, mine: RoundFact, myId: string | undefined, kind: ScoreSettings["kind"] = "classic"): ConflictDecision {
+  const same = sameOutcome(kind, existing, mine);
+  if (myId && existing.recorded_by?.id === myId) return same ? "mine" : "mine-differ";
+  return same ? "same" : "differ";
+}
+
+/**
+ * 改一局收到 409 round_changed：如果最新计分里这一局已经就是我要改成的结果（上一次 PUT 写成功了、
+ * 响应丢了，重试时服务端拿 was 比对不上），就当成功，不提示「刚被别人改过」。
+ */
+export function editAlreadyApplied(latest: Score | null | undefined, no: number, mine: RoundFact): boolean {
+  if (!isStarted(latest)) return false;
+  const r = latest.rounds[no - 1];
+  return !!r && r.round_no === no && sameOutcome(latest.settings.kind, r, mine);
+}
+
+/**
+ * 实时 score.round 能不能直接拼在本地后面：局号正好接上，而且 revision 正好是本地的下一个。
+ * 中间漏了事件（比如一次 score.edited），前面的行就是旧的，要重新拉整份（#170 复审意见 3）。
+ */
+export function canAppendRound(local: StartedScore | null, ev: Pick<ScoreEventData, "revision" | "round">): boolean {
+  if (!local || !ev.round) return false;
+  return ev.round.round_no === local.rounds.length + 1 && ev.revision === local.revision + 1;
 }
 
 // ── 实时去重：计分事件不带顶层 v，按 data.revision 丢掉不比本地新的 ──
@@ -323,12 +382,30 @@ export class RevisionGate {
   reset() { this.rev = 0; }
 }
 
+// ── 退出确认（#168）──
+
+/**
+ * 记分开始以后退出前的说明。有候补时服务端会立刻让候补第一位补上空出来的座位（promoteHead），
+ * 退出的人回不来；没有候补时局回到 open、记分暂停，回原座位可以接着记（server-design §5.6）。
+ */
+export function leaveConfirmText(waitlist: { user: { nickname: string } }[]): string {
+  if (!waitlist.length) return "退出后这局记分会暂停，回到原座位可以继续";
+  const name = waitlist[0].user.nickname;
+  return name ? `退出后座位会由候补第一位 ${name} 补上，记分接着记` : "退出后座位会由候补第一位补上，记分接着记";
+}
+
 // ── 时间 ──
 
-/** 开局前 30 分钟起才能开始记分（服务端 ScoreOpensBefore；GET 的 can_record 不看这个窗口）。 */
-export const SCORE_OPENS_BEFORE = 30 * 60;
-export function canStartNow(startsAt: number, nowSec: number): boolean {
-  return nowSec >= startsAt - SCORE_OPENS_BEFORE;
+/**
+ * 详情页什么时候再问一次服务端 can_start（毫秒；null = 不用问）。能不能开始只看服务端的 can_start，
+ * 本机时钟只用来挑「大概到点了」的时刻去重新拉 GET /score：开局前 30 分钟后 2 秒；本机算着已经到了、
+ * 服务端还说不行（时钟偏了），每分钟问一次。离得远时最多 10 分钟问一次，避免一个很长的定时器。
+ */
+export function startRecheckDelay(o: { startsAt: number; nowSec: number; canStart: boolean; started: boolean; eligible: boolean }): number | null {
+  if (o.started || o.canStart || !o.eligible) return null;
+  const opens = o.startsAt - 30 * 60;
+  if (o.nowSec >= opens) return 60_000;
+  return Math.min(opens - o.nowSec + 2, 600) * 1000;
 }
 
 /** 第 match 场的用时（秒）：从开始记分或上一场最后一局，到这一场最后一局。 */

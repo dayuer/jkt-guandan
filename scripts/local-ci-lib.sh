@@ -28,7 +28,8 @@
 #   local-ci/h5-audit npm audit --omit=dev（只在依赖清单变了时跑：通报每天在变，
 #                     与改动无关的红不该挂在别人的 PR 上）
 #   local-ci/minigame 小游戏 typecheck + test + build。小游戏复用 app/h5/src 的纯逻辑，
-#                     所以 app/h5/src 改了也要跑（原 ci.yml 里那条注释说的就是这个）
+#                     所以 app/h5/src 改了也要跑（原 ci.yml 里那条注释说的就是这个）；
+#                     vitest 还读 server/internal/scoring/testdata/vectors.json，规则改了也跑
 #   local-ci/nginx    nginx 模板检查
 #   local-ci/docker   docker build + 容器冒烟 + 发布回滚测试 + 恢复演练
 #   local-ci/e2e      浏览器端到端冒烟（= make e2e）
@@ -40,6 +41,9 @@ _path_to_context() {
   case "$1" in
     go.mod|go.sum)
       echo 'local-ci/test'; echo 'local-ci/vuln'; echo 'local-ci/docker'; echo 'local-ci/e2e' ;;
+    # 规则和对照用例 testdata/vectors.json 小游戏的 vitest 也读（#174），要排在 server/* 前面
+    server/internal/scoring/*)
+      echo 'local-ci/test'; echo 'local-ci/minigame'; echo 'local-ci/vuln'; echo 'local-ci/docker'; echo 'local-ci/e2e' ;;
     server/*)
       echo 'local-ci/test'; echo 'local-ci/vuln'; echo 'local-ci/docker'; echo 'local-ci/e2e' ;;
     # ⚠️ 下面三条要排在 `app/h5/*` 前面：case 取**第一个**命中的分支。
