@@ -159,8 +159,15 @@ func run() error {
 		Build: buildinfo.Get(),
 	})
 	gamesSvc := games.NewService(st, clk, gamesPublisher{hub})
+	// §14 内容安全（#146）和 §5.3 订阅消息（#137）**共用同一个** access_token 缓存（#159）：
+	// 各建一个的话，任何一方收到 40001 强刷，都会让另一方缓存里的 token 立刻失效，两边互相顶掉，
+	// 直到各自过期重取。这里建一次，注入给两边。没配 AppID / Secret 时是 nil（两个功能都关）。
+	var wxTokens wxapi.TokenSource
+	if cfg.WxEnabled() {
+		wxTokens = &wxapi.StableToken{AppID: cfg.WxAppID, Secret: cfg.WxSecret, Clock: clk}
+	}
 	// §14 微信内容安全检测（#146）：小游戏用户的称呼、地点、备注写入前送微信查。
-	if guard := newContentGuard(cfg, st, clk, reg.Registry); guard != nil {
+	if guard := newContentGuard(cfg, st, wxTokens, reg.Registry); guard != nil {
 		identitySvc.SetContentGuard(guard)
 		gamesSvc.SetContentGuard(guard)
 	}
@@ -177,7 +184,7 @@ func run() error {
 	// 发送 worker 每 15 秒一轮；心跳周期报 2 分钟：一轮最多 100 条、每条 10 秒超时、8 个并发，
 	// 慢的时候一轮要一两分钟，按 15 秒算会被 /readyz 误判为卡死。
 	// §5.3 订阅消息（#137）：配了 AppID / Secret 和至少一个模板才开。
-	setupWxSubscribe(notifySvc, cfg, clk)
+	setupWxSubscribe(notifySvc, cfg, wxTokens)
 	group.Go(bgCtx, "push", 2*time.Minute, notify.NewWorker(notifySvc, notifySvc.NewSender(), clk).Task)
 
 	// §12.4 第 1 步：开始关闭后 /readyz 立刻返回 503。
@@ -375,11 +382,12 @@ func setupWx(svc *identity.Service, cfg config.Config) {
 
 // newContentGuard 建微信内容安全检测（#146）。配了 AppID / Secret 用真接口；没配时开发模式用假检测器
 // （含 secheck.DevRiskyWord 判 risky），生产则返回 nil：整体关闭。
-func newContentGuard(cfg config.Config, st *store.Store, clk clock.Clock, reg *metrics.Registry) *secheck.Guard {
+//
+// tokens 由调用方注入，和订阅消息共用同一个（#159）；只有 cfg.WxEnabled() 时才用得到。
+func newContentGuard(cfg config.Config, st *store.Store, tokens wxapi.TokenSource, reg *metrics.Registry) *secheck.Guard {
 	g := &secheck.Guard{Store: st}
 	switch {
 	case cfg.WxEnabled():
-		tokens := &wxapi.StableToken{AppID: cfg.WxAppID, Secret: cfg.WxSecret, Clock: clk}
 		g.AppID, g.Checker = cfg.WxAppID, secheck.WxChecker{API: &wxapi.Client{Tokens: tokens}}
 		slog.Info("微信内容安全检测已开启")
 	case cfg.Dev:
@@ -394,8 +402,10 @@ func newContentGuard(cfg config.Config, st *store.Store, clk clock.Clock, reg *m
 }
 
 // setupWxSubscribe 接上小游戏订阅消息通道（#137）。没配 AppID / Secret 或模板时关闭，提醒只走 Web Push。
-func setupWxSubscribe(svc *notify.Service, cfg config.Config, clk clock.Clock) {
-	ch := notify.NewWxChannel(cfg, clk)
+//
+// tokens 由调用方注入，和内容安全检测共用同一个（#159）。
+func setupWxSubscribe(svc *notify.Service, cfg config.Config, tokens wxapi.TokenSource) {
+	ch := notify.NewWxChannel(cfg, tokens)
 	if ch == nil {
 		if cfg.WxTmplFull.ID != "" || cfg.WxTmplRemind.ID != "" {
 			slog.Warn("配了订阅消息模板但没配 GUANDAN_WX_APPID / GUANDAN_WX_SECRET，订阅消息关闭")

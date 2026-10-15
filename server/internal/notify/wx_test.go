@@ -248,7 +248,12 @@ func TestWxChannelOff(t *testing.T) {
 		ch.AppID != identity.DevWxAppID || ch.Sender != (DevWxSender{}) {
 		t.Fatalf("开发模式没配 AppID：应开启、openid 按 wx_openid:dev 找、只记日志：%+v", ch)
 	}
-	ch := NewWxChannel(config.Config{WxAppID: wxApp, WxSecret: "s", WxTmplRemind: config.WxTemplate{ID: tmplRemind}}, nil)
+	// 配了 AppID / Secret 却没给 token 源：**不自己建第二个缓存**（#159），通道关掉。
+	if NewWxChannel(config.Config{WxAppID: wxApp, WxSecret: "s", WxTmplRemind: config.WxTemplate{ID: tmplRemind}}, nil) != nil {
+		t.Fatal("配了 AppID / Secret 但没传 token 源时，不应自己建一个（#159），通道应关闭")
+	}
+	ch := NewWxChannel(config.Config{WxAppID: wxApp, WxSecret: "s", WxTmplRemind: config.WxTemplate{ID: tmplRemind}},
+		&wxapi.StableToken{AppID: wxApp, Secret: "s"})
 	if ch == nil || len(ch.TemplateIDs()) != 1 {
 		t.Fatalf("配了 remind 模板应开启，只有一个模板：%v", ch.TemplateIDs())
 	}

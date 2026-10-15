@@ -70,6 +70,73 @@ func TestStableTokenCacheRefreshAndInvalidate(t *testing.T) {
 	}
 }
 
+// 两个使用方共用**同一个** StableToken（#159）：内容安全（#146）和订阅消息（#137）就是这种关系，
+// main.go 建一次注入给两边。共用一个缓存时 token 只取一次；一方因为 40001 强刷之后，另一边
+// 下一次拿到的就是换过的那一个 —— 也就是**强刷只重取一次**，而不是两边各取一次、互相把对方顶掉。
+func TestSharedStableTokenRefreshesOnce(t *testing.T) {
+	var tokenCalls atomic.Int32
+	var lastToken atomic.Value
+	var tokenInvalid atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cgi-bin/stable_token":
+			fmt.Fprintf(w, `{"access_token":"tok%d","expires_in":7200}`, tokenCalls.Add(1))
+		case "/x":
+			lastToken.Store(r.URL.Query().Get("access_token"))
+			if tokenInvalid.Load() {
+				fmt.Fprint(w, `{"errcode":40001,"errmsg":"invalid credential"}`)
+				return
+			}
+			fmt.Fprint(w, `{"errcode":0}`)
+		default:
+			t.Errorf("不该请求 %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	clk := clock.NewFake(time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
+	// 一个 token 源、两个使用方各自的 Client —— 就是 main.go 注入给内容安全和订阅消息的形状。
+	tokens := &StableToken{AppID: "wxapp", Secret: "sec", BaseURL: srv.URL, Clock: clk}
+	guard := &Client{BaseURL: srv.URL, Tokens: tokens}
+	subscribe := &Client{BaseURL: srv.URL, Tokens: tokens}
+	ctx := context.Background()
+
+	// 两边各发一次：共用一个缓存，所以只该取一次 token。
+	if err := guard.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := subscribe.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := tokenCalls.Load(); n != 1 {
+		t.Fatalf("两边共用一个缓存，token 只该取一次，实际 %d 次", n)
+	}
+
+	// 内容安全那边收到 40001（强刷的触发条件）：客户端作废缓存，但**不**立刻重取。
+	tokenInvalid.Store(true)
+	if err := guard.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+	if n := tokenCalls.Load(); n != 1 {
+		t.Fatalf("作废本身不该立刻重取，实际 %d 次", n)
+	}
+
+	// 订阅消息下一次拿到的必须是换过的 token —— 而且只重取这一次。
+	tokenInvalid.Store(false)
+	if err := subscribe.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastToken.Load(); got != "tok2" {
+		t.Fatalf("强刷之后订阅消息该拿到换过的 tok2，实际 %v", got)
+	}
+	if err := guard.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := tokenCalls.Load(); n != 2 {
+		t.Fatalf("两边共用，强刷只该重取一次，实际一共 %d 次", n)
+	}
+}
+
 // 错误：errcode 非 0 是 *Error（只有限频、繁忙、token 问题可重试）；没拿到回应包着 ErrUnavailable；
 // 错误文字里不带 URL（access_token 在查询串里）。
 func TestErrors(t *testing.T) {
