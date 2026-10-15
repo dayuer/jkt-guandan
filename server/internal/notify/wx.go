@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/dayuer/jkt-guandan/server/internal/clock"
 	"github.com/dayuer/jkt-guandan/server/internal/config"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 	"github.com/dayuer/jkt-guandan/server/internal/wxapi"
@@ -84,7 +83,11 @@ func (c *WxChannel) template(kind string) (config.WxTemplate, bool) {
 }
 
 // NewWxChannel 按配置建订阅消息通道。没配 AppID / Secret 或者一个模板都没配时返回 nil：通道关闭。
-func NewWxChannel(cfg config.Config, clk clock.Clock) *WxChannel {
+//
+// tokens 是 access_token 来源，**必须和内容安全检测（#146）共用同一个实例**（#159）：两边各建
+// 一个缓存的话，任何一方收到 40001 强刷，都会让另一方缓存里的 token 立刻失效，互相顶掉。生产由
+// main.go 建好注入。
+func NewWxChannel(cfg config.Config, tokens wxapi.TokenSource) *WxChannel {
 	tmpls := cfg.WxSubscribeTemplates()
 	if len(tmpls) == 0 {
 		return nil
@@ -93,7 +96,12 @@ func NewWxChannel(cfg config.Config, clk clock.Clock) *WxChannel {
 		// 开发模式、没配 AppID：openid 关联记在 wx_openid:dev 下（identity.DevWxAppID），发送只记日志。
 		return &WxChannel{AppID: devWxAppID, Templates: tmpls, Sender: DevWxSender{}}
 	}
-	tokens := &wxapi.StableToken{AppID: cfg.WxAppID, Secret: cfg.WxSecret, Clock: clk}
+	if tokens == nil {
+		// 配了 AppID / Secret 却没给 token 源：调用方接错了。**这里不自己建** —— 自己建就又是
+		// 两份缓存，正是 #159 要修的。宁可不发（日志里看得见），也不要两份 token 互相顶。
+		slog.Error("订阅消息：没有传 token 源，通道关闭（#159 要求与内容安全共用同一个）")
+		return nil
+	}
 	return &WxChannel{AppID: cfg.WxAppID, Templates: tmpls, Sender: &SubscribeClient{API: &wxapi.Client{Tokens: tokens}}}
 }
 
