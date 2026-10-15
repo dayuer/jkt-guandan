@@ -105,7 +105,7 @@ if [ -L "$CURRENT" ]; then
 elif [ -e "$CURRENT" ]; then
   die "$CURRENT 存在但不是符号链接。请人工确认后改成指向某个版本目录的符号链接，再重新发布"
 fi
-log "镜像 $IMAGE，静态文件 $WEB_ROOT/$SHA，当前前端 ${PREV_CURRENT:-（无）}"
+log "镜像 ${IMAGE}，静态文件 $WEB_ROOT/${SHA}，当前前端 ${PREV_CURRENT:-（无）}"
 
 if exists "$PREV"; then
   log "清理上次遗留的 $PREV"
@@ -197,7 +197,7 @@ rollback() {
     log "回滚后旧版本也没有就绪，并且没有发布前快照可用，请按 docs/runbook.md §2.2 人工处理"
     exit 1
   fi
-  log "旧版本起不来，用发布前的快照恢复数据库：$SNAPSHOT（新版本运行期间的写入会丢失）"
+  log "旧版本起不来，用发布前的快照恢复数据库：${SNAPSHOT}（新版本运行期间的写入会丢失）"
   docker stop -t 30 "$NAME" >/dev/null
   if ! rout=$(restore_snapshot 2>&1); then
     printf '%s\n' "$rout" | sed 's/^/[deploy]   /'
@@ -215,7 +215,7 @@ rollback() {
 }
 
 # ---- 3. 启新、等就绪 ----
-log "启动 $IMAGE（127.0.0.1:$PORT → :8080，内存上限 $MEMORY）"
+log "启动 ${IMAGE}（127.0.0.1:$PORT → :8080，内存上限 ${MEMORY}）"
 if ! start "$IMAGE" || ! wait_ready; then
   log "新版本没有就绪"
   rollback

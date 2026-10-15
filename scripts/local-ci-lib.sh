@@ -380,3 +380,32 @@ approve_vs_head() { # $1 = approve 里写的 sha，$2 = head
   [ -n "$h" ] || { echo nohead; return 0; }
   case "$h" in "$a"*) echo ok ;; *) echo stale ;; esac
 }
+
+# ---------------------------------------------------------------------------
+# 脚本卫生：`$VAR` 后面紧跟多字节字符（#178）
+# ---------------------------------------------------------------------------
+# macOS 自带的 bash 3.2 在 UTF-8 locale 下会把 `"$IMAGE，"` 里那个全角逗号当成变量名的
+# 一部分，`set -u` 直接 `IMAGE，: unbound variable` 中止。后果是**同一个提交绿不绿，
+# 取决于跑的人用什么 locale** —— local-ci/docker 就会因为 deploy-remote.sh:108 这一行
+# 在 UTF-8 locale 下必红。所以 scripts/ 下一律写 `${VAR}`。
+#
+# 修法不是「在 local-ci 里固定 locale」：那只是把问题盖住，脚本本身在 UTF-8 的机器上
+# （比如谁在 macOS 上直接 sh scripts/deploy.sh）照样会炸。
+#
+# 两条判定，都是为了不误报：
+#   · 整行注释不算 —— 注释不展开，而且 test-local-ci.sh 里要**故意**写出错的形式当例子；
+#   · 单引号里的不算 —— 不展开。
+# 纯文本扫描，不执行任何脚本。
+#
+# 用 LC_ALL=C **按字节**扫：`[^ -~]` 这种括号表达式在 UTF-8 locale 下是 locale 相关的，
+# 而这里要的正好是「美元符号后面那个字节不是可打印 ASCII」。grep -I 跳过二进制文件。
+unsafe_var_expansions() { # $1 = 要扫的目录；每一处打一行 `文件:行号:内容`
+  local dir="${1:?unsafe_var_expansions 需要一个目录}"
+  [ -d "$dir" ] || return 0
+  LC_ALL=C find "$dir" -type f -print 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
+    # sed 不增删行，所以 grep -n 的行号和原文件对得上。
+    LC_ALL=C sed -e 's/^[[:space:]]*#.*$//' -e "s/'[^']*'//g" "$f" \
+      | LC_ALL=C grep -nIE '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' \
+      | while IFS= read -r hit; do printf '%s:%s\n' "$f" "$hit"; done
+  done
+}

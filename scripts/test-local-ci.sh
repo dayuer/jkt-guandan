@@ -284,6 +284,28 @@ case "$HELP" in
        '含 EX_USAGE、且含「看见 3 去修脚本。）」' "$(printf '%s' "$HELP" | tail -1)" ;;
 esac
 
+echo '--- scripts/ 里 $VAR 紧跟多字节字符（#178）---'
+
+# UTF-8 locale 下 bash 3.2 会把紧跟 $VAR 的全角标点吃进变量名，`set -u` 直接中止（#178）。
+eq 'scripts/ 下没有这种写法' '' "$(unsafe_var_expansions "$ROOT/scripts")"
+
+# 这个检查自己也要被测：正则哪天写坏了，它会一路静默绿下去 —— 正是它要防的那种假绿。
+TMPD=$(mktemp -d)
+printf 'log "镜像 $IMAGE，就绪"\n' > "$TMPD/bad.sh"
+printf 'log "镜像 ${IMAGE}，就绪"\n' > "$TMPD/good.sh"
+printf '# 注释：$IMAGE，不算\nlog ok\n' > "$TMPD/comment.sh"
+printf "echo '\$FOO，不展开'\n" > "$TMPD/single.sh"
+SCAN=$(unsafe_var_expansions "$TMPD")
+case "$SCAN" in
+  *bad.sh*) ok '扫得出 $VAR 紧跟全角标点' ;;
+  *) bad '扫得出 $VAR 紧跟全角标点' '含 bad.sh' "$SCAN" ;;
+esac
+case "$SCAN" in
+  *good.sh*|*comment.sh*|*single.sh*) bad '${VAR}、注释、单引号都不算' '空' "$SCAN" ;;
+  *) ok '${VAR}、注释、单引号都不算' ;;
+esac
+rm -rf "$TMPD"
+
 echo '--- §4 合并条件 1：approve 的 sha vs head ---'
 
 C='[impl] REVIEW: changes sha=aaa1111
