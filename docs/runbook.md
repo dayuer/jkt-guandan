@@ -12,7 +12,7 @@
 
 - **服务器**：新加坡那台（地址见 #12；本机执行脚本前设 `export SSH_HOST=root@<服务器>`），Debian 12，Docker 26，nginx 1.22。**同机跑着很多其他生产服务**：可用内存约 1.4 GB，磁盘已用 67%。
 - **容器**：`guandan`，镜像 `guandan:<短 SHA>`，只映射到 `127.0.0.1:18200`（宿主机的 8080、8443 被别的服务占着，**绝不能映射到这两个端口**）。参数：`--read-only --cap-drop ALL --security-opt no-new-privileges --memory 256m`。数据卷 `guandan-data`。不设 `GUANDAN_DOMAIN`，容器内只走 HTTP；`GUANDAN_PUBLIC_URL=https://guandan.synon.ai`。
-- **nginx 站点**：`/etc/nginx/sites-available/guandan.synon.ai` 加片段 `/etc/nginx/snippets/guandan-security.conf`，由 coord 维护。仓库里的 [deploy/nginx/](../deploy/nginx/) 照抄线上配置。改动先改模板，过 `scripts/check-nginx.sh`（CI 也跑），再同步到服务器并执行 `nginx -t`。站点里关掉了 `open_file_cache`，所以切换 `current` 后**不需要 reload nginx**。
+- **nginx 站点**：`/etc/nginx/sites-available/guandan.synon.ai` 加片段 `/etc/nginx/snippets/guandan-security.conf`，由 coord 维护。仓库里的 [deploy/nginx/](../deploy/nginx/) 照抄线上配置。改动先改模板，过 `scripts/check-nginx.sh`（本地 CI 的 `local-ci/nginx` 也跑），再同步到服务器并执行 `nginx -t`。站点里关掉了 `open_file_cache`，所以切换 `current` 后**不需要 reload nginx**。
   - **每个反向代理的 location 都要写全 `Host`、`X-Real-IP`、`X-Forwarded-For`、`X-Forwarded-Proto`**：location 里只要写了一条 `proxy_set_header`，就不再继承 server 级的设置。漏了 `X-Real-IP` 的话，客户端可以伪造 IP。
   - 证书由 certbot 续期，webroot 是 `/var/www/certbot`。
   - 检查线上文件：`ssh $SSH_HOST sh -s /etc/nginx/sites-available/guandan.synon.ai < scripts/check-nginx.sh`。
@@ -107,7 +107,7 @@ SSH_HOST=root@<服务器> scripts/deploy.sh            # 发布当前 HEAD；也
 
 可以用环境变量覆盖的项：`SSH_HOST`、`WEB_ROOT`、`IMAGE_SOURCE`、`PORT`、`MEMORY`、`PUBLIC_URL`、`ENV_FILE`、`SITE_URL`、`READY_TIMEOUT`、`KEEP`。
 
-`make deploy-test` 会在本机用 Docker 验证服务器部分（不需要 nginx 和 ssh），覆盖以下场景：首次发布、升级并清理旧版本、新版本起不来、`current` 是真目录、切换后站点检查失败、新版本跑完一条兼容迁移后才失败、**从线上版本（0e45b18，遇到任何不认识的迁移都拒绝启动）升级、新版本迁移后失败，靠冷备份自动恢复**。CI 每次都会跑这个测试。
+`make deploy-test` 会在本机用 Docker 验证服务器部分（不需要 nginx 和 ssh），覆盖以下场景：首次发布、升级并清理旧版本、新版本起不来、`current` 是真目录、切换后站点检查失败、新版本跑完一条兼容迁移后才失败、**从线上版本（0e45b18，遇到任何不认识的迁移都拒绝启动）升级、新版本迁移后失败，靠冷备份自动恢复**。改到后端、`Dockerfile`、`deploy/` 或部署脚本时，本地 CI 的 `local-ci/docker` 会跑这个测试（COORDINATION.md §4.2）。
 
 ### 2.1 手动回滚到更早的版本
 
@@ -215,7 +215,7 @@ docker exec guandan /guandan healthcheck --ready && echo ready
 
 ### 4.1 恢复演练
 
-上线前至少演练一次，以后每次修改备份相关代码后再演练一次。演练脚本在本机用 Docker 模拟两台机器：一台旧机器、一个「异地」目录、一台新机器（全新的空数据卷）。CI 每次都会跑这个脚本。
+上线前至少演练一次，以后每次修改备份相关代码后再演练一次。演练脚本在本机用 Docker 模拟两台机器：一台旧机器、一个「异地」目录、一台新机器（全新的空数据卷）。改到后端、`Dockerfile`、`deploy/` 或部署脚本时，本地 CI 的 `local-ci/docker` 会跑这个脚本。
 
 ```bash
 make restore-drill        # 等价于 docker build 之后执行 scripts/restore-drill.sh guandan:local
