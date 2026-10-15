@@ -55,8 +55,29 @@ field() { # $1=键 $2=全部输出
   printf '%s\n' "$2" | sed -n "s/^$1=//p"
 }
 
+# 编号**随机**取，不写死：写死的话，机器上正好有别的进程占着那一段端口，自测就误报
+# （#183 复审，和 #181 同一个道理）。挑一个「这个编号和下一个编号的窗口都凑得出端口」的。
+try_id() { # $1 = 编号；能跑通返回 0
+  PORT_OLD= PORT_NEW= PORT_METRICS= DEPLOYTEST_RUN="$1" PATH="$work/shim:$PATH" \
+    sh "$SELF" --print-names >/dev/null 2>&1
+}
+pick_id() {
+  i=0
+  while [ "$i" -lt 25 ]; do
+    cand=$(( ($$ * 7 + i * 977) % 1250 ))
+    if try_id "$cand" && try_id "$((cand + 1))"; then
+      printf '%s' "$cand"; return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # 相邻的两个编号：并发起的两路就是这个关系。
-A_ID=${DEPLOYTEST_RUN:-4242}
+A_ID=$(pick_id) || {
+  printf '找不到两个相邻编号、窗口都凑得出端口的编号 —— 本机这一段占用异常（见 #183）。\n' >&2
+  exit 1
+}
 B_ID=$((A_ID + 1))
 
 A_OUT=$(run_once "$work/a.log" "$A_ID")
@@ -136,6 +157,102 @@ if grep -qF -- "$A_OLD" "$work/a.log"; then
   ok '第一路确实碰了自己的容器（日志不是空的）'
 else
   bad '第一路确实碰了自己的容器（日志不是空的）' "出现 $A_OLD" "$(head -5 "$work/a.log")"
+fi
+
+# 5. 窗口里第一个口被**外部进程**占着时：这一路要在自己的窗口里往后挪，而且**不能挪进
+#    下一个编号的窗口**。做法：用 Python 先绑住 C 窗口的第一个口，再跑 C 和 C+1。
+#
+#    stdout/stderr 必须接到 /dev/null：这个后台进程会继承调用方的管道，而套在外面的
+#    `out=$(scripts/test-drill-names.sh)` 会一直等管道关闭 —— 不重定向的话测试会卡到
+#    那个 python 自己超时为止。
+hold_port() { # $1=起始端口 $2=占几个 $3=哨兵文件（放开就建它）
+  python3 -c '
+import os, socket, sys, time
+start, n = int(sys.argv[1]), int(sys.argv[2])
+# 重试几秒再放弃：上一个占着口的小进程刚收到哨兵，未必已经把口放开；
+# 不重试的话这里 bind 失败、什么也没占住，下面的断言就会莫名其妙地过。
+for _ in range(50):
+    held = []
+    for q in range(start, start + n):
+        s = socket.socket()
+        try:
+            s.bind(("127.0.0.1", q))
+        except OSError:
+            for x in held:
+                x.close()
+            held = []
+            break
+        held.append(s)
+    if len(held) == n:
+        break
+    time.sleep(0.1)
+for _ in range(600):        # 最多守 60 秒：脚本异常退出也不会一直挂着
+    if os.path.exists(sys.argv[3]):
+        break
+    time.sleep(0.1)
+' "$1" "$2" "$3" >/dev/null 2>&1 &
+  sleep 1
+}
+
+C_ID=$A_ID
+C_BASE=$((30000 + (C_ID % 1250) * 8))
+hold_port "$C_BASE" 1 "$work/hold1.stop"
+C_OUT=$(run_once "$work/c.log" "$C_ID")
+D_OUT=$(run_once "$work/d.log" "$((C_ID + 1))")
+: > "$work/hold1.stop"   # 放开
+
+C_PORTS=$(field PORTS "$C_OUT")
+D_PORTS=$(field PORTS "$D_OUT")
+
+if [ -z "$C_PORTS" ] || [ -z "$D_PORTS" ]; then
+  bad '窗口第一个口被占住时仍然能起（C 要往窗口里挪）' '两个都拿到端口' \
+      "C=${C_PORTS:-<空>} D=${D_PORTS:-<空>}；C 窗口 ${C_BASE}–$((C_BASE + 7))"
+else
+  ok "窗口第一个口被占住时仍然能起（C 挪到了 $(printf '%s' "$C_PORTS" | cut -d' ' -f1)）"
+  C_DUPES=$(printf '%s\n' $C_PORTS $D_PORTS | sort | uniq -d | tr '\n' ' ')
+  if [ -n "$C_DUPES" ]; then
+    bad '挤过之后六个端口仍然两两不同' '没有重复' \
+        "C=$C_PORTS D=${D_PORTS}，重复：$C_DUPES"
+  else
+    ok "挤过之后六个端口仍然两两不同（C=$C_PORTS D=${D_PORTS}）"
+  fi
+  C_FIRST=$(printf '%s' "$C_PORTS" | cut -d' ' -f1)
+  if [ "$C_FIRST" -gt "$C_BASE" ]; then
+    ok "C 在自己的窗口里往后挪了（${C_BASE} 被占，用 ${C_FIRST}）"
+  else
+    bad 'C 在自己的窗口里往后挪' "> $C_BASE" "$C_FIRST"
+  fi
+  D_FIRST=$(printf '%s' "$D_PORTS" | cut -d' ' -f1)
+  if [ "$D_FIRST" -ge "$((C_BASE + 8))" ]; then
+    ok "D 没有被挤进 C 的窗口（D 从 $D_FIRST 起）"
+  else
+    bad 'D 没有被挤进 C 的窗口' "≥ $((C_BASE + 8))" "$D_FIRST"
+  fi
+fi
+
+# 6. 窗口**整个**被占住时：这一路必须**报错退出**，绝不能挪进下一个编号的窗口去抢 ——
+#    抢了的话相邻编号的两路还是会撞。占住整个窗口就区分得出来：没有边界的话，
+#    C 会滑到 $((C_BASE + 8)) 起，那正是 D 的窗口。
+hold_port "$C_BASE" 8 "$work/hold2.stop"
+if C2_OUT=$(run_once "$work/c2.log" "$C_ID" 2>&1); then
+  bad 'C 的窗口被占满时应当报错退出（不抢下一个编号的窗口）' '退出码非 0' \
+      "居然成功了：$(printf '%s' "$C2_OUT" | tr '\n' ' ')"
+else
+  case "$C2_OUT" in
+    *凑不出*) ok 'C 的窗口被占满时报错退出，不抢下一个编号的窗口' ;;
+    *) bad 'C 的窗口被占满时报错退出（信息里点明是窗口凑不出）' '含「凑不出」' \
+           "$(printf '%s' "$C2_OUT" | tr '\n' ' ')" ;;
+  esac
+fi
+: > "$work/hold2.stop"
+
+D2_OUT=$(run_once "$work/d2.log" "$((C_ID + 1))")
+D2_PORTS=$(field PORTS "$D2_OUT")
+D2_FIRST=$(printf '%s' "$D2_PORTS" | cut -d' ' -f1)
+if [ -n "$D2_FIRST" ] && [ "$D2_FIRST" -ge "$((C_BASE + 8))" ]; then
+  ok "C 报错之后 D 照旧待在自己的窗口里（D 从 ${D2_FIRST} 起）"
+else
+  bad 'C 报错之后 D 照旧待在自己的窗口里' "≥ $((C_BASE + 8))" "${D2_FIRST:-<空>}"
 fi
 
 echo

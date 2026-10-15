@@ -25,13 +25,24 @@ NEW="drill-new-$RUN"
 OLD_VOL="drill-old-$RUN-data"
 NEW_VOL="drill-new-$RUN-data"
 
-# 一组 k 个连着的空闲端口：从起点往上按 k 步进找，整组一起探（只探第一个不够 ——
-# 后面几个要过一会儿才用，中间被别的进程抢走就晚了）。
-port_group() { # $1 = 起始端口；$2 = 要几个
-  python3 - "$1" "$2" <<'PY'
+# 每次运行独占一个 8 个口宽的**窗口**，窗口起点按编号推：[30000 + (RUN % 1250) * 8, +8)。
+# 窗口里挑第一组连着的 3 个空闲端口。三条约束，缺一不可：
+#
+#  1. 起点按编号推，不能交给内核（bind 到 0）—— 内核会把刚释放的端口立刻再发出去，
+#     先后两次运行会拿到同一个号。
+#  2. 挪的时候**只在窗口里挪，步长就是这一组的宽度**。允许挪出窗口的话，挪一步正好落进
+#     下一个编号的窗口，而并发起的两路 PID 就是相邻的 —— 还是要撞（#181 复审实测过这个
+#     形状：占住起点那个口时自测就红了）。窗口比这一组宽，挪完还是自己的地盘。
+#  3. 一组里的每个口都要先探过是空的：后面两个要过一会儿才用，中间被别的进程抢走就晚了。
+#
+# 窗口里凑不出来就**报错退出**，不去抢别人的窗口。（test-deploy.sh 用 20000–29999，
+# 两个脚本的窗口不会撞。）
+WINDOW=8
+port_group() { # $1=窗口起点 $2=要几个；在窗口内打印一组，找不到就退出非 0
+  python3 - "$1" "$2" "$WINDOW" <<'PY'
 import socket, sys
-start, k = int(sys.argv[1]), int(sys.argv[2])
-for p in range(start, start + 200 * k, k):
+start, k, window = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+for p in range(start, start + window - k + 1):
     held = []
     for q in range(p, p + k):
         s = socket.socket()
@@ -44,9 +55,9 @@ for p in range(start, start + 200 * k, k):
         s.close()          # 立刻交还给 docker；窗口极小
     if len(held) == k:
         print(" ".join(str(p + i) for i in range(k)))
-        break
-else:
-    sys.exit("从 %d 往上找不到 %d 个连着的空闲端口" % (start, k))
+        sys.exit(0)
+sys.exit("本机 %d–%d 这一段端口凑不出 %d 个连着的空闲端口（有别的进程占着？）；"
+         "过一会儿或换台机器再跑" % (start, start + window - 1, k))
 PY
 }
 
@@ -56,7 +67,7 @@ if [ -n "${PORT_OLD:-}" ]; then
   PORT_NEW=${PORT_NEW:-$((PORT_OLD + 1))}
   PORT_METRICS=${PORT_METRICS:-$((PORT_OLD + 2))}
 else
-  GROUP=$(port_group $((20000 + (RUN % 5000) * 3)) 3)
+  GROUP=$(port_group $((30000 + (RUN % 1250) * 8)) 3)
   PORT_OLD=${GROUP%% *}
   rest=${GROUP#* }
   PORT_NEW=${rest%% *}
