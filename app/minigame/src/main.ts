@@ -11,6 +11,7 @@ import { boot, currentUser, onSessionChange } from "./lib/session";
 import { loadSubscribeTemplates } from "./lib/subscribe";
 import { Create } from "./scenes/create";
 import { Detail } from "./scenes/detail";
+import { sharePayload } from "./scenes/sheets";
 import { Friends } from "./scenes/friends";
 import { Home, TAB_H } from "./scenes/home";
 import { Learn, LessonScene } from "./scenes/learn";
@@ -115,7 +116,12 @@ wx.onShow((res: any) => enter(res && res.query));
 
 // 右上角「···」转发：首页卡片
 wx.showShareMenu({ withShareTicket: false, menus: ["shareAppMessage", "shareTimeline"] });
-wx.onShareAppMessage(() => ({ title: "随时掼掼蛋 · 找人凑一桌，就差你一个" }));
+// 在牌局详情页时转发这一局（和「分享 › 发到微信」同一张卡片），其他页面转发首页
+wx.onShareAppMessage(() => {
+  const top = app.top;
+  const d = top instanceof Detail ? top.current : null;
+  return d ? sharePayload(app, d) : { title: "随时掼掼蛋 · 找人凑一桌，就差你一个" };
+});
 
 if (__DEV__) {
   console.log("[guandan] API", API_BASE);
