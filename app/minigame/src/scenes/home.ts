@@ -8,7 +8,8 @@ import { leaveGame, listGames, type GameSummary } from "../lib/api";
 import { cardDay, kindLabel, missingLabel, slashDate, timeHM, dayShort } from "../lib/fmt";
 import { realtime } from "../lib/realtime";
 import { currentUser } from "../lib/session";
-import { acknowledge, fromSummary, observe, type Notice } from "../../../h5/src/status";
+import type { Notice } from "../../../h5/src/status";
+import { dismissNotice, observeNotices, summaryView } from "../lib/notice";
 import { promotedSheet } from "./sheets";
 import type { Nav } from "./nav";
 
@@ -23,6 +24,8 @@ export function rescheduleText(n: Extract<Notice, { kind: "rescheduled" }>, with
   const when = `${dayShort(n.startsAt)} ${timeHM(n.startsAt)}`;
   if (n.timeChanged && n.venueChanged) return `局头把时间改到 ${when}、地点改到 ${n.venue} 了`;
   if (n.venueChanged) return `局头把地点改到 ${n.venue} 了`;
+  // 换设备兜底（#160）：只知道改过，不知道改的是时间还是地点，把现在的都说出来。
+  if (!n.timeChanged) return `局头改过时间或地点，现在是 ${when} · ${n.venue}`;
   return withVenue ? `局头把 ${n.venue} 那局改到 ${when} 了` : `局头把时间改到 ${when} 了`;
 }
 
@@ -74,7 +77,7 @@ export class Home implements Scene {
       this.games = games;
       this.error = "";
       const me = currentUser();
-      this.notices = me ? games.filter((g) => g.my_role !== undefined).flatMap((g) => observe(fromSummary(g), me.id)) : [];
+      this.notices = me ? games.filter((g) => g.my_role !== undefined).flatMap((g) => observeNotices(summaryView(g), me.id)) : [];
       this.maybePromoted();
       if (manual) this.app.toast("刷新好了", 1000);
     } catch {
@@ -88,7 +91,7 @@ export class Home implements Scene {
 
   private dismiss(n: Notice) {
     const g = this.games?.find((x) => x.short_code === n.code);
-    if (g) acknowledge(fromSummary(g), currentUser()?.id, [n.kind]);
+    if (g) dismissNotice(summaryView(g), currentUser()?.id, n.kind);
     this.notices = this.notices.filter((x) => !(x.code === n.code && x.kind === n.kind));
     this.app.redraw();
   }

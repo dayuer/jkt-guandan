@@ -98,7 +98,8 @@ CREATE TABLE seats (
   game_id    TEXT NOT NULL REFERENCES games(id),
   seat_no    INTEGER NOT NULL CHECK (seat_no BETWEEN 1 AND 4),
   user_id    TEXT NOT NULL REFERENCES users(id),
-  created_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,             -- 坐下的时间；转交局头按它排
+  waitlisted_at INTEGER,                   -- 候补补位上来的人原来排候补的时间（0010_seat_waitlisted_at.sql，#160）；直接报名坐下的是空
   PRIMARY KEY (game_id, seat_no),
   UNIQUE (game_id, user_id)
 );
@@ -263,7 +264,7 @@ CREATE TABLE score_seat_leavers (
 
 1. 用户在候补里：删掉候补记录就结束。
 2. 用户在座位上：删除座位，作废他的 `t_minus_1h`（写上 `dropped_at`），然后：
-   - **候补补位**：候补不为空时，按 `created_at` 取队首，插入到刚空出的座号，删掉他的候补记录，给他写 `promoted`（「有人退出，你补上了」）和 `t_minus_1h`，状态保持 `full`；
+   - **候补补位**：候补不为空时，按 `created_at` 取队首，插入到刚空出的座号（`waitlisted_at` 记下他原来排候补的 `created_at`），删掉他的候补记录，给他写 `promoted`（「有人退出，你补上了」）和 `t_minus_1h`，状态保持 `full`；
    - 候补为空：状态从 `full` 回到 `open`，给剩下的人写 `seat_left`；
    - **局头转让**：如果退出的是局头，先补位，再把 `host_id` 转给座位上 `created_at` 最早的人，给新局头写 `host_transferred`，给其他人写 `host_changed`；
    - 局头退出后座位上已经没有人：把牌局改为 `cancelled`，给所有候补写 `cancelled`。
@@ -542,9 +543,13 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `my_role` | `seated`（在座位上）/ `waitlist`（在候补里）/ `none`。访客没有身份，一律 `none` |
 | `waitlist_pos` | 候补第几位，从 1 开始；不在候补里是 0 |
 | `rescheduled_at` | 局头最近一次改时间或地点的时刻（Unix 秒）；没改过就没有这一项。改备注、片区或原样重发都不算 |
+| `my_joined_at` | 我加入这一局的时间（Unix 秒，#160）：座位上的是坐下的时间，候补里的是排候补的时间，补位上来的仍从排候补算。不在局里没有这一项 |
+| `my_promoted_at` | 我候补补位的时间（Unix 秒，#160）；不是补位上来的没有这一项 |
 
 - `GET /api/games/{code}` 的 `game` 对象里也有 `rescheduled_at`。改期横幅的做法：客户端把「上次看到这一局的 `rescheduled_at`」存在本机，服务端值更大且我在座位上（`my_role` 为 `seated`）就显示「局头把时间改到 X 了」，关掉时把本机的值更新成服务端的。
-- 这两个按身份算的字段只出现在 `GET /api/games` 里，首页事件（`feed:*`）是广播，不带 `my_role`、`waitlist_pos`，带 `rescheduled_at`。
+- 这些按身份算的字段（`my_role`、`waitlist_pos`、`my_joined_at`、`my_promoted_at`）只出现在 `GET /api/games` 里，首页事件（`feed:*`）是广播，不带它们，带 `rescheduled_at`。
+- `GET /api/games/{code}` 的 `me` 里对应有 `joined_at`、`promoted_at`，取值同上（#160）。
+- **换设备兜底**（#160，目前只有小游戏用）：客户端平时拿本机快照判断改时间横幅、「轮到你了」弹层（`app/h5/src/status.ts`）；本机没有这一局的快照时（换了手机、清了缓存、第一次在这台设备上打开），`rescheduled_at` 晚于加入时间且我不是局头 → 出改时间横幅；有补位时间且我在座位上 → 出「轮到你了」。关掉之后写下快照，之后回到快照那条路。
 
 **绑定 WhatsApp**（#116，「我的」页 G2）。号码只给自己看：只出现在自己的 `GET /api/me` 里，牌友列表、牌局详情里都没有。注销时清空。
 

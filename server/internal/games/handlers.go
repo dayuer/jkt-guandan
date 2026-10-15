@@ -281,6 +281,9 @@ type meJSON struct {
 	SeatNo    int          `json:"seat_no,omitempty"`
 	Position  int          `json:"position,omitempty"`
 	InvitedBy *userRefJSON `json:"invited_by,omitempty"` // #115：谁邀请了我，只有被邀请的人看得到
+	// #160：我加入这一局的时间、候补补位的时间（Unix 秒）；不在局里 / 不是补位上来的没有这一项。
+	JoinedAt   int64 `json:"joined_at,omitempty"`
+	PromotedAt int64 `json:"promoted_at,omitempty"`
 }
 
 func toDetailJSON(d *Detail) map[string]any {
@@ -292,7 +295,10 @@ func toDetailJSON(d *Detail) map[string]any {
 			User:   userRefJSON{ID: s.UserID, Nickname: s.Nickname},
 		})
 	}
-	me := meJSON{Role: d.Me, SeatNo: d.MySeatNo, Position: d.MyPosition}
+	me := meJSON{
+		Role: d.Me, SeatNo: d.MySeatNo, Position: d.MyPosition,
+		JoinedAt: unixSec(d.MyJoinedAt), PromotedAt: unixSec(d.MyPromotedAt),
+	}
 	if d.MyInviter != nil {
 		me.InvitedBy = &userRefJSON{ID: d.MyInviter.UserID, Nickname: d.MyInviter.Nickname}
 	}
@@ -348,6 +354,12 @@ func toSummariesJSON(items []Summary) []map[string]any {
 		if s.MyRole != "" {
 			item["my_role"] = s.MyRole
 			item["waitlist_pos"] = s.WaitlistPos
+			if at := unixSec(s.MyJoinedAt); at != 0 {
+				item["my_joined_at"] = at
+			}
+			if at := unixSec(s.MyPromotedAt); at != 0 {
+				item["my_promoted_at"] = at
+			}
 		}
 		out = append(out, item)
 	}
