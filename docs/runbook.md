@@ -262,9 +262,23 @@ guandan seed [--force]                     # 写入设计稿里的示例数据�
   - 写锁等待时间；
   - outbox 积压量和放弃数；
   - 备份时间；
-  - 构建号。
+  - 构建号；
+  - **微信内容安全检测**：`guandan_wx_sec_check_total{outcome}`（`pass` / `risky` / `review` / `error` / `timeout` / `no_openid`）和 `guandan_wx_sec_check_duration_seconds`。`error` / `timeout` 明显升高说明微信那边在抖 —— 这时检测是**放行**的（§14 的失败策略），所以只会看到日志里的 errcode 变多，不会拦住用户；
+  - **微信 access_token**：`guandan_wx_token_total{kind}`，`kind` 是 `ok`（普通取）/ `force`（真的强刷）/ `force_cooled`（想强刷但离上次不到 30 秒，退成普通模式）/ `error`（没取到）。
 
   WebSocket 连接数由 #18 补上。
+
+### 强刷额度用完了怎么办
+
+腾讯给的强制刷新额度是**每天 20 次、且两次之间要隔 30 秒**（《获取稳定版接口调用凭据》）。额度用完，`access_token` 就只能等缓存的自然过期才会换 —— 内容安全检测和订阅消息**都会跟着受影响**。
+
+- **怎么看用了多少**：`increase(guandan_wx_token_total{kind="force"}[1d])`。注意这是**进程启动以来**的累计计数器推出来的，重启会丢 —— 所以它只是**下限**，不是「还剩几次」。真要精确，得连着看不重启的一段。
+- **现象**：日志里 `consumer` / `code` 两个字段会标出是谁触发的（`consumer` 是「内容安全」或「订阅消息」，`code` 是微信错误码）。`kind="force"` 一直涨，说明有东西在反复把 token 弄脏；`force_cooled` 同时涨，说明我们已经在压着刷了。
+- **处理**：
+  1. 先看是不是**同一个 AppID 被别处共用**（`force_refresh` 会让上一次的 token 立刻失效，两边互相顶）。仓库里的约定是内容安全和订阅消息**共用同一个缓存**（§5.3 / #159），别在别的地方再建一个。
+  2. 看 `code`：`40001` / `40014` / `42001` 才是 token 的问题，别的码不该触发强刷 —— 出现了就是分类逻辑的 bug。
+  3. 额度真耗尽的当天**没有补救手段**，只能等自然日翻页；期间内容安全检测会走失败放行（不影响开局），订阅消息会按 §5.3 的退避重试。**不要**去重启服务「刷一下」—— 计数器会清零，等于把唯一的证据丢掉。
+  4. 第二天换 `access_token` 前先确认根因：如果是共用 AppID 的外部系统在刷，先找它，否则明天还会再来一遍。
 - **日志**：JSON 格式，输出到 stdout，用 `docker logs guandan` 查看；Docker 只保留 5 个 10 MB 的日志文件。每个请求都有一行日志，包含 `request_id`、`ip`（经可信代理解析后的客户端 IP）、`status`、`ms`、`write_wait_ms`。写锁等待超过 100ms、出现 panic、备份失败时，都会记 warn 或 error。
 - **构建号**：每个响应都带 `X-App-Build: <提交 SHA>` 头，用来确认线上跑的是哪个版本。
 

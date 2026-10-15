@@ -1090,7 +1090,8 @@ guandan restore <快照>                    从备份恢复（§13.3）
 
 - 外部定时探测 `/readyz`（任何免费的探活服务都可以），失败时通知仓库所有者。
 - 日志：`slog` 输出 JSON。每个请求带 `request_id`、路由、状态码、耗时、写锁等待时间。写锁等待超过 100 毫秒、`503 busy`、panic 都记为 warn 及以上级别。
-- `/metrics` 只允许内网或 localhost 访问，内容包括：请求数和延迟、写锁等待时间、WebSocket 连接数、outbox 积压量和发送失败数、备份时间、微信内容安全检测的次数（按结论）和耗时（§14）、微信 access_token 的取用次数 `guandan_wx_token_total{kind}`（`ok` / `force` / `force_cooled` / `error`）—— `force` 就是当天那 20 次强制刷新用掉了几次（§5.3、#197）。
+- `/metrics` 只允许内网或 localhost 访问，内容包括：请求数和延迟、写锁等待时间、WebSocket 连接数、outbox 积压量和发送失败数、备份时间、微信内容安全检测的次数（按结论）和耗时（§14）、微信 access_token 的取用次数 `guandan_wx_token_total{kind}`（`ok` / `force` / `force_cooled` / `error`）（§5.3、#197）。
+  - `kind="force"` 是**真的带 `force_refresh` 出去了几次**，对应微信那每天 20 次的额度。**它是进程启动以来的累计值**：过零点不清零、重启会清零，而微信是按自然日算的 —— 所以想看「最近一天用了几次」用 `increase(guandan_wx_token_total{kind="force"}[1d])`，并且记住它只是**下限**（重启丢掉的那截看不到）。别把它当成「当天还剩几次」直接减。
 
 ## 14. 合规（印尼）
 

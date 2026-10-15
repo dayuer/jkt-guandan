@@ -369,7 +369,8 @@ func TestForceRefreshIsLoggedAndCounted(t *testing.T) {
 			if body["force_refresh"] == true {
 				forced.Add(1)
 			}
-			tok := fmt.Sprintf("tok%d", fetches.Add(1))
+			// token 取得让人一眼认得出来 —— 下面要断言它**不出现**在日志里（#199）。
+			tok := fmt.Sprintf("tok-secret-%d", fetches.Add(1))
 			current.Store(tok)
 			fmt.Fprintf(w, `{"access_token":%q,"expires_in":7200}`, tok)
 			return
@@ -382,9 +383,10 @@ func TestForceRefreshIsLoggedAndCounted(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// JSON 输出（生产非 dev 就是 JSON）：字段名和值都能精确断言。
 	var logs strings.Builder
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 	defer slog.SetDefault(prev)
 
 	clk := clock.NewFake(time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
@@ -419,15 +421,23 @@ func TestForceRefreshIsLoggedAndCounted(t *testing.T) {
 	if m := metricsText(reg); !strings.Contains(m, metric("force")+"1") {
 		t.Errorf("真强刷该记 force=1，实际：%s", m)
 	}
-	for _, want := range []string{"强制刷新", "内容安全", "40001"} {
+	// 字段名是英文、consumer 和 code **分开**（#199）。
+	for _, want := range []string{"强制刷新", `"consumer":"内容安全"`, `"code":40001`} {
 		if !strings.Contains(logs.String(), want) {
-			t.Errorf("强刷的日志该带上 %q（哪个使用方、什么 errcode），实际：%s", want, logs.String())
+			t.Errorf("强刷的日志该带上 %q，实际：%s", want, logs.String())
 		}
+	}
+	if strings.Contains(logs.String(), "原因") {
+		t.Errorf("字段名要用英文（原来是中文的「原因」），实际：%s", logs.String())
 	}
 
 	// ③ 只过 5 秒，订阅消息又收到 40001：被冷却挡回，走普通模式 —— 该记 force_cooled，
 	//    **force 还是 1**（没真刷），日志也要区分得开。
-	logs.Reset()
+	//
+	// 这里**不能 `logs.Reset()`**：那会把第 ② 段那条 Warn 一起抹掉，下面「两种日志都不要
+	// 出现 token」就只剩 Info 可查了（第一版就是这么写漏的 —— 故意把 token 打进 Warn 也没红）。
+	// 改成记住当前位置，③ 的断言只看新增的那一段。
+	phase3 := logs.Len()
 	clk.Advance(5 * time.Second)
 	current.Store("")
 	if err := subscribe.PostJSON(ctx, "/x", nil, nil); err == nil {
@@ -443,11 +453,28 @@ func TestForceRefreshIsLoggedAndCounted(t *testing.T) {
 	if !strings.Contains(m, metric("force")+"1") {
 		t.Errorf("冷却期内被挡回**不该**算真强刷（force 该还是 1），实际：%s", m)
 	}
-	if !strings.Contains(logs.String(), "订阅消息") || !strings.Contains(logs.String(), "30 秒") {
-		t.Errorf("挡回的日志该说明原因（谁触发、为什么按普通模式取），实际：%s", logs.String())
+	last := logs.String()[phase3:]
+	if !strings.Contains(last, `"consumer":"订阅消息"`) || !strings.Contains(last, "30 秒") {
+		t.Errorf("挡回的日志该说明原因（谁触发、为什么按普通模式取），实际：%s", last)
 	}
-	if strings.Contains(logs.String(), "强制刷新") {
-		t.Errorf("挡回不是强刷，不该打「强制刷新」那条 Warn，实际：%s", logs.String())
+	if !strings.Contains(last, `"code":40001`) {
+		t.Errorf("挡回的日志也要带错误码字段，实际：%s", last)
+	}
+	if strings.Contains(last, "强制刷新") {
+		t.Errorf("挡回不是强刷，不该打「强制刷新」那条 Warn，实际：%s", last)
+	}
+
+	// #199：**两条日志里都不能出现 token 的值**。access_token 是长期凭证，进了
+	// `docker logs` 就等于泄出去了；假 token 起成 `tok-secret-N` 就是为了这里能搜到。
+	// 查的是**全程**：Warn（②，上面那条真强刷）和 Info（③，挡回）都要覆盖。
+	all := logs.String()
+	for _, leak := range []string{"tok-secret", "access_token="} {
+		if strings.Contains(all, leak) {
+			t.Errorf("日志里不该出现 %q（token 不能进日志），实际：%s", leak, all)
+		}
+	}
+	if !strings.Contains(all, "强制刷新") || !strings.Contains(all, "不到 30 秒") {
+		t.Errorf("上面那两条日志都该在全文里（不然这个泄露断言等于没查 Warn），实际：%s", all)
 	}
 
 	// ④ 隔够 30 秒再强刷一次：force 变 2，累计额度看得见。
