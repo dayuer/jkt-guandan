@@ -7,7 +7,8 @@
 #   --no-post     只跑不发 status（开 PR 之前自检用）。没有开的 PR 时跳过协议三项。
 #   --all         不看改动范围，全部检查项都跑（等于原来 GitHub CI 的全量）
 #
-# 退出码：全绿 0；有红(代码) 1；只是环境未就绪 2；只是脚本自身出错 3；参数用错 64(EX_USAGE)。
+# 退出码：全绿 0；有红(代码) 1；只是环境未就绪 2；只是脚本自身出错 3；status 没兜住 4；
+#   参数用错 64(EX_USAGE)。
 #   （2 与 3 在 PR 上都发 `error`，区别只在描述里怎么说 —— 看见 2 去装依赖，
 #     看见 3 去修脚本。）
 #
@@ -112,11 +113,17 @@ else
 fi
 
 # --- 上报 -------------------------------------------------------------------
+# GH 可覆盖（测试用假的 gh）。重试与收尾复核见 local-ci-lib.sh（#187）。
+GH="${GH_BIN:-gh}"
+# 本次每个 context **最后**发出去的结论：每行 `context state 描述`。收尾复核按它比对。
+# 写文件而不是变量：下面置 pending 的那圈在管道里（子 shell），变量带不出来。
+RESULTS=$(mktemp)
+trap 'rm -f "$RESULTS"' EXIT
+
 post_status() { # $1=sha $2=context $3=state $4=描述
   [ "$POST" -eq 1 ] || return 0
-  gh api -X POST "repos/{owner}/{repo}/statuses/$1" \
-    -f state="$3" -f context="$2" -f description="$4" >/dev/null 2>&1 || {
-      printf '上报 status 失败：%s=%s\n' "$2" "$3" >&2; }
+  printf '%s %s %s\n' "$2" "$3" "$4" >> "$RESULTS"
+  post_status_retry "$GH" "$1" "$2" "$3" "$4" || true
 }
 
 # 先全部置 pending，防止中途崩掉留下假绿。
@@ -183,9 +190,25 @@ for ctx in $CONTEXTS; do
   fi
 done
 
+# --- 收尾复核 status（#187）--------------------------------------------------
+# 网络抖动时某条 POST 可能用尽重试还是失败，那个 context 就停在 `pending` 上 —— 而
+# `pending` 一样挡合并。汇总之前重新拉一次本 SHA 的 status，凡是**和本次结论对不上**的
+# （还停在 pending、或者压根没发上去），用本次结论补发；补发再失败就非零退出、大声报错，
+# 绝不静默 —— 否则又会变成「本地全绿、PR 看着卡住」。
+POST_REPAIR_FAILED=0
+if [ "$POST" -eq 1 ] && [ -s "$RESULTS" ]; then
+  printf '\n=== 收尾复核 status ===\n'
+  repair_statuses "$GH" "$HEAD_SHA" "$RESULTS" || POST_REPAIR_FAILED=1
+fi
+
 # --- 汇总 -------------------------------------------------------------------
 printf '\n'
-if [ -z "$FAILED$ENVNOTREADY$SCRIPTBUG" ]; then
+if [ "$POST_REPAIR_FAILED" -eq 1 ]; then
+  printf 'status 没兜住 —— **GitHub 上会有 context 停在 pending，挡住合并**。\n'
+  printf '手动补发（sha 要 40 位全长）：\n'
+  printf '  %s api -X POST repos/{owner}/{repo}/statuses/%s -f state=success -f context=<context> -f description=...\n' "$GH" "$HEAD_SHA"
+fi
+if [ -z "$FAILED$ENVNOTREADY$SCRIPTBUG" ] && [ "$POST_REPAIR_FAILED" -eq 0 ]; then
   printf '全绿。\n'
   exit 0
 fi
@@ -194,4 +217,5 @@ fi
 [ -n "$SCRIPTBUG" ]   && printf '脚本自身出错：%s\n' "$SCRIPTBUG"
 [ -n "$FAILED" ] && exit 1
 [ -n "$ENVNOTREADY" ] && exit 2
-exit 3
+[ -n "$SCRIPTBUG" ] && exit 3
+exit 4
