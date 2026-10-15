@@ -382,6 +382,18 @@ export class RevisionGate {
   reset() { this.rev = 0; }
 }
 
+// ── 退出确认（#168）──
+
+/**
+ * 记分开始以后退出前的说明。有候补时服务端会立刻让候补第一位补上空出来的座位（promoteHead），
+ * 退出的人回不来；没有候补时局回到 open、记分暂停，回原座位可以接着记（server-design §5.6）。
+ */
+export function leaveConfirmText(waitlist: { user: { nickname: string } }[]): string {
+  if (!waitlist.length) return "退出后这局记分会暂停，回到原座位可以继续";
+  const name = waitlist[0].user.nickname;
+  return name ? `退出后座位会由候补第一位 ${name} 补上，记分接着记` : "退出后座位会由候补第一位补上，记分接着记";
+}
+
 // ── 时间 ──
 
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   RevisionGate, aTip, apply, boardState, boardTitle, canAppendRound, compute, decideConflict, durationLong, durationShort,
-  editAlreadyApplied, howText, levelName, mateOf, matchDuration, playingTag, previewEdit, previewText, resultLine, roundIsMe,
+  editAlreadyApplied, howText, leaveConfirmText, levelName, mateOf, matchDuration, playingTag, previewEdit, previewText, resultLine, roundIsMe,
   roundNames, sameOutcome, startRecheckDelay, teamOf, whoLine,
   type RoundFact, type Score, type ScoreRound, type ScoreSettings, type StartedScore,
 } from "./scoring";
@@ -206,6 +206,13 @@ describe("不升级玩法不写搭档名次（#174 第 6 项）", () => {
     const { rounds } = compute(noLevel, [f(1, 3), f(2, 2)]);
     expect(resultLine("no-level", rounds[0])).toBe("红方 头游");
     expect(resultLine("no-level", rounds[1])).toBe("黑方 头游＋二游 · 双上");
+  });
+});
+
+describe("记分中退出的说明（#168）", () => {
+  it("没有候补：记分暂停、回原座位接着记；有候补：座位由候补第一位补上", () => {
+    expect(leaveConfirmText([])).toBe("退出后这局记分会暂停，回到原座位可以继续");
+    expect(leaveConfirmText([{ user: { nickname: "老张" } }, { user: { nickname: "小李" } }])).toBe("退出后座位会由候补第一位 老张 补上，记分接着记");
   });
 });
 

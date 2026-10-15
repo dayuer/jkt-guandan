@@ -18,7 +18,7 @@ import { rescheduleText } from "./home";
 import type { Nav } from "./nav";
 import { addToCalendar, friendPicker, joinedSheet, promotedSheet, requireIdentity, shareSheet } from "./sheets";
 import { askSubscribe, remindOn, reportAccepted } from "../lib/subscribe";
-import { TEAM_NAME, isStarted, levelName, startRecheckDelay, teamOf, type Score } from "../lib/scoring";
+import { TEAM_NAME, isStarted, leaveConfirmText, levelName, startRecheckDelay, teamOf, type Score } from "../lib/scoring";
 
 const POS = ["top", "right", "bottom", "left"] as const;
 
@@ -438,12 +438,12 @@ export class Detail implements Scene {
     this.nav.score(this.code);
   }
 
-  /** 已经开始记分时退出要先确认（#168）：记分会暂停 */
+  /** 已经开始记分时退出要先确认（#168）：没有候补时记分会暂停；有候补时座位马上由候补第一位补上 */
   private onLeaveTap() {
     if (!(this.seatedHere && isStarted(this.score) && !this.closed)) { void this.run(() => leaveGame(this.code)); return; }
     simpleSheet(this.app, {
       title: "现在退出？",
-      sub: "退出后这局记分会暂停，回到原座位可以继续",
+      sub: leaveConfirmText(this.detail?.waitlist ?? []),
       buttons: (s) => [
         { label: "退出这局", style: "danger", onTap: () => { this.app.closeSheet(s); void this.run(() => leaveGame(this.code)); } },
         { label: "再想想", style: "soft", onTap: () => this.app.closeSheet(s) },
