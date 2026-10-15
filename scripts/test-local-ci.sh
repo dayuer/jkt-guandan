@@ -77,6 +77,11 @@ eq '并发隔离自测脚本单独改动也跑 docker' \
 eq 'docker-wait.sh 单独改动也跑 docker' \
   'local-ci/docker' \
   "$(printf 'scripts/docker-wait.sh\n' | scope_contexts)"
+# #196：test-deploy.sh 现在 source local-ci-lib.sh 并用它的 docker_build_or_die，
+# 所以改 lib 两样都要跑（自测 + docker）。漏掉 docker 的话，改了那个函数不会有人集成验证。
+eq 'local-ci-lib.sh 改动：meta + docker 都要跑' \
+  "$(lines local-ci/meta local-ci/docker)" \
+  "$(printf 'scripts/local-ci-lib.sh\n' | scope_contexts)"
 
 eq 'scripts/agents 不命中（协作脚本，不在 CI 范围）' \
   '' \
@@ -657,6 +662,215 @@ eq '描述：日志还在就写上路径' "；日志 $LT" "$(log_note "$LT")"
 eq '描述：日志不在了就是空串' '' "$(log_note "${LT}.nope")"
 eq '描述：没传也是空串' '' "$(log_note '')"
 rm -f "$LT"
+echo '--- §4.2 docker 拉镜像失败：环境未就绪 vs 代码红（#193）---'
+
+# 判定本身用小函数测：日志是**真的 docker/buildkit 报错原文**。
+DK=$(mktemp -d)
+cat > "$DK/pull-dns.log" <<'L'
+#1 [internal] load metadata for docker.io/library/node:22-alpine
+#1 ERROR: failed to solve: node:22-alpine: failed to resolve source metadata for docker.io/library/node:22-alpine:latest: failed to authorize: failed to fetch oauth token: Post "https://auth.docker.io/token": dial tcp: lookup auth.docker.io: i/o timeout
+L
+cat > "$DK/pull-deadline.log" <<'L'
+#1 ERROR: failed to solve: golang:1.25-alpine: failed to resolve source metadata for docker.io/library/golang:1.25-alpine:latest: failed to authorize: DeadlineExceeded
+L
+cat > "$DK/pull-502.log" <<'L'
+#2 [1/6] FROM docker.io/library/node:22-alpine
+#2 ERROR: failed to do request: Head "https://registry-1.docker.io/v2/library/node/manifests/22-alpine": Bad Gateway
+L
+cat > "$DK/pull-ratelimit.log" <<'L'
+#2 ERROR: failed to solve: failed to copy: toomanyrequests: You have reached your pull rate limit.
+L
+cat > "$DK/run-fail.log" <<'L'
+#7 [4/6] RUN npm ci
+#7 12.34 npm ERR! code ELIFECYCLE
+#7 ERROR: process "/bin/sh -c npm ci" did not complete successfully: exit code: 1
+L
+cat > "$DK/dockerfile-typo.log" <<'L'
+ERROR: failed to solve: Dockerfile parse error line 12: unknown instruction: COPYY
+L
+# 这条是**故意**的陷阱：RUN 步骤自己打了一行 "502 Bad Gateway"（比如它 curl 了个网关），
+# 但它**是有退出码的** —— 属于代码问题。「网络特征优先」的写法会把它记成环境未就绪，
+# 那就是假绿，正是 dirty_tree_action 防的那一类。
+cat > "$DK/run-prints-502.log" <<'L'
+#7 [4/6] RUN curl -fsS http://gateway/health
+#7 0.21 curl: (22) The requested URL returned error: 502 Bad Gateway
+#7 ERROR: process "/bin/sh -c curl -fsS http://gateway/health" did not complete successfully: exit code: 22
+L
+: > "$DK/empty.log"
+
+# --- 这些**必须**判成 code（#196 复审阻塞）----------------------------------
+# auditor 用不存在的 tag 真跑了一次，这是代码错，第一版却被判成环境问题、重试 3 次、
+# 发成 error，还提示「这不是代码问题，不用改 Dockerfile」。
+#
+# 根因：`failed to resolve source metadata` 是 buildkit 解析 FROM 失败时的**通用前缀**，
+# 什么原因都会带 —— 它不是网络特征。我把它塞进特征表，等于给这一类错误开了后门；
+# 而「RUN 退出码优先」那道防线在这里**够不着**（tag 不存在时根本没有 RUN 步骤，自然没有退出码）。
+#
+# 下一条是 auditor 那次跑出来的**真日志**（除了镜像名没改一个字）。
+cat > "$DK/from-not-found.log" <<'L'
+#0 building with "orbstack" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 77B 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/alpine:this-tag-does-not-exist-196
+#2 ERROR: docker.io/library/alpine:this-tag-does-not-exist-196: not found
+------
+ > [internal] load metadata for docker.io/library/alpine:this-tag-does-not-exist-196:
+------
+Dockerfile:1
+--------------------
+   1 | >>> FROM alpine:this-tag-does-not-exist-196
+   2 |
+--------------------
+ERROR: failed to build: failed to solve: alpine:this-tag-does-not-exist-196: failed to resolve source metadata for docker.io/library/alpine:this-tag-does-not-exist-196: docker.io/library/alpine:this-tag-does-not-exist-196: not found
+L
+cat > "$DK/manifest-unauthorized.log" <<'L'
+#2 ERROR: failed to solve: docker.io/library/private:latest: failed to resolve source metadata for docker.io/library/private:latest: unexpected status from HEAD request to https://registry-1.docker.io/v2/library/private/manifests/latest: 401 Unauthorized
+L
+cat > "$DK/auth-denied.log" <<'L'
+#2 ERROR: failed to solve: docker.io/library/private:latest: failed to resolve source metadata for docker.io/library/private:latest: denied: requested access to the resource is denied
+L
+# 私有镜像没给凭证：`failed to authorize` 单独出现不算网络 —— 那是配置问题。
+cat > "$DK/authorize-401.log" <<'L'
+#2 ERROR: failed to solve: private.example.com/team/app:latest: failed to resolve source metadata for private.example.com/team/app:latest: failed to authorize: 401 Unauthorized
+L
+cat > "$DK/authorize-denied.log" <<'L'
+#2 ERROR: failed to solve: private.example.com/team/app:latest: failed to resolve source metadata for private.example.com/team/app:latest: failed to authorize: denied: access denied
+L
+# 还是那一行，但**同时**带上了超时特征：这才是真的网络故障。
+cat > "$DK/authorize-timeout.log" <<'L'
+#2 ERROR: failed to solve: private.example.com/team/app:latest: failed to resolve source metadata for private.example.com/team/app:latest: failed to authorize: failed to fetch oauth token: Post "https://private.example.com/token": dial tcp: lookup private.example.com: i/o timeout
+L
+
+eq 'FROM 的 tag 不存在（真日志）→ code' 'code' "$(docker_failure_kind "$DK/from-not-found.log")"
+eq '镜像源 401 Unauthorized → code' 'code' "$(docker_failure_kind "$DK/manifest-unauthorized.log")"
+eq '镜像源 denied → code' 'code' "$(docker_failure_kind "$DK/auth-denied.log")"
+eq 'failed to authorize + 401 → code（私有镜像没给凭证是配置问题）' 'code' "$(docker_failure_kind "$DK/authorize-401.log")"
+eq 'failed to authorize + denied → code' 'code' "$(docker_failure_kind "$DK/authorize-denied.log")"
+eq 'failed to authorize + i/o timeout → network（真的网络故障）' 'network' "$(docker_failure_kind "$DK/authorize-timeout.log")"
+
+cat > "$DK/pull-refused.log" <<'L'
+#2 ERROR: failed to do request: Head "https://registry-1.docker.io/v2/library/node/manifests/22-alpine": dial tcp 44.208.254.194:443: connect: connection refused
+L
+eq '镜像源 connection refused → network（#196 复审意见）' 'network' "$(docker_failure_kind "$DK/pull-refused.log")"
+
+eq '拉镜像 DNS 超时 → network' 'network' "$(docker_failure_kind "$DK/pull-dns.log")"
+eq 'failed to authorize: DeadlineExceeded → network' 'network' "$(docker_failure_kind "$DK/pull-deadline.log")"
+eq '镜像源 Bad Gateway → network' 'network' "$(docker_failure_kind "$DK/pull-502.log")"
+eq '镜像源限流 toomanyrequests → network' 'network' "$(docker_failure_kind "$DK/pull-ratelimit.log")"
+eq 'RUN 步骤失败（有 exit code）→ code' 'code' "$(docker_failure_kind "$DK/run-fail.log")"
+eq 'Dockerfile 写错 → code' 'code' "$(docker_failure_kind "$DK/dockerfile-typo.log")"
+eq 'RUN 自己打了 502 但有 exit code → code（不能被网络特征骗过去）' 'code' "$(docker_failure_kind "$DK/run-prints-502.log")"
+eq '空日志 → code（认不出来的一律算代码问题）' 'code' "$(docker_failure_kind "$DK/empty.log")"
+
+# 重试本身：假 docker 记调用次数，按脚本给出的结论回应。
+DB=$(mktemp -d)
+cat > "$DB/docker" <<'DK'
+#!/bin/sh
+n=0; [ -f "$DBG_COUNT" ] && n=$(cat "$DBG_COUNT")
+n=$((n + 1)); printf '%s' "$n" > "$DBG_COUNT"
+case "$DBG_MODE" in
+  flaky)  [ "$n" -le 2 ] || { printf 'Successfully built abc\n'; exit 0; }
+          printf 'ERROR: failed to solve: failed to authorize: dial tcp: lookup auth.docker.io: i/o timeout\n' >&2; exit 1 ;;
+  down)   printf 'ERROR: failed to solve: failed to authorize: failed to fetch oauth token: i/o timeout\n' >&2; exit 1 ;;
+  code)   printf 'ERROR: failed to solve: Dockerfile parse error line 3: unknown instruction: COPYY\n' >&2; exit 1 ;;
+esac
+exit 0
+DK
+chmod +x "$DB/docker"
+
+DLOG=$(mktemp)
+# ⚠️ DBG_COUNT / DBG_MODE 必须写在命令**前缀**里：写成 `DBG_COUNT=x out=$(…)` 是
+# 「只有赋值的简单命令」，变量不会导出给子进程，假 docker 就读不到（第一版这么写，全红）。
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/n" DBG_MODE=flaky DOCKER_BUILD_RETRY_BASE=0 docker_build_retrying "$DLOG" -t x . 2>&1); rc=$?
+eq '网络抖动：重试之后成功 → 0' '0' "$rc"
+eq '网络抖动：一共试了 3 次' '3' "$(cat "$DB/n")"
+case "$out" in
+  *"秒后重试"*) ok '网络抖动：说了在重试' ;;
+  *) bad '网络抖动：说了在重试' '含「秒后重试」' "$out" ;;
+esac
+
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/n2" DBG_MODE=down DOCKER_BUILD_RETRY_BASE=0 docker_build_retrying "$DLOG" -t x . 2>&1); rc=$?
+eq '网络一直不好：重试完发 error（返回 2）' '2' "$rc"
+eq '网络一直不好：试满 3 次' '3' "$(cat "$DB/n2")"
+case "$out" in
+  *"环境未就绪"*) ok '网络一直不好：描述里写清是环境未就绪' ;;
+  *) bad '网络一直不好：描述里写清是环境未就绪' '含「环境未就绪」' "$out" ;;
+esac
+case "$out" in
+  *"i/o timeout"*) ok '网络一直不好：原始错误照样打出来' ;;
+  *) bad '网络一直不好：原始错误照样打出来' '含 i/o timeout' "$out" ;;
+esac
+
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/n3" DBG_MODE=code DOCKER_BUILD_RETRY_BASE=0 docker_build_retrying "$DLOG" -t x . 2>&1); rc=$?
+eq 'Dockerfile 写错：发 failure（返回 1）' '1' "$rc"
+eq 'Dockerfile 写错：**不重试**（只跑 1 次）' '1' "$(cat "$DB/n3")"
+case "$out" in
+  *"环境未就绪"*) bad 'Dockerfile 写错：不能说成环境未就绪' '不含「环境未就绪」' "$out" ;;
+  *) ok 'Dockerfile 写错：不能说成环境未就绪' ;;
+esac
+
+# 给「自己 build 镜像的脚本」用的包装（#196 复审意见）：网络问题要 exit 75（EX_TEMPFAIL），
+# 别的失败 exit 1（代码红）。在**子壳**里跑 —— 它用 exit，不能把自测本身带走。
+#
+# ⚠️ 调用方式必须和**真实调用方**一样：`sh -c 'set -eu; …'`。第一版这里是裸的 `bash -c`，
+# **没开 set -e** —— 于是 `set -e` 下 `docker_build_retrying …; rc=$?` 当场退出的那个 bug
+# 完全测不出来（真跑时 exit 75 根本到不了，退的是 2）。#196 三轮复审。
+TMPD=$(mktemp -d)
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o1" DBG_MODE=flaky DOCKER_BUILD_RETRY_BASE=0 \
+  TMPDIR="$TMPD" sh -c "set -eu; . '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
+eq '包装：网络抖动重试后成功 → 0' '0' "$rc"
+eq '包装：网络抖动确实重试了（3 次）' '3' "$(cat "$DB/o1")"
+
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o2" DBG_MODE=down DOCKER_BUILD_RETRY_BASE=0 \
+  TMPDIR="$TMPD" sh -c "set -eu; . '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
+eq '包装：网络一直不好 → 75（EX_TEMPFAIL 专用码，不是笼统的 2）' '75' "$rc"
+case "$out" in
+  *"环境未就绪"*) ok '包装：说清了这是环境问题' ;;
+  *) bad '包装：说清了这是环境问题' '含「环境未就绪」' "$out" ;;
+esac
+# 失败路径上那个临时日志也要清掉。第一版在 `set -e` 下当场就退出了，`rm -f "$log"` 根本
+# 没执行到 —— auditor 报的「临时日志漏了」就是它。
+eq '包装：失败时不留临时日志' '' "$(ls "$TMPD" 2>/dev/null | grep '^local-ci-docker' || true)"
+
+# 步骤退出码 → run_context 退出码。#196 复审的阻塞就在这条映射上：
+# 原来把 test-deploy.sh 的**任何** exit 2 都当成环境问题，可它跑在 `set -eu` 下，
+# 语法错、引用未设置的变量都退 2 —— 那些是代码 bug，被发成 error 就是假绿。
+# 这几条等价于「test-deploy.sh 退 X 时 run_context 返回什么」。
+step_rc() { docker_step_rc "$1"; }
+eq '步骤退 2（set -eu 下的语法错 / 未定义变量）→ 1（代码红，**不是**环境问题）' '1' "$(step_rc 2)"
+eq '步骤退 75（拉镜像的网络问题）→ 2（环境未就绪）' '2' "$(step_rc 75)"
+eq '步骤退 1 → 1' '1' "$(step_rc 1)"
+eq '步骤退 0 → 0' '0' "$(step_rc 0)"
+eq '步骤退 3 / 127 之类的怪码 → 1（认不出来的一律当代码问题）' '1' "$(step_rc 3)"
+eq '步骤退 126（不能执行）→ 1' '1' "$(step_rc 126)"
+eq '75 就是 sysexits 的 EX_TEMPFAIL，别改成一个会被别处用掉的码' '75' "$EX_TEMPFAIL"
+
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o3" DBG_MODE=code DOCKER_BUILD_RETRY_BASE=0 \
+  TMPDIR="$TMPD" sh -c "set -eu; . '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
+eq '包装：Dockerfile 写错 → 1（编排器发 failure）' '1' "$rc"
+eq '包装：Dockerfile 写错不重试' '1' "$(cat "$DB/o3")"
+
+# 环境未就绪那条 status 的描述（#196 复审意见）：有具体原因就写它。
+eq '描述：有具体原因就用它' \
+  '环境未就绪：拉镜像失败（网络或镜像源）' \
+  "$(env_not_ready_desc '拉镜像失败（网络或镜像源）' 'docker build + scripts/container-smoke.sh')"
+eq '描述：没有具体原因退回「跑了什么命令」' \
+  '环境未就绪：docker build + scripts/container-smoke.sh' \
+  "$(env_not_ready_desc '' 'docker build + scripts/container-smoke.sh')"
+eq '描述：兜底也要截断到 100 字（GitHub 的 description 很短）' \
+  "环境未就绪：$(printf '12345'; printf 'x%.0s' $(seq 1 95))" \
+  "$(env_not_ready_desc '' "$(printf '12345'; printf 'x%.0s' $(seq 1 200))")"
+
+# 编排器把 2 发成 error、把 1 发成 failure —— 这是 #193 的落脚点。
+eq '编排器：2 → error（环境未就绪）' 'error' "$(status_state_for_rc 2)"
+eq '编排器：1 → failure（代码红）' 'failure' "$(status_state_for_rc 1)"
+eq '编排器：0 → success' 'success' "$(status_state_for_rc 0)"
+eq '编排器：3 → error（脚本自身出错）' 'error' "$(status_state_for_rc 3)"
+
+rm -rf "$DK" "$DB" "$DLOG"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "OK: $0 全过"; exit 0; fi
