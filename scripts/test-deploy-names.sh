@@ -62,10 +62,13 @@ field() { # $1=键 $2=全部输出
 try_id() { # $1 = 编号；能跑通返回 0
   PORT= PORT_OLD= DEPLOYTEST_RUN="$1" PATH="$work/shim:$PATH" sh "$SELF" --print-names >/dev/null 2>&1
 }
+# 取值上限是 **1248**，不是 1249（#186）：窗口是 `(编号 % 1250) * 8`，取到 1249 的话
+# 「下一个编号」1250 会绕回窗口 0，而窗口 1249 和窗口 0 隔着整个区间 —— 「D 在自己的
+# 窗口里」那两条断言就会误报（约 1/1250，每次 docker 跑两份自测）。
 pick_id() {
   i=0
   while [ "$i" -lt 25 ]; do
-    cand=$(( ($$ * 7 + i * 977) % 1250 ))
+    cand=$(( ($$ * 7 + i * 977) % 1249 ))
     if try_id "$cand" && try_id "$((cand + 1))"; then
       printf '%s' "$cand"; return 0
     fi
@@ -74,11 +77,17 @@ pick_id() {
   return 1
 }
 
-A_ID=$(pick_id) || {
+# DEPLOYTEST_RUN 给了就用它（测边界用），否则随机挑一个。
+if [ -n "${DEPLOYTEST_RUN:-}" ]; then A_ID="$DEPLOYTEST_RUN"; else A_ID=$(pick_id); fi
+[ -n "${A_ID:-}" ] || {
   printf '找不到两个相邻编号、窗口都凑得出端口的编号 —— 本机这一段占用异常（见 #181）。\n' >&2
   exit 1
 }
 B_ID=$((A_ID + 1))
+if [ "$A_ID" -gt 1248 ]; then
+  printf '自测编号超出范围：%s（必须 ≤ 1248，否则 B 会绕回窗口 0，见 #186）\n' "$A_ID" >&2
+  exit 1
+fi
 
 A_OUT=$(run_once "$work/a.log" "$A_ID")
 B_OUT=$(run_once "$work/b.log" "$B_ID")
@@ -179,9 +188,13 @@ for _ in range(600):        # 最多守 60 秒：脚本异常退出时也不会�
   # 上面必须把 stdout/stderr 接到 /dev/null：这个后台进程会继承调用方的管道，
   # 而套在外面的 `out=$(scripts/test-deploy-names.sh)` 会一直等管道关闭 —— 不重定向的话
   # 测试会卡到那个 python 自己超时为止（实测卡满 60 秒）。
+  HOLD_PID=$!
   sleep 1   # 等它真的绑上
 }
-release_port() { : > "$work/hold.stop"; }
+# 放开之后**等它真的退出**再往下：只建哨兵的话，它最多还要 60 秒才走，那段时间这几个口
+# 一直被占着 —— 紧接着再跑一次同一编号（比如把编号钉在 1248 测边界）就会「凑不出端口」，
+# 看起来像随机的红。
+release_port() { : > "$work/hold.stop"; wait "$HOLD_PID" 2>/dev/null || true; }
 
 # 把一整段端口占住。$1=起始端口 $2=几个 $3=哨兵文件
 hold_range() {
@@ -211,8 +224,11 @@ for _ in range(600):        # 最多守 60 秒
         break
     time.sleep(0.1)
 ' "$1" "$2" "$3" >/dev/null 2>&1 &
+  RANGE_PID=$!
   sleep 1
 }
+# 同 release_port：放开之后等它真的退出，别让这几个口悬着 60 秒。
+release_range_holder() { : > "$work/hold2.stop"; wait "$RANGE_PID" 2>/dev/null || true; }
 
 C_ID=$A_ID
 C_BASE=$((20000 + (C_ID % 1250) * 8))
@@ -267,7 +283,6 @@ else
            "$(printf '%s' "$C2_OUT" | tr '\n' ' ')" ;;
   esac
 fi
-release_range_holder() { : > "$work/hold2.stop"; }
 release_range_holder
 
 D2_OUT=$(run_once "$work/d2.log" "$((C_ID + 1))")

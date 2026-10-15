@@ -8,6 +8,8 @@
 # 用法：scripts/restore-drill.sh <镜像，如 guandan:local>
 #       scripts/restore-drill.sh --print-names   只打印本次运行用的名字和端口（给自测/排障看）
 set -eu
+# 等容器/HTTP 就绪的小工具（#186）：超时会明确失败并打印日志，不会静默往下走。
+. "$(dirname "$0")/docker-wait.sh"
 
 # 每次运行一套自己的名字和端口（#183，和 #181 是同一类问题）。本机经常同时跑好几路
 # local-ci/docker（impl 自测、auditor 复审、coord 的 pre-merge-check），原来写死的
@@ -123,7 +125,7 @@ common="--read-only --cap-drop ALL --env-file $work/env -v $work/remote:/backup-
 echo
 echo "== 1. 旧机器：启动服务，写入示例数据，做一次加密备份"
 run docker run -d --name "$OLD" $common -v "$OLD_VOL:/data" -p 127.0.0.1:$PORT_OLD:8080 "$IMAGE"
-for _ in $(seq 1 30); do docker exec "$OLD" /guandan healthcheck --ready >/dev/null 2>&1 && break; sleep 1; done
+wait_container_ready "$OLD" 30 || { echo "失败：$OLD 等了 30 秒还没就绪（日志见上）"; exit 1; }
 run docker exec "$OLD" /guandan healthcheck --ready
 run docker exec "$OLD" /guandan seed --force
 run docker exec "$OLD" /guandan admin stats --since 1d
@@ -153,8 +155,9 @@ echo
 echo "== 4. 新机器：启动服务，确认数据都在"
 run docker run -d --name "$NEW" $common -e GUANDAN_METRICS_ADDR=:9090 -v "$NEW_VOL:/data" \
   -p 127.0.0.1:$PORT_NEW:8080 -p 127.0.0.1:$PORT_METRICS:9090 "$IMAGE"
-for _ in $(seq 1 30); do docker exec "$NEW" /guandan healthcheck --ready >/dev/null 2>&1 && break; sleep 1; done
-run curl -fsS "http://127.0.0.1:$PORT_NEW/readyz"
+wait_container_ready "$NEW" 30 || { echo "失败：$NEW 等了 30 秒还没就绪（日志见上）"; exit 1; }
+# host 侧也带重试（#186）：原来只 curl 一次，容器刚起来时会报一个看不出原因的 connect failed。
+run wait_http_ok "http://127.0.0.1:$PORT_NEW/readyz" 30 || { echo "失败：host 侧连不上 $PORT_NEW 的 /readyz"; exit 1; }
 echo
 run docker exec "$NEW" /guandan admin stats --since 1d
 step "curl -sI http://127.0.0.1:$PORT_NEW/healthz | grep -i x-app-build"
