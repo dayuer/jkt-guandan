@@ -118,7 +118,9 @@ for t in good1 good2 good3; do docker tag "$GOOD" "$REPO:$t"; done
 #   $1 = Dockerfile 正文；$2 = 镜像标签
 build_from_text() {
   local dir
-  dir="$(mktemp -d "${TMPDIR:-/tmp}/deploytest-df.XXXXXX")"
+  # 建在 $work 下面（不是 TMPDIR）：`docker_build_or_die` 失败是 `exit`，下面那句 `rm -rf`
+  # 到不了 —— 放在 $work 里就能被 trap 上的 cleanup 一并收掉（#196 三轮复审）。
+  dir="$(mktemp -d "$work/deploytest-df.XXXXXX")"
   printf '%s' "$1" > "$dir/Dockerfile"
   docker_build_or_die -q -t "$2" "$dir" >/dev/null
   rm -rf "$dir"

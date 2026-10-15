@@ -732,20 +732,28 @@ case "$out" in
   *) ok 'Dockerfile 写错：不能说成环境未就绪' ;;
 esac
 
-# 给「自己 build 镜像的脚本」用的包装（#196 复审意见）：网络问题要 exit 2（环境未就绪），
+# 给「自己 build 镜像的脚本」用的包装（#196 复审意见）：网络问题要 exit 75（EX_TEMPFAIL），
 # 别的失败 exit 1（代码红）。在**子壳**里跑 —— 它用 exit，不能把自测本身带走。
-DBG_COUNT="$DB/o1" out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o1" DBG_MODE=flaky DOCKER_BUILD_RETRY_BASE=0 \
-  bash -c ". '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
+#
+# ⚠️ 调用方式必须和**真实调用方**一样：`sh -c 'set -eu; …'`。第一版这里是裸的 `bash -c`，
+# **没开 set -e** —— 于是 `set -e` 下 `docker_build_retrying …; rc=$?` 当场退出的那个 bug
+# 完全测不出来（真跑时 exit 75 根本到不了，退的是 2）。#196 三轮复审。
+TMPD=$(mktemp -d)
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o1" DBG_MODE=flaky DOCKER_BUILD_RETRY_BASE=0 \
+  TMPDIR="$TMPD" sh -c "set -eu; . '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
 eq '包装：网络抖动重试后成功 → 0' '0' "$rc"
 eq '包装：网络抖动确实重试了（3 次）' '3' "$(cat "$DB/o1")"
 
 out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o2" DBG_MODE=down DOCKER_BUILD_RETRY_BASE=0 \
-  bash -c ". '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
+  TMPDIR="$TMPD" sh -c "set -eu; . '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
 eq '包装：网络一直不好 → 75（EX_TEMPFAIL 专用码，不是笼统的 2）' '75' "$rc"
 case "$out" in
   *"环境未就绪"*) ok '包装：说清了这是环境问题' ;;
   *) bad '包装：说清了这是环境问题' '含「环境未就绪」' "$out" ;;
 esac
+# 失败路径上那个临时日志也要清掉。第一版在 `set -e` 下当场就退出了，`rm -f "$log"` 根本
+# 没执行到 —— auditor 报的「临时日志漏了」就是它。
+eq '包装：失败时不留临时日志' '' "$(ls "$TMPD" 2>/dev/null | grep '^local-ci-docker' || true)"
 
 # 步骤退出码 → run_context 退出码。#196 复审的阻塞就在这条映射上：
 # 原来把 test-deploy.sh 的**任何** exit 2 都当成环境问题，可它跑在 `set -eu` 下，
@@ -761,7 +769,7 @@ eq '步骤退 126（不能执行）→ 1' '1' "$(step_rc 126)"
 eq '75 就是 sysexits 的 EX_TEMPFAIL，别改成一个会被别处用掉的码' '75' "$EX_TEMPFAIL"
 
 out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o3" DBG_MODE=code DOCKER_BUILD_RETRY_BASE=0 \
-  bash -c ". '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
+  TMPDIR="$TMPD" sh -c "set -eu; . '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
 eq '包装：Dockerfile 写错 → 1（编排器发 failure）' '1' "$rc"
 eq '包装：Dockerfile 写错不重试' '1' "$(cat "$DB/o3")"
 

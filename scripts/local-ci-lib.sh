@@ -295,8 +295,12 @@ docker_step_rc() {
 docker_build_or_die() {
   local log rc
   log="$(mktemp "${TMPDIR:-/tmp}/local-ci-docker.XXXXXX")"
-  docker_build_retrying "$log" "$@"
-  rc=$?
+  # ⚠️ **必须 `|| rc=$?`，不能写成 `cmd; rc=$?`。** 调用方（test-deploy.sh）是 `set -eu`，
+  # 裸的失败命令会让 shell **当场退出** —— `rc=$?`、`rm -f "$log"`、下面的 `exit 75`
+  # 一条都到不了。退出码会被上游当成 2（代码红），临时日志也漏在磁盘上。
+  # 上一轮在 docker_build_retrying 里正是为这个写了 `|| rc=$?`，这里却漏了（#196 三轮复审）。
+  rc=0
+  docker_build_retrying "$log" "$@" || rc=$?
   rm -f "$log"
   case "$rc" in
     0)  return 0 ;;
@@ -437,15 +441,17 @@ run_context() {
       # 变量、脚本里任何 `exit 2` 都会退 2，那些都是**代码 bug**。所以只有 75 这个专用码
       # 才映射成 2，其他一律 1（#196 复审）。这条也正好是 run_context 开头那句
       # 「只有显式的超前检查才返回 2」在 docker 支上的落地。
-      scripts/test-deploy.sh "$image"
-      rc="$(docker_step_rc "$?")"
+      rc=0
+      scripts/test-deploy.sh "$image" || rc=$?   # `|| rc=$?`：不依赖调用方有没有开 `set -e`
+      rc="$(docker_step_rc "$rc")"
       if [ "$rc" -ne 0 ]; then
         [ "$rc" -eq 2 ] && ENV_REASON='拉镜像失败（网络或镜像源）'
         docker rmi "$image" >/dev/null 2>&1
         return "$rc"
       fi
-      scripts/restore-drill.sh "$image"
-      rc="$(docker_step_rc "$?")"
+      rc=0
+      scripts/restore-drill.sh "$image" || rc=$?
+      rc="$(docker_step_rc "$rc")"
       docker rmi "$image" >/dev/null 2>&1
       [ "$rc" -eq 0 ] || return "$rc"
       ;;
