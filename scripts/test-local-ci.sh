@@ -339,6 +339,80 @@ else
   bad '漏传 scripts 目录时大声报错，不静默跳过' '非 0 且提示缺参数' "退出码 ${prc}，输出: $PNOARG"
 fi
 
+echo '--- 上报 status 的重试与收尾复核（#187）---'
+
+# 用**假的 gh**：让前 N 次 POST 失败，看重试和复核是不是真的兜住了。
+# 「本地全绿、GitHub 停在 pending」就是这么来的，所以这几条要能红。
+TMPG=$(mktemp -d)
+cat > "$TMPG/gh" <<'SH'
+#!/bin/sh
+case "$1 $2" in
+  "api -X")                                     # 发 status
+    printf '%s\n' "$*" >> "$STATE/posts"
+    n=$(wc -l < "$STATE/posts" | tr -d ' ')
+    [ "$n" -le "${FAIL_POST:-0}" ] && exit 1
+    exit 0 ;;
+esac
+[ -n "$GET_JSON" ] || exit 1                    # 拉 status
+printf '%s\n' "$GET_JSON"
+SH
+chmod +x "$TMPG/gh"
+# 退避和复核等待都设成 0：不真睡，测试才快。
+export POST_STATUS_BACKOFF=0 POST_STATUS_REPAIR_DELAY=0
+SHA40=0123456789abcdef0123456789abcdef01234567
+
+# 1) 前两次 POST 失败、第三次成功 → 重试救回来
+STATE=$(mktemp -d); export STATE FAIL_POST=2 GET_JSON=''
+post_status_retry "$TMPG/gh" "$SHA40" local-ci/test success 描述 >/dev/null 2>&1; rc=$?
+eq '重试：前两次失败、第三次成功 → 0' '0' "$rc"
+eq '重试：一共试了 3 次' '3' "$(wc -l < "$STATE/posts" | tr -d ' ')"
+
+# 2) 一直失败 → 用尽次数后非 0，并且说清试了几次
+STATE=$(mktemp -d); export STATE FAIL_POST=99 GET_JSON=''
+out=$(post_status_retry "$TMPG/gh" "$SHA40" local-ci/test success 描述 4 2>&1); rc=$?
+eq '重试：一直失败 → 非 0' '1' "$rc"
+case "$out" in
+  *"共试 4 次"*) ok '重试：说清了试了几次' ;;
+  *) bad '重试：说清了试了几次' '含「共试 4 次」' "$out" ;;
+esac
+
+# 3) 收尾复核：记录里是 success、当前还停在 pending → 补发，而且补的是**最终结论**
+R=$(mktemp)
+printf '%s\n' 'local-ci/test pending 运行中' 'local-ci/test success 描述甲' > "$R"
+STATE=$(mktemp -d); export STATE FAIL_POST=0 GET_JSON='[{"context":"local-ci/test","state":"pending"}]'
+out=$(repair_statuses "$TMPG/gh" "$SHA40" "$R" 2>&1); rc=$?
+eq '复核：还停在 pending → 补发成功、返回 0' '0' "$rc"
+case "$out" in
+  *"补发了 1 条"*) ok '复核：报了补发条数' ;;
+  *) bad '复核：报了补发条数' '含「补发了 1 条」' "$out" ;;
+esac
+grep -q 'state=success' "$STATE/posts" \
+  && ok '复核：补发用的是记录里的最终结论（success，不是那行 pending）' \
+  || bad '复核：补发用的是最终结论' '含 state=success' "$(cat "$STATE/posts")"
+
+# 4) 复核：都对得上 → 不补、返回 0
+STATE=$(mktemp -d); export STATE FAIL_POST=0 GET_JSON='[{"context":"local-ci/test","state":"success"}]'
+out=$(repair_statuses "$TMPG/gh" "$SHA40" "$R" 2>&1); rc=$?
+eq '复核：对得上 → 0' '0' "$rc"
+eq '复核：对得上时不补发' '0' "$(cat "$STATE/posts" 2>/dev/null | wc -l | tr -d ' ')"
+
+# 5) 复核：补发也失败 → 非 0（调用方据此非零退出、大声报错）
+STATE=$(mktemp -d); export STATE FAIL_POST=99 GET_JSON='[{"context":"local-ci/test","state":"pending"}]'
+out=$(repair_statuses "$TMPG/gh" "$SHA40" "$R" 2>&1); rc=$?
+eq '复核：补发也失败 → 非 0' '1' "$rc"
+case "$out" in
+  *"补发失败"*) ok '复核：补发失败时大声报错' ;;
+  *) bad '复核：补发失败时大声报错' '含「补发失败」' "$out" ;;
+esac
+
+# 6) 复核：连当前 status 都取不到 → 非 0（宁可让人去看一眼，也别当成都对得上）
+STATE=$(mktemp -d); export STATE FAIL_POST=0 GET_JSON=''
+out=$(repair_statuses "$TMPG/gh" "$SHA40" "$R" 2>&1); rc=$?
+eq '复核：取不到 status → 非 0' '1' "$rc"
+
+unset STATE FAIL_POST GET_JSON POST_STATUS_BACKOFF POST_STATUS_REPAIR_DELAY
+rm -rf "$TMPG" "$R"
+
 echo '--- §4 合并条件 1：approve 的 sha vs head ---'
 
 C='[impl] REVIEW: changes sha=aaa1111

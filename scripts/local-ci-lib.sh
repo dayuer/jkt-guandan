@@ -426,3 +426,91 @@ approve_vs_head() { # $1 = approve 里写的 sha，$2 = head
   [ -n "$h" ] || { echo nohead; return 0; }
   case "$h" in "$a"*) echo ok ;; *) echo stale ;; esac
 }
+
+# ---------------------------------------------------------------------------
+# 上报 status：带退避的重试 + 收尾复核（#187）
+# ---------------------------------------------------------------------------
+# 本机网络经常抖（DNS、api.github.com 连不上），一次 POST 失败很常见。原来失败只打一行字
+# 就往下走，GitHub 上那个 context 停在最开始发的 `pending` —— 而 `pending` 和失败一样挡
+# 合并，结果是「本地全绿、PR 看着卡住」，逼得作者手动补发（手动发的没法核实，也削弱了
+# 「判据是 status」这条规矩）。
+#
+# 这几个函数只在**被调用时**才碰 gh；source 本文件本身不联网、不发 status。
+#
+# ⚠️ sha 必须 **40 位全长**：短 SHA 会 422（`Sha must be a valid hex object ID`）。
+
+# 发一次。$1=gh 命令 $2=sha $3=context $4=state $5=描述 → 0 成功 / 非 0 失败
+post_status_once() {
+  "$1" api -X POST "repos/{owner}/{repo}/statuses/$2" \
+    -f state="$4" -f context="$3" -f description="$5" >/dev/null 2>&1
+}
+
+# 第 $1 次失败之后等几秒（2 / 4 / 8）。测试把 POST_STATUS_BACKOFF 设成 0 就完全不睡。
+post_status_backoff() {
+  if [ -n "${POST_STATUS_BACKOFF:-}" ]; then printf '%s\n' "$POST_STATUS_BACKOFF"; return 0; fi
+  case "${1:-1}" in
+    1) printf '2\n' ;;
+    2) printf '4\n' ;;
+    *) printf '8\n' ;;
+  esac
+}
+
+# 带退避重试。$1=gh $2=sha $3=context $4=state $5=描述 [$6=最多试几次，默认 4]
+# 用尽还失败返回 1，并把「共试了几次」打到 stderr（调用方据此决定要不要非零退出）。
+post_status_retry() {
+  local i=1 tries="${6:-4}" delay
+  while :; do
+    if post_status_once "$1" "$2" "$3" "$4" "$5"; then return 0; fi
+    if [ "$i" -ge "$tries" ]; then
+      printf '上报 status 失败（共试 %s 次）：%s=%s\n' "$i" "$3" "$4" >&2
+      return 1
+    fi
+    delay=$(post_status_backoff "$i")
+    printf '上报 status 失败，%s 秒后重试：%s=%s\n' "$delay" "$3" "$4" >&2
+    [ "$delay" -eq 0 ] || sleep "$delay"
+    i=$((i + 1))
+  done
+}
+
+# 收尾复核用：从 `gh api .../commits/<sha>/statuses` 的 JSON（$1）里取 $2 这个 context
+# **当前**的状态（取不到就空串）。GitHub 返回的是**新的在前**，所以取 first。
+status_state_of() {
+  printf '%s' "${1:-}" \
+    | jq -r --arg c "${2:-}" \
+      'if type == "array" then ([.[] | select(.context == $c) | .state] | first // "") else "" end' \
+      2>/dev/null || true
+}
+
+# 收尾复核（#187）：重新拉一次 $2 这个 SHA 的 status，凡是和 $3 里记的结论**对不上**的
+# （还停在 pending、或者压根没发上去），用记下的结论补发。
+#   $1 = gh 命令   $2 = 40 位全长 sha   $3 = `context state 描述` 每行一条的文件（同一 context 取最后一条）
+# 全部对得上 / 补发成功 → 0；有任何一条补发失败、或取不到 status → 1（调用方据此非零退出）。
+repair_statuses() {
+  local gh="$1" sha="$2" results="$3" cur='' repaired=0 failed=0 ctx st desc now
+  for _ in 1 2 3; do
+    if cur=$("$gh" api "repos/{owner}/{repo}/commits/$sha/statuses" 2>/dev/null) && [ -n "$cur" ]; then break; fi
+    cur=''
+    sleep "${POST_STATUS_REPAIR_DELAY:-2}"
+  done
+  if [ -z "$cur" ]; then
+    printf '取不到本 SHA 的 status —— 复核不了，**请手动确认 GitHub 上有没有停在 pending 的 context**。\n' >&2
+    return 1
+  fi
+  # 同一个 context 只取**最后**那条（先发 pending，再发最终结论）。
+  while IFS=' ' read -r ctx st desc; do
+    [ -n "$ctx" ] || continue
+    now=$(status_state_of "$cur" "$ctx")
+    [ "$now" = "$st" ] && continue
+    printf '  %s 现在是「%s」，本次结论是「%s」→ 补发\n' "$ctx" "${now:-（没有）}" "$st"
+    if post_status_retry "$gh" "$sha" "$ctx" "$st" "$desc"; then
+      repaired=$((repaired + 1))
+    else
+      printf '  ✗ 补发失败：%s\n' "$ctx" >&2
+      failed=1
+    fi
+  done <<EOF
+$(awk '{last[$1]=$0} END{for (c in last) print last[c]}' "$results")
+EOF
+  if [ "$repaired" -eq 0 ]; then printf '  都对得上，不用补。\n'; else printf '  补发了 %s 条。\n' "$repaired"; fi
+  return "$failed"
+}
