@@ -191,8 +191,9 @@ func waitForCond(t *testing.T, cond func() bool, what string) {
 // #191：**迟到的 40001 不该把刚换上的新 token 再强刷掉**。
 //
 // 并发的样子：8 个请求都带着 tok1 出去，tok1 在服务端失效。
-//   第一个 40001 回来 → 该换 tok2；剩下 7 个是**带着 tok1 发出去的**，它们迟到回来时
-//   缓存里已经是 tok2 了，不该再动它。改之前是 fetches=3 forced=2。
+//
+//	第一个 40001 回来 → 该换 tok2；剩下 7 个是**带着 tok1 发出去的**，它们迟到回来时
+//	缓存里已经是 tok2 了，不该再动它。改之前是 fetches=3 forced=2。
 func TestStaleTokenErrorDoesNotForceRefreshAgain(t *testing.T) {
 	var fetches, forced, blocked atomic.Int32
 	var current atomic.Value // 服务端认为有效的那个
@@ -488,5 +489,86 @@ func TestForceRefreshIsLoggedAndCounted(t *testing.T) {
 	}
 	if m := metricsText(reg); !strings.Contains(m, metric("force")+"2") {
 		t.Errorf("再刷一次该记 force=2（额度用了几次要累计可数），实际：%s", m)
+	}
+}
+
+// #201：**强刷失败之后不能一直强刷**。
+//
+// 原来 `Token()` 在 postJSON 失败时直接 return：`force` 留在 true、`lastForced` 也不更新。
+// 后果是之后**每一次**取 token 都带 `force_refresh=true`，永远退不回普通模式 —— 而普通模式
+// 其实能拿到平台认为当前有效的那个。强刷额度用完（45009）时，内容安全和订阅消息的**每一次**
+// 调用都会跟着失败，一直到额度恢复或者重启。
+//
+// 审计时是拿临时测试复现的：缓存 tok0，40001 作废；假服务端对 force_refresh=true 回 45009、
+// 普通模式正常给 token；之后每隔一分钟调一次，四次全是 45009，一次普通模式都没走。
+func TestFailedForceRefreshDoesNotForceForever(t *testing.T) {
+	var fetches, forceSent, normalSent atomic.Int32
+	var current atomic.Value
+	var quotaOut atomic.Bool // 强刷额度用完：只有 force_refresh=true 会撞 45009
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cgi-bin/stable_token" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["force_refresh"] == true {
+				forceSent.Add(1)
+				if quotaOut.Load() {
+					fmt.Fprint(w, `{"errcode":45009,"errmsg":"reach max api daily quota limit"}`)
+					return
+				}
+			} else {
+				normalSent.Add(1)
+			}
+			tok := fmt.Sprintf("tok-secret-%d", fetches.Add(1))
+			current.Store(tok)
+			fmt.Fprintf(w, `{"access_token":%q,"expires_in":7200}`, tok)
+			return
+		}
+		if got := r.URL.Query().Get("access_token"); got != current.Load() {
+			fmt.Fprint(w, `{"errcode":40001,"errmsg":"invalid credential"}`)
+			return
+		}
+		fmt.Fprint(w, `{"errcode":0}`)
+	}))
+	defer srv.Close()
+
+	clk := clock.NewFake(time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
+	tokens := &StableToken{AppID: "wxapp", Secret: "sec", BaseURL: srv.URL, Clock: clk}
+	c := &Client{BaseURL: srv.URL, Tokens: tokens, Name: "内容安全"}
+	ctx := context.Background()
+
+	// ① 先正常拿一个 token
+	if err := c.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// ② 这个 token 在服务端失效了（比如被别处强刷顶掉）+ 强刷额度也用完了
+	current.Store("")
+	quotaOut.Store(true)
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+
+	// ③ 下一次取 token 会强刷，而强刷撞上 45009
+	err := c.PostJSON(ctx, "/x", nil, nil)
+	if code, ok := Code(err); !ok || code != ErrCodeRateLimited {
+		t.Fatalf("应该撞上 45009（额度用完），实际：%v", err)
+	}
+
+	// ④ 之后每一次调用都该能用：退回普通模式，拿到平台当前有效的那个 token。
+	//    改之前这里是「一直强刷」——四次全 45009，一次都成功不了。
+	okN := 0
+	for i := 0; i < 4; i++ {
+		clk.Advance(time.Minute)
+		if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+			okN++
+		}
+	}
+	if okN != 4 {
+		t.Errorf("强刷失败后该退回普通模式、之后每个调用都能成，实际只成了 %d/4 次"+
+			"（额度用完不该让两个使用方一直挂到重启）", okN)
+	}
+	if normalSent.Load() == 0 {
+		t.Errorf("一次普通模式都没走（force 发了 %d 次），说明还在无脑强刷", forceSent.Load())
 	}
 }
