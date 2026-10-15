@@ -2,10 +2,10 @@
 // 状态全部来自服务端：me.role 说明我在不在局里，missing 说明差几个人，status 说明还能不能报。
 
 import type { App, Scene, Sheet } from "../core/app";
-import { C, Ctx, Scroller, circle, ease, ellipsize, fillRR, font, initial, measure, strokeRR, text, wrap } from "../core/ui";
-import { PAD, ROW_X0, banner, button, chevron, chipRow, chipRowScrollFor, disclaimer, errorLine, field, icon, nav, sheetButtons, sheetHeader, simpleSheet, type BtnStyle } from "../core/widgets";
+import { C, Ctx, Scroller, card, circle, ease, ellipsize, fillRR, font, initial, measure, strokeRR, text, wrap } from "../core/ui";
+import { PAD, ROW_X0, banner, button, chevron, chip, chipRow, chipRowScrollFor, disclaimer, errorLine, field, icon, nav, sheetButtons, sheetHeader, simpleSheet, type BtnStyle } from "../core/widgets";
 import {
-  ApiError, cancelGame, getGame, inviteError, inviteFriends, inviteSummary, joinGame, kickPlayer, leaveGame, subscribeRetry, updateGame,
+  ApiError, cancelGame, getGame, getScore, inviteError, inviteFriends, inviteSummary, joinGame, kickPlayer, leaveGame, newIdempotencyKey, startScore, subscribeRetry, updateGame,
   type GameDetail, type GamePatch, type Seat,
 } from "../lib/api";
 import { dayLabel, kindLabel, timeHM, wibAt, wibParts, weekday, slashDate } from "../lib/fmt";
@@ -18,6 +18,7 @@ import { rescheduleText } from "./home";
 import type { Nav } from "./nav";
 import { addToCalendar, friendPicker, joinedSheet, promotedSheet, requireIdentity, shareSheet } from "./sheets";
 import { askSubscribe, remindOn, reportAccepted } from "../lib/subscribe";
+import { TEAM_NAME, canStartNow, isStarted, levelName, teamOf, type Score } from "../lib/scoring";
 
 const POS = ["top", "right", "bottom", "left"] as const;
 
@@ -38,6 +39,8 @@ export class Detail implements Scene {
   private joinedOpen = false;
   private viewed = false;
   private barH = 76;
+  /** 牌桌计分（#165）：S1 的入口条、座位花色角标、退出前确认（#168） */
+  private score: Score | null = null;
 
   constructor(private app: App, private code: string, private nav: Nav) {
     this.scroll.onPullRefresh = () => void this.load();
@@ -54,7 +57,9 @@ export class Detail implements Scene {
           if (typeof v === "number") { this.viewers = v; this.app.redraw(); }
           return;
         }
-        void this.load();
+        // 座位上有人点了「开始记分」：其他三人实时进入记分页（S2）
+        if (ev.type === "score.started") void this.load().then(() => this.enterScoreIfSeated());
+        else void this.load();
       },
       refresh: () => void this.load(),
     });
@@ -67,7 +72,10 @@ export class Detail implements Scene {
 
   private async load() {
     try {
-      this.set(await getGame(this.code));
+      // 计分是公开接口，拿不到不影响详情页
+      const [d, sc] = await Promise.all([getGame(this.code), getScore(this.code).catch(() => null)]);
+      if (sc) this.score = sc;
+      this.set(d);
       this.error = "";
     } catch (err) {
       this.error = err instanceof ApiError && err.status === 404 ? "这一局不在了" : "打不开这一局，下拉重试";
@@ -402,6 +410,129 @@ export class Detail implements Scene {
     });
   }
 
+  // ── 牌桌计分（#165，S1、S2）──
+
+  private get seatedHere() { return this.detail?.me.role === "seat"; }
+
+  private enterScoreIfSeated() {
+    if (this.app.top !== this || !this.seatedHere || !isStarted(this.score)) return;
+    this.app.closeAllSheets();
+    this.nav.score(this.code);
+  }
+
+  /** 已经开始记分时退出要先确认（#168）：记分会暂停 */
+  private onLeaveTap() {
+    if (!(this.seatedHere && isStarted(this.score) && !this.closed)) { void this.run(() => leaveGame(this.code)); return; }
+    simpleSheet(this.app, {
+      title: "现在退出？",
+      sub: "退出后这局记分会暂停，回到原座位可以继续",
+      buttons: (s) => [
+        { label: "退出这局", style: "danger", onTap: () => { this.app.closeSheet(s); void this.run(() => leaveGame(this.code)); } },
+        { label: "再想想", style: "soft", onTap: () => this.app.closeSheet(s) },
+      ],
+    });
+  }
+
+  /**
+   * 入口条：满座、我在座位上、离开局 ≤ 30 分钟（按服务端的 starts_at 自己算——GET /score 的 can_record 不看这个窗口）。
+   * 已经开始记分时变成「回到记分 · 第 N 局」；不在座位上的人看到「看记分」（S14）。
+   */
+  private drawScoreEntry(ctx: Ctx, d: GameDetail, y: number): number {
+    const a = this.app, sc = this.score, x = PAD, w = a.W - PAD * 2;
+    let title: string, sub: string, label: string, onTap: () => void;
+    if (isStarted(sc)) {
+      const st = sc.state, n = sc.rounds.length + 1;
+      title = st.match_over ? `${TEAM_NAME[st.winner === "black" ? "black" : "red"]}过 A，本场结束` : "这一局正在记分";
+      sub = sc.settings.kind === "no-level" ? `红方 ${st.red.wins} : ${st.black.wins} 黑方`
+        : `红方 ${levelName(st.red.level)} · 黑方 ${levelName(st.black.level)} · 已打 ${sc.rounds.length} 局`;
+      label = this.seatedHere && sc.can_record ? `回到记分 · 第 ${n} 局` : "看记分";
+      onTap = () => this.nav.score(this.code);
+    } else {
+      if (this.closed || d.game.status !== "full" || !this.seatedHere || !canStartNow(d.game.starts_at, Math.floor(Date.now() / 1000))) return y;
+      title = "人齐了，开打就记分";
+      sub = "四个人都能记，一局点两下";
+      label = "开始记分";
+      onTap = () => this.openStartScore();
+    }
+    const f = font(15, "700"), bw = Math.max(112, measure(ctx, label, f) + 28);
+    card(ctx, x, y, w, 76, 18);
+    text(ctx, ellipsize(ctx, title, w - 32 - bw - 12, font(16, "700")), x + 16, y + 28, font(16, "700"), C.ink);
+    text(ctx, ellipsize(ctx, sub, w - 32 - bw - 12, font(12)), x + 16, y + 52, font(12), C.ink3);
+    button(a, ctx, "score-entry", x + w - 16 - bw, y + 16, bw, 44, label, "primary", onTap, { size: 15 });
+    return y + 76 + 16;
+  }
+
+  /** S2：开始记分。分队由座位决定，只定一个约定：打 A 几次不过回到 2 */
+  private openStartScore() {
+    const app = this.app, d = this.detail!;
+    const noLevel = d.game.kind === "no-level";
+    const st = { limit: 3, busy: false, err: "", key: newIdempotencyKey() };
+    const start = async () => {
+      if (st.busy) return;
+      st.busy = true; st.err = ""; app.redraw();
+      try {
+        this.score = await startScore(this.code, st.limit, st.key);
+        app.closeSheet(sheet);
+        this.nav.score(this.code);
+      } catch (err) {
+        if (err instanceof ApiError && err.code === "too_early") st.err = "开局前 30 分钟起才能开始记分";
+        else if (err instanceof ApiError && err.code === "not_full") st.err = "人还没齐，坐满 4 人才能记分";
+        else if (err instanceof ApiError && err.code === "not_seated") st.err = "只有座位上的四个人能记分";
+        else st.err = this.explain(err);
+      } finally {
+        st.busy = false; app.redraw();
+      }
+    };
+    const sheet: Sheet = {
+      draw: (ctx, y, w) => {
+        const dd = this.detail ?? d, me = currentUser();
+        let cy = sheetHeader(ctx, y, w, "开始记分", "按座位分队：对家是搭档");
+        const pw = w - 40;
+        (["red", "black"] as const).forEach((t) => {
+          const red = t === "red", c = red ? C.red : C.ink;
+          fillRR(ctx, 20, cy, pw, 62, 14, C.paper);
+          circle(ctx, 44, cy + 31, 14, C.card, red ? "#e3b5ae" : "#e6dccd", 1.5);
+          icon[red ? "heart" : "spade"](ctx, 44, cy + 31.5, 15, c);
+          text(ctx, TEAM_NAME[t], 68, cy + 31, font(16, "700"), c);
+          let ax = 120;
+          for (const no of red ? [1, 3] : [2, 4]) {
+            const seat = dd.seats.find((x) => x.seat_no === no);
+            const nick = seat?.user.nickname ?? "";
+            const isMe = !!me && seat?.user.id === me.id;
+            if (isMe) circle(ctx, ax + 16, cy + 31, 19, null, C.gold, 3);
+            circle(ctx, ax + 16, cy + 31, 16, red ? C.redTint : C.beige, red ? "#e3b5ae" : "#e6dccd", 2);
+            text(ctx, initial(nick || "?"), ax + 16, cy + 32, font(13, "900"), c, "center");
+            const maxW = (pw - 100) / 2 - 44;
+            const label = ellipsize(ctx, `${no}号 ${nick}`, maxW, font(13));
+            text(ctx, label, ax + 38, cy + 31, font(13), C.ink2);
+            ax += 38 + maxW + 6;
+          }
+          cy += 62 + 10;
+        });
+        cy += 12;
+        if (noLevel) {
+          text(ctx, "不升级：只记每局哪队赢、双上几次", 20, cy + 10, font(14, "700"), C.ink);
+          cy += 34;
+        } else {
+          text(ctx, "打 A 几次不过，回到 2", 20, cy + 10, font(14, "700"), C.ink);
+          cy += 28;
+          let x = 20;
+          x += chip(app, ctx, "start-limit:3", x, cy, "3 次", st.limit === 3, () => { st.limit = 3; }) + 8;
+          chip(app, ctx, "start-limit:0", x, cy, "不回 2", st.limit === 0, () => { st.limit = 0; });
+          cy += 36 + 16;
+          text(ctx, ellipsize(ctx, "过 A：打本队的 A 时拿头游，搭档不是末游。过了这场结束", w - 40, font(12)), 20, cy, font(12), C.ink3);
+          cy += 24;
+        }
+        cy = sheetButtons(app, ctx, cy, w, [
+          { label: st.busy ? "稍等…" : noLevel ? "开始 · 记第 1 局" : "开始 · 第 1 局打 2", style: "primary", disabled: st.busy, onTap: () => void start() },
+        ], "start");
+        if (st.err) { text(ctx, ellipsize(ctx, st.err, w - 40, font(13)), w / 2, cy + 4, font(13), C.red, "center"); cy += 24; }
+        return cy - y + 8;
+      },
+    };
+    app.openSheet(sheet);
+  }
+
   // ── 画 ──
 
   scrollerAt(_x: number, y: number) {
@@ -457,6 +588,7 @@ export class Detail implements Scene {
     y += 116;
     y = this.drawTable(ctx, d, y);
     y = this.drawNames(ctx, d, y);
+    y = this.drawScoreEntry(ctx, d, y);
     y = this.drawInfo(ctx, d, y);
 
     if (d.me.role === "seat" && !closed) {
@@ -491,6 +623,7 @@ export class Detail implements Scene {
 
     const at = { top: [cx, ty], right: [x + size, mid], bottom: [cx, ty + size], left: [x, mid] } as const;
     const bySeat = new Map(d.seats.map((s) => [s.seat_no, s]));
+    const teams = !closed && (d.game.status === "full" || isStarted(this.score));
     for (let no = 1; no <= 4; no++) {
       const [sx, sy] = at[POS[(no - 1) % 4]];
       const seat = bySeat.get(no);
@@ -509,6 +642,12 @@ export class Detail implements Scene {
       circle(ctx, sx, sy, r + 4, C.paper);
       circle(ctx, sx, sy, r, isMe ? C.gold : host ? C.redTint : C.beige, host ? "#e3b5ae" : "#e6dccd", 3);
       text(ctx, initial(seat.user.nickname), sx, sy + 1, font(Math.max(1, 26 * k), "900", true), host ? C.red : C.ink, "center");
+      if (teams) {
+        // 计分（S1）：座位右下角的花色角标，1、3 号红方 ♥，2、4 号黑方 ♠
+        const bx = sx + 24, by = sy + 24, red = teamOf(no) === "red";
+        circle(ctx, bx, by, 11, C.card, C.line2, 1.5);
+        icon[red ? "heart" : "spade"](ctx, bx, by + 0.5, 12, red ? C.red : C.ink);
+      }
       if (host && isMe) {
         fillRR(ctx, sx - 20, sy + r - 8, 40, 18, 9, C.red);
         text(ctx, "局头", sx, sy + r + 1, font(10, "700"), C.cream, "center");
@@ -575,7 +714,7 @@ export class Detail implements Scene {
     if (!closed) out.push({ id: "share", label: "分享", style: "dark", onTap: () => { track("share_open", { game: this.code }); shareSheet(this.app, d); } });
     if (d.me.role !== "none") out.push({
       id: "leave", label: d.me.role === "waitlist" ? "候补中 · 退出候补" : "已报名 · 退出", style: "ghost",
-      disabled: this.busy || closed, onTap: () => void this.run(() => leaveGame(this.code)),
+      disabled: this.busy || closed, onTap: () => this.onLeaveTap(),
     });
     if (this.isHost && !closed) {
       out.push({ id: "edit", label: "改时间 / 地点", style: "soft", onTap: () => this.openEdit() });
