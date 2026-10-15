@@ -92,3 +92,57 @@ func TestEmbeddedBreakingMigrationsAreConfirmed(t *testing.T) {
 		}
 	}
 }
+
+// 0009（#172）：0008 以来已经记下的局按现在的座位补上四个座位上的人；那个座号空着的留空。
+func TestMigration0009BackfillsRoundSeats(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := ensureMigrationsTable(ctx, st.write); err != nil {
+		t.Fatal(err)
+	}
+	names, err := migrationNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if name >= "0009" {
+			break
+		}
+		body, err := migrations.FS.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := apply(ctx, st.write, name, string(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []string{
+		`INSERT INTO users (id, nickname, created_at) VALUES ('u1', '一号', 0), ('u2', '二号', 0), ('u4', '四号', 0)`,
+		`INSERT INTO games (id, short_code, host_id, starts_at, area, venue, kind, status, created_at)
+		 VALUES ('g1', 'c1', 'u1', 0, 'SCBD', 'Pacific Place', 'classic', 'open', 0)`,
+		`INSERT INTO seats (game_id, seat_no, user_id, created_at) VALUES ('g1', 1, 'u1', 0), ('g1', 2, 'u2', 0), ('g1', 4, 'u4', 0)`,
+		`INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at) VALUES ('g1', 'classic', 3, 'u1', 0)`,
+		`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at) VALUES ('g1', 1, 1, 2, 'u1', 0)`,
+	} {
+		if _, err := st.write.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var s1, s2, s4 string
+	var s3 *string
+	if err := st.read.QueryRowContext(ctx,
+		`SELECT seat1_user, seat2_user, seat3_user, seat4_user FROM score_rounds WHERE game_id = 'g1'`).
+		Scan(&s1, &s2, &s3, &s4); err != nil {
+		t.Fatal(err)
+	}
+	if s1 != "u1" || s2 != "u2" || s3 != nil || s4 != "u4" {
+		t.Fatalf("补的座位不对：%s %s %v %s", s1, s2, s3, s4)
+	}
+}

@@ -218,6 +218,10 @@ CREATE TABLE score_rounds (
   created_at    INTEGER NOT NULL,
   edited_by     TEXT REFERENCES users(id),                            -- 最近一次改这一局的人
   edited_at     INTEGER,
+  seat1_user    TEXT REFERENCES users(id),                            -- 0009（#172）：这一局当时 1–4 号座上的人，记一局时抄下来，改一局不变
+  seat2_user    TEXT REFERENCES users(id),                            -- 0008 时记的局按迁移时的座位补，那时空着的座号为空
+  seat3_user    TEXT REFERENCES users(id),
+  seat4_user    TEXT REFERENCES users(id),
   PRIMARY KEY (game_id, round_no)
 );
 -- 记分开始以后每个座号最后一个离开的人（0009，#168，§5.6「回原座位」）
@@ -468,7 +472,8 @@ CREATE TABLE score_seat_leavers (
    "rounds":[{"round_no":1,"match":1,"head_seat":1,"partner_place":2,
               "playing":"","playing_level":2,"winner":"red","double_up":true,
               "upgrade":3,"level_before":2,"level_after":5,"passed_a":false,
-              "recorded_by":{"id":"01J…","nickname":"Lily"},"recorded_at":1791980900}, …],
+              "recorded_by":{"id":"01J…","nickname":"Lily"},"recorded_at":1791980900,
+              "seats":[{"id":"01J…","nickname":"Lily"},{"id":"01J…","nickname":"老王"},{…},{…}]}, …],
    "state":{"match":1,"match_rounds":6,"playing":"red","playing_level":11,
             "red":{"level":11,"a_fails":0,"wins":4,"double_ups":2},
             "black":{"level":7,"a_fails":0,"wins":2,"double_ups":1},
@@ -476,7 +481,7 @@ CREATE TABLE score_seat_leavers (
   ```
   - `can_record`：当前身份在座位上、牌局 `full`（访客、旁观、缺人时为假）。`can_start`：`can_record` 为真、还没开始记分、而且已经到了开局前 30 分钟，这时 `POST /score` 才会成功；开始以后恒为假。小游戏的 S1 入口条按 `can_start` 显示。
   - 级数是整数 2–14（11 = J、12 = Q、13 = K、14 = A）；队是 `red` / `black`，`playing` 为空串表示一场的第 1 局（打 2，不算哪队的）。
-  - `rounds` 按局号从小到大（S9 新的在上由前端倒过来）。每局还可能有：`failed_a`（这一局哪队打自己的 A 没过）、`a_fails`（它记完后的次数）、`reset_to_2`、`edited_by`、`edited_at`（改过的局，S9 的「已改」）。`level_before` → `level_after` 是赢的一队实际的变化，封顶和回到 2 都算进去；不升级玩法里这三项是 0。
+  - `rounds` 按局号从小到大（S9 新的在上由前端倒过来）。每局还可能有：`failed_a`（这一局哪队打自己的 A 没过）、`a_fails`（它记完后的次数）、`reset_to_2`、`edited_by`、`edited_at`（改过的局，S9 的「已改」）。`seats` 是这一局**当时** 1–4 号座上的人（#172，下标 0 是 1 号）：中途换人后，换人前的局仍显示原来的人，S9、S12、S15 按每局自己的 `seats` 显示称呼；改一局只改结果，`seats` 不变。0009 迁移前记的局按迁移时的座位补上，那时空着的座号为 `null`，客户端退回用现在的座位。`level_before` → `level_after` 是赢的一队实际的变化，封顶和回到 2 都算进去；不升级玩法里这三项是 0。
   - `state` 是记完最后一局之后、下一局要看的：`match_over` 为真时 `winner` 是过 A 的一队，`playing` / `playing_level` 已经是下一场第 1 局的值（空串、2），两队的 `level` 和统计仍是这一场结束时的（S8「停在 Q」）。`wins`、`double_ups` 是本场的（S8、S15「红方双上 4 次」）；`a_fails` 用于「打 A · 已没过 N 次」。
   - 用时（S8）由前端从 `started_at` 和各局 `recorded_at` 算，服务端不另存。
 - **实时**：`score.started`、`score.round`、`score.edited` 推到 `game:{code}`（§5.5）。**不带顶层 `v`**（`v` 是牌局版本号，计分不动它），客户端按 `data.revision` 丢弃不比本地新的：
@@ -487,7 +492,7 @@ CREATE TABLE score_seat_leavers (
   ```
   `by` 是开始、记或改的人（S11「Lily 记了第 6 局」）；`round` 是这次记的或改的那一局（`score.started` 没有）；`rounds` 是现在一共几局。改一局时后面各局都可能变了，S10 要完整列表就重新拉 `GET /score`。收到 `score.round` 才翻牌（S11），REST 刷新和重连后的重绘不翻。
 - **限流**：开始、记一局、改一局合计每个用户每分钟 30 次，超出 429 `rate_limited`。
-- **注销与合并**：计分记录是这一局的历史，注销时不删，记录人的称呼随 `users` 变成「已注销牌友」；admin 合并身份时 `started_by`、`recorded_by`、`edited_by` 搬到保留的身份上。
+- **注销与合并**：计分记录是这一局的历史，注销时不删，记录人的称呼随 `users` 变成「已注销牌友」；admin 合并身份时 `started_by`、`recorded_by`、`edited_by`、每局的 `seat1_user`–`seat4_user` 搬到保留的身份上（每局 `seats` 里注销的人同样显示「已注销牌友」）。
 
 ## 6. HTTP 接口
 

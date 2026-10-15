@@ -1,4 +1,4 @@
--- 记分跟进（#168，#165 复审意见，docs/server-design.md §5.6、§11.4）。
+-- 记分跟进（#168、#172，#165 复审意见，docs/server-design.md §5.6、§11.4）。
 -- 只加列、加表，向前兼容：旧版本的程序不写 fingerprint（为空，按不比对处理），也不读新表。
 
 -- 幂等键的请求指纹：同一个键配了不同的请求体时返回 422，不再当成重放静默返回 200。
@@ -18,3 +18,18 @@ CREATE TABLE score_seat_leavers (
   PRIMARY KEY (game_id, seat_no)
 );
 CREATE INDEX score_seat_leavers_user ON score_seat_leavers(game_id, user_id);
+
+-- 每局当时四个座位上的人（#172）：中途换人后，换人前的局仍按当时的人显示称呼，S15 战报也按实际打过的人列。
+-- 记一局时从 seats 抄下来；改一局只改结果，不换人。
+ALTER TABLE score_rounds ADD COLUMN seat1_user TEXT REFERENCES users(id);
+ALTER TABLE score_rounds ADD COLUMN seat2_user TEXT REFERENCES users(id);
+ALTER TABLE score_rounds ADD COLUMN seat3_user TEXT REFERENCES users(id);
+ALTER TABLE score_rounds ADD COLUMN seat4_user TEXT REFERENCES users(id);
+
+-- 0008 以来已经记下的局：按现在的座位补上（尽力而为——0008 上线不久，记分中途换过人的局极少）。
+-- 那个座号现在空着的留空，客户端退回用现在的座位。
+UPDATE score_rounds SET
+  seat1_user = (SELECT user_id FROM seats s WHERE s.game_id = score_rounds.game_id AND s.seat_no = 1),
+  seat2_user = (SELECT user_id FROM seats s WHERE s.game_id = score_rounds.game_id AND s.seat_no = 2),
+  seat3_user = (SELECT user_id FROM seats s WHERE s.game_id = score_rounds.game_id AND s.seat_no = 3),
+  seat4_user = (SELECT user_id FROM seats s WHERE s.game_id = score_rounds.game_id AND s.seat_no = 4);

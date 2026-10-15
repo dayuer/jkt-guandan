@@ -58,6 +58,9 @@ type ScoreRound struct {
 	RecordedAt time.Time
 	EditedBy   *UserRef // 没改过为 nil
 	EditedAt   time.Time
+	// Seats 是这一局当时 1–4 号座上的人（#172），记一局时从座位抄下来，改一局不变。
+	// 0008 迁移前记的局按迁移时的座位补，那时座号空着的为 nil。
+	Seats [4]*UserRef
 }
 
 // Score 是一局牌的计分。Started 为假时其余字段都是零值。
@@ -153,10 +156,18 @@ func loadScore(ctx context.Context, q queryer, game Game, viewerID string, now t
 	rows, err := q.QueryContext(ctx, `
 		SELECT r.round_no, r.head_seat, r.partner_place,
 		       r.recorded_by, COALESCE(ru.nickname, ''), r.created_at,
-		       COALESCE(r.edited_by, ''), COALESCE(eu.nickname, ''), COALESCE(r.edited_at, 0)
+		       COALESCE(r.edited_by, ''), COALESCE(eu.nickname, ''), COALESCE(r.edited_at, 0),
+		       COALESCE(r.seat1_user, ''), COALESCE(s1.nickname, ''),
+		       COALESCE(r.seat2_user, ''), COALESCE(s2.nickname, ''),
+		       COALESCE(r.seat3_user, ''), COALESCE(s3.nickname, ''),
+		       COALESCE(r.seat4_user, ''), COALESCE(s4.nickname, '')
 		  FROM score_rounds r
 		  LEFT JOIN users ru ON ru.id = r.recorded_by
 		  LEFT JOIN users eu ON eu.id = r.edited_by
+		  LEFT JOIN users s1 ON s1.id = r.seat1_user
+		  LEFT JOIN users s2 ON s2.id = r.seat2_user
+		  LEFT JOIN users s3 ON s3.id = r.seat3_user
+		  LEFT JOIN users s4 ON s4.id = r.seat4_user
 		 WHERE r.game_id = ?
 		 ORDER BY r.round_no`, game.ID)
 	if err != nil {
@@ -173,11 +184,19 @@ func loadScore(ctx context.Context, q queryer, game Game, viewerID string, now t
 			recordedAt           int64
 			editedBy, editedNick string
 			editedAt             int64
+			seats                [4]UserRef
 		)
 		if err := rows.Scan(&no, &fact.HeadSeat, &fact.PartnerPlace,
 			&sr.RecordedBy.ID, &sr.RecordedBy.Nickname, &recordedAt,
-			&editedBy, &editedNick, &editedAt); err != nil {
+			&editedBy, &editedNick, &editedAt,
+			&seats[0].ID, &seats[0].Nickname, &seats[1].ID, &seats[1].Nickname,
+			&seats[2].ID, &seats[2].Nickname, &seats[3].ID, &seats[3].Nickname); err != nil {
 			return nil, err
+		}
+		for i := range seats {
+			if seats[i].ID != "" {
+				sr.Seats[i] = &seats[i]
+			}
 		}
 		// 不变量 6 保证局号从 1 连续；这里再确认一次，免得重算对错了局。
 		if no != len(facts)+1 {
@@ -346,9 +365,15 @@ func (s *Service) RecordRound(ctx context.Context, code, userID string, expected
 		}
 
 		// 主键 (game_id, round_no) 是最后一道防线：写事务串行，正常走不到冲突。
+		// 顺手抄下这一局四个座位上的人（#172）：scoreWriter 已经确认满座。
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
+			INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at,
+			                          seat1_user, seat2_user, seat3_user, seat4_user)
+			VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+			        (SELECT user_id FROM seats WHERE game_id = ?1 AND seat_no = 1),
+			        (SELECT user_id FROM seats WHERE game_id = ?1 AND seat_no = 2),
+			        (SELECT user_id FROM seats WHERE game_id = ?1 AND seat_no = 3),
+			        (SELECT user_id FROM seats WHERE game_id = ?1 AND seat_no = 4))`,
 			game.ID, next, rd.HeadSeat, rd.PartnerPlace, userID, now.Unix()); err != nil {
 			return err
 		}
@@ -371,6 +396,7 @@ func (s *Service) RecordRound(ctx context.Context, code, userID string, expected
 }
 
 // EditRound 改一局（S10）：替换这一局的事实，后面各局随之重算。
+// 只改结果，不改这一局当时座位上的人（#172）：换人之后改前面的局，打那一局的还是原来的人。
 //
 // was 是客户端打开「改一局」时看到的原结果，可以不带。带了而且和库里的不一样，说明别人刚改过，
 // 返回 *RoundChanged 和最新的计分，不悄悄覆盖（和 PATCH 的 If-Match 同一个意思，但只比这一局：
@@ -540,6 +566,8 @@ func scoreRoundJSON(r ScoreRound) map[string]any {
 		out["edited_by"] = *r.EditedBy
 		out["edited_at"] = r.EditedAt.Unix()
 	}
+	// 1–4 号座，下标 0 是 1 号；不知道是谁（迁移时那个座号空着）为 null。
+	out["seats"] = r.Seats
 	return out
 }
 

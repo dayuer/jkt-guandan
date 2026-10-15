@@ -387,3 +387,98 @@ func TestScoreDeleteMeDropsSeatLeaver(t *testing.T) {
 	}
 	f.checkInvariants(code)
 }
+
+// #172：每局记下当时四个座位上的人。中途换人后，换人前的局仍显示原来的人；改一局不换人。
+func TestScoreRoundSeatsSnapshot(t *testing.T) {
+	f, rec := newEventFixture(t)
+	ctx := context.Background()
+	code, seats := f.fullGame()
+	f.mustStart(code, seats[0], 3)
+	f.mustRecord(code, seats[0], 1, 1, 2)
+
+	// 3 号退出，替补补进 3 号，接着记第 2 局。
+	if _, err := f.games.Leave(ctx, code, seats[2]); err != nil {
+		t.Fatal(err)
+	}
+	sub := f.newUser("替补")
+	if d, err := f.games.Join(ctx, code, sub); err != nil || seatOf(t, d, sub) != 3 {
+		t.Fatalf("替补应补在 3 号：%v", err)
+	}
+	rec.reset()
+	sc := f.mustRecord(code, sub, 2, 3, 2)
+
+	want1 := [4]string{seats[0], seats[1], seats[2], seats[3]}
+	want2 := [4]string{seats[0], seats[1], sub, seats[3]}
+	check := func(label string, r games.ScoreRound, want [4]string) {
+		t.Helper()
+		for i, u := range r.Seats {
+			if u == nil || u.ID != want[i] {
+				t.Fatalf("%s 第 %d 座：%+v，应是 %s", label, i+1, u, want[i])
+			}
+		}
+	}
+	check("第 1 局", sc.Rounds[0], want1)
+	check("第 2 局", sc.Rounds[1], want2)
+	if sc.Rounds[1].Seats[2].Nickname != "替补" || sc.Rounds[0].Seats[2].Nickname != "三号" {
+		t.Fatalf("称呼：%+v %+v", sc.Rounds[0].Seats[2], sc.Rounds[1].Seats[2])
+	}
+
+	// 事件里的 round 也带 seats。
+	evs := rec.all()
+	if len(evs) != 1 {
+		t.Fatalf("%+v", evs)
+	}
+	evSeats, ok := evs[0].Data.(map[string]any)["round"].(map[string]any)["seats"].([4]*games.UserRef)
+	if !ok || evSeats[2] == nil || evSeats[2].ID != sub {
+		t.Fatalf("事件的 seats：%+v", evs[0].Data)
+	}
+
+	// 改第 1 局：结果变了，打这一局的人不变。
+	sc, err := f.games.EditRound(ctx, code, sub, 1, scoring.Round{HeadSeat: 3, PartnerPlace: 2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("改过的第 1 局", sc.Rounds[0], want1)
+
+	// 访客读到的一样。
+	read, err := f.games.Score(ctx, code, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("访客读第 1 局", read.Rounds[0], want1)
+	check("访客读第 2 局", read.Rounds[1], want2)
+}
+
+// HTTP：每局带 seats，四个 {id, nickname}。
+func TestScoreRoundSeatsOverHTTP(t *testing.T) {
+	f := newServer(t)
+	browsers := []*http.Client{f.http, f.newBrowser(), f.newBrowser(), f.newBrowser()}
+	f.signUp(browsers[0], "一号")
+	code := f.createGame(browsers[0], nil)
+	for i, b := range browsers[1:] {
+		f.signUp(b, []string{"二号", "三号", "四号"}[i])
+		if r := f.do(b, http.MethodPost, "/api/games/"+code+"/seat", nil, nil); r.status != http.StatusOK {
+			t.Fatalf("报名：%d %s", r.status, r.raw)
+		}
+	}
+	f.clk.Advance(90 * time.Minute)
+	path := "/api/games/" + code + "/score"
+	if r := f.do(browsers[0], http.MethodPost, path, map[string]any{}, nil); r.status != http.StatusOK {
+		t.Fatalf("开始：%d %s", r.status, r.raw)
+	}
+	if r := f.do(browsers[1], http.MethodPost, path+"/rounds", map[string]any{"expected_round_no": 1, "head_seat": 1, "partner_place": 2}, nil); r.status != http.StatusOK {
+		t.Fatalf("记一局：%d %s", r.status, r.raw)
+	}
+	r := f.do(f.newBrowser(), http.MethodGet, path, nil, nil)
+	round := r.body["rounds"].([]any)[0].(map[string]any)
+	seats, ok := round["seats"].([]any)
+	if !ok || len(seats) != 4 {
+		t.Fatalf("应带 4 个座位：%s", r.raw)
+	}
+	for i, name := range []string{"一号", "二号", "三号", "四号"} {
+		s := seats[i].(map[string]any)
+		if s["nickname"] != name || s["id"] == "" {
+			t.Fatalf("第 %d 座：%v", i+1, s)
+		}
+	}
+}
