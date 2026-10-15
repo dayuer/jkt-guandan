@@ -87,6 +87,6 @@ scripts/deploy.sh          # 构建 → 传镜像和静态文件 → 换容器 �
 
 - `modernc.org/sqlite` 现在要求 go ≥ 1.26；
 - 1.27.1 的标准库有 6 个可达的 http2 漏洞（`GO-2026-6603` 等），1.27.2 才修掉，
-  而 CI 里 `govulncheck` 是必过检查。
+  而本地 CI 里 `govulncheck`（`local-ci/vuln`）是必过检查。
 
 所以 `go.mod` 是 `go 1.27.2`，Dockerfile 用 `golang:1.27-alpine`。
