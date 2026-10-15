@@ -9,6 +9,10 @@
 set -eu
 # 等容器/HTTP 就绪的小工具（#186）：超时会明确失败并打印日志，不会静默往下走。
 . "$(dirname "$0")/docker-wait.sh"
+# docker build 的重试与分类（#193）：本脚本自己 build 几个镜像，拉基础镜像时碰上网络故障
+# 也要发 error 而不是 failure（#196 复审意见）。
+# shellcheck source=local-ci-lib.sh
+. "$(dirname "$0")/local-ci-lib.sh"
 
 # 每次运行一套自己的名字和端口（#181）。本机经常同时跑好几个 local-ci/docker —— impl 自测、
 # auditor 复审、coord 的 pre-merge-check。原来名字写死成 guandan-deploytest*：另一路进程的
@@ -109,9 +113,9 @@ GOOD=${1:?"用法：scripts/test-deploy.sh <镜像> | --print-names"}
 # 三个好版本，加两个坏版本。
 for t in good1 good2 good3; do docker tag "$GOOD" "$REPO:$t"; done
 # broken：配置没问题，但监听地址非法，启动到最后一步才退出。
-printf 'FROM %s\nENV GUANDAN_ADDR=:99999\n' "$GOOD" | docker build -q -t "$REPO:broken" - >/dev/null
+printf 'FROM %s\nENV GUANDAN_ADDR=:99999\n' "$GOOD" | docker_build_or_die -q -t "$REPO:broken" - >/dev/null
 # unusable：配置都过不了（备份地址不合法），连发布前冷备份都做不了。
-printf 'FROM %s\nENV GUANDAN_BACKUP_URL=bogus://nowhere\n' "$GOOD" | docker build -q -t "$REPO:unusable" - >/dev/null
+printf 'FROM %s\nENV GUANDAN_BACKUP_URL=bogus://nowhere\n' "$GOOD" | docker_build_or_die -q -t "$REPO:unusable" - >/dev/null
 
 # 注意：给 deploy 临时加环境变量要用子 shell，「VAR=x deploy …」在 POSIX sh 里会留在当前 shell。
 # 模拟 deploy.sh 上传静态文件：发布前才放上去。
@@ -183,8 +187,8 @@ src="$work/src"
 mkdir -p "$src"
 git archive HEAD | tar -x -C "$src"
 printf -- '-- 测试用的兼容迁移\nCREATE TABLE deploytest_compat (x INTEGER);\n' > "$src/server/migrations/0999_deploytest_compat.sql"
-docker build -q -t "$REPO:migrated-base" "$src" >/dev/null
-printf 'FROM %s\nENV GUANDAN_ADDR=:99999\n' "$REPO:migrated-base" | docker build -q -t "$REPO:migrated" - >/dev/null
+docker_build_or_die -q -t "$REPO:migrated-base" "$src" >/dev/null
+printf 'FROM %s\nENV GUANDAN_ADDR=:99999\n' "$REPO:migrated-base" | docker_build_or_die -q -t "$REPO:migrated" - >/dev/null
 stage migrated
 deploy migrated "已回滚，旧版本恢复服务"
 expect "current" "$(current)" good2
@@ -200,7 +204,7 @@ git cat-file -e "$PROD_REF^{commit}" 2>/dev/null || git fetch -q --depth=1 origi
 prod="$work/prod"
 mkdir -p "$prod"
 git archive "$PROD_REF" | tar -x -C "$prod"
-docker build -q -t "$REPO:prod" "$prod" >/dev/null
+docker_build_or_die -q -t "$REPO:prod" "$prod" >/dev/null
 stage prod
 (
   # 子 shell：换一套容器名、数据卷和端口，不影响上面的场景。

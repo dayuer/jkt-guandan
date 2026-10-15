@@ -77,6 +77,11 @@ eq '并发隔离自测脚本单独改动也跑 docker' \
 eq 'docker-wait.sh 单独改动也跑 docker' \
   'local-ci/docker' \
   "$(printf 'scripts/docker-wait.sh\n' | scope_contexts)"
+# #196：test-deploy.sh 现在 source local-ci-lib.sh 并用它的 docker_build_or_die，
+# 所以改 lib 两样都要跑（自测 + docker）。漏掉 docker 的话，改了那个函数不会有人集成验证。
+eq 'local-ci-lib.sh 改动：meta + docker 都要跑' \
+  "$(lines local-ci/meta local-ci/docker)" \
+  "$(printf 'scripts/local-ci-lib.sh\n' | scope_contexts)"
 
 eq 'scripts/agents 不命中（协作脚本，不在 CI 范围）' \
   '' \
@@ -613,6 +618,59 @@ cat > "$DK/run-prints-502.log" <<'L'
 L
 : > "$DK/empty.log"
 
+# --- 这些**必须**判成 code（#196 复审阻塞）----------------------------------
+# auditor 用不存在的 tag 真跑了一次，这是代码错，第一版却被判成环境问题、重试 3 次、
+# 发成 error，还提示「这不是代码问题，不用改 Dockerfile」。
+#
+# 根因：`failed to resolve source metadata` 是 buildkit 解析 FROM 失败时的**通用前缀**，
+# 什么原因都会带 —— 它不是网络特征。我把它塞进特征表，等于给这一类错误开了后门；
+# 而「RUN 退出码优先」那道防线在这里**够不着**（tag 不存在时根本没有 RUN 步骤，自然没有退出码）。
+#
+# 下一条是 auditor 那次跑出来的**真日志**（除了镜像名没改一个字）。
+cat > "$DK/from-not-found.log" <<'L'
+#0 building with "orbstack" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 77B 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/alpine:this-tag-does-not-exist-196
+#2 ERROR: docker.io/library/alpine:this-tag-does-not-exist-196: not found
+------
+ > [internal] load metadata for docker.io/library/alpine:this-tag-does-not-exist-196:
+------
+Dockerfile:1
+--------------------
+   1 | >>> FROM alpine:this-tag-does-not-exist-196
+   2 |
+--------------------
+ERROR: failed to build: failed to solve: alpine:this-tag-does-not-exist-196: failed to resolve source metadata for docker.io/library/alpine:this-tag-does-not-exist-196: docker.io/library/alpine:this-tag-does-not-exist-196: not found
+L
+cat > "$DK/manifest-unauthorized.log" <<'L'
+#2 ERROR: failed to solve: docker.io/library/private:latest: failed to resolve source metadata for docker.io/library/private:latest: unexpected status from HEAD request to https://registry-1.docker.io/v2/library/private/manifests/latest: 401 Unauthorized
+L
+cat > "$DK/auth-denied.log" <<'L'
+#2 ERROR: failed to solve: docker.io/library/private:latest: failed to resolve source metadata for docker.io/library/private:latest: denied: requested access to the resource is denied
+L
+# 私有镜像没给凭证：`failed to authorize` 单独出现不算网络 —— 那是配置问题。
+cat > "$DK/authorize-401.log" <<'L'
+#2 ERROR: failed to solve: private.example.com/team/app:latest: failed to resolve source metadata for private.example.com/team/app:latest: failed to authorize: 401 Unauthorized
+L
+cat > "$DK/authorize-denied.log" <<'L'
+#2 ERROR: failed to solve: private.example.com/team/app:latest: failed to resolve source metadata for private.example.com/team/app:latest: failed to authorize: denied: access denied
+L
+# 还是那一行，但**同时**带上了超时特征：这才是真的网络故障。
+cat > "$DK/authorize-timeout.log" <<'L'
+#2 ERROR: failed to solve: private.example.com/team/app:latest: failed to resolve source metadata for private.example.com/team/app:latest: failed to authorize: failed to fetch oauth token: Post "https://private.example.com/token": dial tcp: lookup private.example.com: i/o timeout
+L
+
+eq 'FROM 的 tag 不存在（真日志）→ code' 'code' "$(docker_failure_kind "$DK/from-not-found.log")"
+eq '镜像源 401 Unauthorized → code' 'code' "$(docker_failure_kind "$DK/manifest-unauthorized.log")"
+eq '镜像源 denied → code' 'code' "$(docker_failure_kind "$DK/auth-denied.log")"
+eq 'failed to authorize + 401 → code（私有镜像没给凭证是配置问题）' 'code' "$(docker_failure_kind "$DK/authorize-401.log")"
+eq 'failed to authorize + denied → code' 'code' "$(docker_failure_kind "$DK/authorize-denied.log")"
+eq 'failed to authorize + i/o timeout → network（真的网络故障）' 'network' "$(docker_failure_kind "$DK/authorize-timeout.log")"
+
 eq '拉镜像 DNS 超时 → network' 'network' "$(docker_failure_kind "$DK/pull-dns.log")"
 eq 'failed to authorize: DeadlineExceeded → network' 'network' "$(docker_failure_kind "$DK/pull-deadline.log")"
 eq '镜像源 Bad Gateway → network' 'network' "$(docker_failure_kind "$DK/pull-502.log")"
@@ -668,6 +726,37 @@ case "$out" in
   *"环境未就绪"*) bad 'Dockerfile 写错：不能说成环境未就绪' '不含「环境未就绪」' "$out" ;;
   *) ok 'Dockerfile 写错：不能说成环境未就绪' ;;
 esac
+
+# 给「自己 build 镜像的脚本」用的包装（#196 复审意见）：网络问题要 exit 2（环境未就绪），
+# 别的失败 exit 1（代码红）。在**子壳**里跑 —— 它用 exit，不能把自测本身带走。
+DBG_COUNT="$DB/o1" out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o1" DBG_MODE=flaky DOCKER_BUILD_RETRY_BASE=0 \
+  bash -c ". '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
+eq '包装：网络抖动重试后成功 → 0' '0' "$rc"
+eq '包装：网络抖动确实重试了（3 次）' '3' "$(cat "$DB/o1")"
+
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o2" DBG_MODE=down DOCKER_BUILD_RETRY_BASE=0 \
+  bash -c ". '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
+eq '包装：网络一直不好 → 2（编排器发 error）' '2' "$rc"
+case "$out" in
+  *"环境未就绪"*) ok '包装：说清了这是环境问题' ;;
+  *) bad '包装：说清了这是环境问题' '含「环境未就绪」' "$out" ;;
+esac
+
+out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o3" DBG_MODE=code DOCKER_BUILD_RETRY_BASE=0 \
+  bash -c ". '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
+eq '包装：Dockerfile 写错 → 1（编排器发 failure）' '1' "$rc"
+eq '包装：Dockerfile 写错不重试' '1' "$(cat "$DB/o3")"
+
+# 环境未就绪那条 status 的描述（#196 复审意见）：有具体原因就写它。
+eq '描述：有具体原因就用它' \
+  '环境未就绪：拉镜像失败（网络或镜像源）' \
+  "$(env_not_ready_desc '拉镜像失败（网络或镜像源）' 'docker build + scripts/container-smoke.sh')"
+eq '描述：没有具体原因退回「跑了什么命令」' \
+  '环境未就绪：docker build + scripts/container-smoke.sh' \
+  "$(env_not_ready_desc '' 'docker build + scripts/container-smoke.sh')"
+eq '描述：兜底也要截断到 100 字（GitHub 的 description 很短）' \
+  "环境未就绪：$(printf '12345'; printf 'x%.0s' $(seq 1 95))" \
+  "$(env_not_ready_desc '' "$(printf '12345'; printf 'x%.0s' $(seq 1 200))")"
 
 # 编排器把 2 发成 error、把 1 发成 failure —— 这是 #193 的落脚点。
 eq '编排器：2 → error（环境未就绪）' 'error' "$(status_state_for_rc 2)"

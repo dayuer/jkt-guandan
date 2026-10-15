@@ -67,9 +67,14 @@ _path_to_context() {
     # 会调它们，但它们自己也要能被单独触发 —— 否则只改这两个文件就没人跑（#178 的同类）。
     scripts/deploy.sh|scripts/deploy-remote.sh|scripts/test-deploy.sh|scripts/restore-drill.sh|scripts/container-smoke.sh|scripts/test-deploy-names.sh|scripts/test-drill-names.sh|scripts/docker-wait.sh)
       echo 'local-ci/docker' ;;
+    # 这一个两项都要跑：meta 是它自己的单元测试，docker 是因为 **test-deploy.sh 现在
+    # source 它、并用里面的 docker_build_or_die 构建场景 6/7 的镜像**（#196）——
+    # 和 docker-wait.sh 被那三个脚本 source 是同一回事，只改这里两样都会受影响。
+    scripts/local-ci-lib.sh)
+      echo 'local-ci/meta'; echo 'local-ci/docker' ;;
     scripts/e2e-server.sh)
       echo 'local-ci/e2e' ;;
-    scripts/local-ci.sh|scripts/local-ci-lib.sh|scripts/test-local-ci.sh|scripts/pre-merge-check.sh)
+    scripts/local-ci.sh|scripts/test-local-ci.sh|scripts/pre-merge-check.sh)
       echo 'local-ci/meta' ;;
   esac
 }
@@ -232,9 +237,20 @@ context_ready() {
 # 该发 error 而不是 failure —— 发成 failure 的话和「Dockerfile 写坏了」在 PR 上长得一模一样，
 # 复审和 coord 每次都得翻日志才能分辨。
 
-# 拉基础镜像 / 取 token 时的网络与镜像源报错原文（docker 24+ / buildkit 的措辞）。
-# 命中这些且**没有** RUN 步骤的退出码（见下）时，算环境问题。
-DOCKER_NETWORK_RE='i/o timeout|no such host|TLS handshake timeout|context deadline exceeded|DeadlineExceeded|failed to authorize|failed to fetch oauth token|failed to resolve source metadata|temporary failure in name resolution|connection reset by peer|network is unreachable|no route to host|Bad Gateway|Service Unavailable|Internal Server Error|Too Many Requests|toomanyrequests'
+# 拉基础镜像 / 取 token 时的**传输层**报错原文（docker 24+ / buildkit 的措辞）。
+# 命中这些且**没有** RUN 步骤的退出码、也不含下面那两类「与原因无关」的前缀时，算环境问题。
+#
+# 只收「一定是传输出了问题」的字样：超时、DNS、连接、以及镜像源的 5xx / 限流。
+#
+# ⚠️ 有两条**看着像网络、其实和原因无关**的措辞被特意排除在外（#196 复审）：
+#   `failed to resolve source metadata` —— buildkit 解析 FROM 失败时的**通用前缀**，
+#       tag 不存在、私有镜像没给凭证、真的超时，都会带上它。收进来等于给这一类开了一道后门。
+#       「RUN 退出码优先」那道防线在这里**够不着**：tag 不存在时根本没有 RUN 步骤，也就没有退出码。
+#       auditor 用不存在的 tag 真跑过，第一版就是这么被判成环境问题、重试 3 次、发成 error 的。
+#   `failed to authorize` / `failed to fetch oauth token` —— 私有镜像没给凭证会报 401 / denied，
+#       那是**配置问题**不是网络问题。只有和上面那些传输特征**同时**出现才算网络
+#       （比如 `failed to authorize: DeadlineExceeded`、`... dial tcp: lookup …: i/o timeout`）。
+DOCKER_NETWORK_RE='i/o timeout|no such host|TLS handshake timeout|context deadline exceeded|DeadlineExceeded|temporary failure in name resolution|connection reset by peer|network is unreachable|no route to host|Bad Gateway|Service Unavailable|Internal Server Error|Too Many Requests|toomanyrequests'
 
 # run_context 的返回码 → 上报的 state。0 = success；2 / 3 = error（环境未就绪 / 脚本自身出错，
 # 都挡合并，只是描述不同）；其余 = failure（代码红）。
@@ -249,12 +265,50 @@ status_state_for_rc() {
   esac
 }
 
+# 一次 docker build，按结论决定怎么死：成功 0；拉镜像的网络问题 exit 2（环境未就绪）；
+# 其他 exit 1（代码红）。给**会自己 build 镜像的脚本**用（test-deploy.sh 的场景 6、7）——
+# 那些脚本在 local-ci/docker 里面跑，网络一抖原来会被记成代码红（#196 复审意见）。
+#
+# 用 exit 而不是 return：调用方是 `set -eu` 的整脚本，这里就是要它当场停下。
+# 参数原样转给 docker_build_retrying（也就是 docker build）。
+docker_build_or_die() {
+  local log rc
+  log="$(mktemp "${TMPDIR:-/tmp}/local-ci-docker.XXXXXX")"
+  docker_build_retrying "$log" "$@"
+  rc=$?
+  rm -f "$log"
+  case "$rc" in
+    0) return 0 ;;
+    2) printf '失败：镜像源拉不下来（环境未就绪，不是代码问题）。\n' >&2; exit 2 ;;
+    *) printf '失败：docker build 失败。\n' >&2; exit 1 ;;
+  esac
+}
+
+# 环境未就绪那条 status 的描述。
+#   $1 = 更具体的原因（可为空）  $2 = context_command 的输出（兜底用）
+# 有具体原因就写它 —— 「环境未就绪：拉镜像失败（网络或镜像源）」比「环境未就绪：docker build +
+# scripts/container-smoke.sh + …」有用得多：前者直接告诉人怎么办（#196 复审意见）。
+env_not_ready_desc() {
+  if [ -n "${1:-}" ]; then
+    printf '环境未就绪：%s' "$1"
+  else
+    printf '环境未就绪：%s' "$(printf '%s' "${2:-}" | cut -c1-100)"
+  fi
+}
+
+# run_context 返回 2 时填一句更具体的原因，没填就用 context_command 兜底。
+# run_context 每次进来先清空，编排器只在 rc==2 时读。
+ENV_REASON=''
+
 # 判定这次 docker build 失败属于哪一类。参数：$1 = 失败日志的文件路径。
 # 回显：network（环境/镜像源）| code（代码问题）。
 #
 # 判据只有一条是硬的：**日志里出现「某个 RUN 步骤退出码非 0」就一定是代码问题**
 # （Dockerfile 写错、编译不过、测试挂了、`RUN npm ci` 装不上），先拦掉再谈网络特征。
 # 少了这一道，Dockerfile 里 RUN 打一行 "502 Bad Gateway" 就会被当成环境问题 —— 那就成假绿了。
+#
+# 但它**管不到没有 RUN 步骤的失败**（`FROM` 那一层就挂了），所以特征表本身必须窄
+# —— 见 DOCKER_NETWORK_RE 上面那两条「与原因无关」的说明（#196 复审）。
 #
 # 反过来故意保守：认不出来的一律算 code。把环境问题记成代码红，人翻一眼日志就明白；
 # 把代码红记成环境未就绪则正好相反，和 dirty_tree_action 防的是同一种错。
@@ -278,13 +332,21 @@ docker_failure_kind() {
 # DOCKER_BUILD_RETRY_BASE：退避基数（秒），第 n 次失败后等 n*BASE 秒。自测里设 0，别真等。
 docker_build_retrying() {
   local log="$1"; shift
-  local attempts="${DOCKER_BUILD_RETRIES:-3}" base="${DOCKER_BUILD_RETRY_BASE:-5}" i=1 rc
+  local attempts="${DOCKER_BUILD_RETRIES:-3}" base="${DOCKER_BUILD_RETRY_BASE:-5}" i=1 rc rcf
+  rcf="$(mktemp "${TMPDIR:-/tmp}/local-ci-docker-rc.XXXXXX")"
   while :; do
-    docker build "$@" 2>&1 | tee "$log"
-    rc="${PIPESTATUS[0]}"
-    [ "$rc" -eq 0 ] && return 0
-    [ "$(docker_failure_kind "$log")" = network ] || return 1
+    # 既要**构建过程实时可见**（漫长的 go build 憋着不说话很难忍），又要拿到 docker build
+    # 自己的退出码 —— 管道给了 tee，`$?` 就成了 tee 的。这里用「子壳把退出码写进文件」：
+    # `PIPESTATUS` 是 bash 专有，而 test-deploy.sh 的 shebang 是 /bin/sh（Linux 上是 dash），
+    # 这个函数它也要用，所以不能用 bash 专有的写法。
+    # 子壳里 `|| rc=$?` 是必须的：调用方开了 `set -e` 时，裸的失败命令会让子壳当场退出，
+    # 那就写不到那个文件了。
+    ( rc=0; docker build "$@" 2>&1 || rc=$?; printf '%s' "$rc" > "$rcf" ) | tee "$log"
+    rc="$(cat "$rcf")"
+    if [ "$rc" -eq 0 ]; then rm -f "$rcf"; return 0; fi
+    if [ "$(docker_failure_kind "$log")" != network ]; then rm -f "$rcf"; return 1; fi
     if [ "$i" -ge "$attempts" ]; then
+      rm -f "$rcf"
       printf '\n环境未就绪：docker build 拉基础镜像失败（网络或镜像源），重试 %d 次仍不行。\n' "$attempts" >&2
       printf '  最后一次的原始错误见上面的日志。**这不是代码问题**，不用改 Dockerfile。\n' >&2
       return 2
@@ -311,6 +373,7 @@ docker_build_retrying() {
 # LOCAL_CI_SHA：被测提交，docker 那支要拿它当构建号（容器冒烟要核 X-App-Build 头）。
 run_context() {
   local ctx="${1:-}"
+  ENV_REASON='' # 上一次跑留下的原因不能带到这一次（#196 复审意见）
   case "$ctx" in
     local-ci/test|local-ci/vuln|local-ci/h5-audit|local-ci/minigame|local-ci/nginx|local-ci/docker|local-ci/e2e|local-ci/meta)
       context_ready "$ctx" || return 2 ;;
@@ -338,12 +401,25 @@ run_context() {
       rc=$?
       rm -f "$log"
       if [ "$rc" -ne 0 ]; then
+        [ "$rc" -eq 2 ] && ENV_REASON='拉镜像失败（网络或镜像源）'
         docker rmi "$image" >/dev/null 2>&1
         return "$rc"
       fi
-      scripts/container-smoke.sh "$image" "$sha" \
-        && scripts/test-deploy.sh "$image" \
-        && scripts/restore-drill.sh "$image"
+      if ! scripts/container-smoke.sh "$image" "$sha"; then
+        docker rmi "$image" >/dev/null 2>&1
+        return 1
+      fi
+      # test-deploy.sh 自己要 build 几个镜像（场景 6、7），它内部也复用了
+      # docker_build_retrying，所以它可能返回 2（拉镜像的网络问题）—— 那个要原样透出去，
+      # 否则又会变成「网络一抖就代码红」。#196 复审意见。
+      scripts/test-deploy.sh "$image"
+      rc=$?
+      if [ "$rc" -ne 0 ]; then
+        [ "$rc" -eq 2 ] && ENV_REASON='拉镜像失败（网络或镜像源）'
+        docker rmi "$image" >/dev/null 2>&1
+        return "$rc"
+      fi
+      scripts/restore-drill.sh "$image"
       rc=$?
       docker rmi "$image" >/dev/null 2>&1
       [ "$rc" -eq 0 ] || return 1

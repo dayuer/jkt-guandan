@@ -217,7 +217,9 @@ for ctx in $CONTEXTS; do
     post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" "$(context_command "$ctx" | cut -c1-135)"
   elif [ "$rc" -eq 2 ]; then
     printf '%s 环境未就绪（不是代码问题，看上面的说明）。\n' "$ctx"
-    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" "环境未就绪：$(context_command "$ctx" | cut -c1-100)"
+    # 具体原因优先（比如「拉镜像失败（网络或镜像源）」）—— 比「跑了什么命令」有用得多。
+    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" \
+      "$(env_not_ready_desc "$ENV_REASON" "$(context_command "$ctx")")"
     ENVNOTREADY="$ENVNOTREADY $ctx"
   elif [ "$rc" -eq 3 ]; then
     printf '%s 脚本自身出错（不是环境、也不是代码）。\n' "$ctx"
