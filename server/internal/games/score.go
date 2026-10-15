@@ -2,7 +2,9 @@ package games
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +58,9 @@ type ScoreRound struct {
 	RecordedAt time.Time
 	EditedBy   *UserRef // 没改过为 nil
 	EditedAt   time.Time
+	// Seats 是这一局当时 1–4 号座上的人（#172），记一局时从座位抄下来，改一局不变。
+	// 0008 迁移前记的局按迁移时的座位补，那时座号空着的为 nil。
+	Seats [4]*UserRef
 }
 
 // Score 是一局牌的计分。Started 为假时其余字段都是零值。
@@ -70,6 +75,9 @@ type Score struct {
 	State    scoring.State
 	// CanRecord：当前身份在座位上、牌局满座，可以开始记分 / 记一局 / 改一局（S14 旁观时为假）。
 	CanRecord bool
+	// CanStart：CanRecord 之外还没开始记分，而且已经到了开局前 30 分钟——这时点「开始记分」
+	// 才会成功（不会 409 too_early）。S1 的入口条按它显示，客户端不用自己算时间。
+	CanStart bool
 }
 
 // round 返回第 no 局；没有这一局返回 nil。
@@ -113,11 +121,11 @@ func (s *Service) Score(ctx context.Context, code, viewerID string) (*Score, err
 	if err != nil {
 		return nil, err
 	}
-	return loadScore(ctx, tx, game, viewerID)
+	return loadScore(ctx, tx, game, viewerID, s.clk.Now())
 }
 
-// loadScore 读出事实，交给 scoring 重算。
-func loadScore(ctx context.Context, q queryer, game Game, viewerID string) (*Score, error) {
+// loadScore 读出事实，交给 scoring 重算。now 只用来算 CanStart。
+func loadScore(ctx context.Context, q queryer, game Game, viewerID string, now time.Time) (*Score, error) {
 	sc := &Score{}
 	if viewerID != "" && game.Status == StatusFull {
 		seated, err := isSeated(ctx, q, game.ID, viewerID)
@@ -135,6 +143,8 @@ func loadScore(ctx context.Context, q queryer, game Game, viewerID string) (*Sco
 		Scan(&sc.Settings.Kind, &sc.Settings.AFailLimit, &sc.StartedBy.ID, &sc.StartedBy.Nickname,
 			&startedAt, &sc.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
+		// 和 StartScore 的判断一致：full 已经排除了 done / cancelled。
+		sc.CanStart = sc.CanRecord && !now.Before(scoreOpensAt(game))
 		return sc, nil
 	}
 	if err != nil {
@@ -146,10 +156,18 @@ func loadScore(ctx context.Context, q queryer, game Game, viewerID string) (*Sco
 	rows, err := q.QueryContext(ctx, `
 		SELECT r.round_no, r.head_seat, r.partner_place,
 		       r.recorded_by, COALESCE(ru.nickname, ''), r.created_at,
-		       COALESCE(r.edited_by, ''), COALESCE(eu.nickname, ''), COALESCE(r.edited_at, 0)
+		       COALESCE(r.edited_by, ''), COALESCE(eu.nickname, ''), COALESCE(r.edited_at, 0),
+		       COALESCE(r.seat1_user, ''), COALESCE(s1.nickname, ''),
+		       COALESCE(r.seat2_user, ''), COALESCE(s2.nickname, ''),
+		       COALESCE(r.seat3_user, ''), COALESCE(s3.nickname, ''),
+		       COALESCE(r.seat4_user, ''), COALESCE(s4.nickname, '')
 		  FROM score_rounds r
 		  LEFT JOIN users ru ON ru.id = r.recorded_by
 		  LEFT JOIN users eu ON eu.id = r.edited_by
+		  LEFT JOIN users s1 ON s1.id = r.seat1_user
+		  LEFT JOIN users s2 ON s2.id = r.seat2_user
+		  LEFT JOIN users s3 ON s3.id = r.seat3_user
+		  LEFT JOIN users s4 ON s4.id = r.seat4_user
 		 WHERE r.game_id = ?
 		 ORDER BY r.round_no`, game.ID)
 	if err != nil {
@@ -166,11 +184,19 @@ func loadScore(ctx context.Context, q queryer, game Game, viewerID string) (*Sco
 			recordedAt           int64
 			editedBy, editedNick string
 			editedAt             int64
+			seats                [4]UserRef
 		)
 		if err := rows.Scan(&no, &fact.HeadSeat, &fact.PartnerPlace,
 			&sr.RecordedBy.ID, &sr.RecordedBy.Nickname, &recordedAt,
-			&editedBy, &editedNick, &editedAt); err != nil {
+			&editedBy, &editedNick, &editedAt,
+			&seats[0].ID, &seats[0].Nickname, &seats[1].ID, &seats[1].Nickname,
+			&seats[2].ID, &seats[2].Nickname, &seats[3].ID, &seats[3].Nickname); err != nil {
 			return nil, err
+		}
+		for i := range seats {
+			if seats[i].ID != "" {
+				sr.Seats[i] = &seats[i]
+			}
 		}
 		// 不变量 6 保证局号从 1 连续；这里再确认一次，免得重算对错了局。
 		if no != len(facts)+1 {
@@ -202,6 +228,9 @@ func loadScore(ctx context.Context, q queryer, game Game, viewerID string) (*Sco
 // ---------------------------------------------------------------------------
 // 写
 // ---------------------------------------------------------------------------
+
+// scoreOpensAt 是这一局最早可以开始记分的时刻。
+func scoreOpensAt(game Game) time.Time { return game.StartsAt.Add(-ScoreOpensBefore) }
 
 // scoreWriter 是三个写操作共同的前置检查：牌局在、没结束、我在座位上、满座。
 func (s *Service) scoreWriter(ctx context.Context, tx *store.Tx, code, userID string) (Game, error) {
@@ -235,6 +264,7 @@ func (s *Service) StartScore(ctx context.Context, code, userID string, aFailLimi
 	}
 	now := s.clk.Now()
 	const route = "POST /api/games/{code}/score"
+	fp := idemFingerprint("a_fail_limit", aFailLimit)
 
 	var sc *Score
 	err := s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
@@ -242,9 +272,9 @@ func (s *Service) StartScore(ctx context.Context, code, userID string, aFailLimi
 		if err != nil {
 			return err
 		}
-		if replay, err := idemReplay(ctx, tx, userID, idemKey, route+" "+code); err != nil || replay {
+		if replay, err := idemReplay(ctx, tx, userID, idemKey, route+" "+code, fp); err != nil || replay {
 			if err == nil {
-				sc, err = loadScore(ctx, tx, game, userID)
+				sc, err = loadScore(ctx, tx, game, userID, now)
 			}
 			return err
 		}
@@ -254,7 +284,7 @@ func (s *Service) StartScore(ctx context.Context, code, userID string, aFailLimi
 			return err
 		}
 		if !started {
-			if now.Before(game.StartsAt.Add(-ScoreOpensBefore)) {
+			if now.Before(scoreOpensAt(game)) {
 				return ErrScoreTooEarly
 			}
 			settings := scoring.Settings{Kind: scoring.KindClassic, AFailLimit: aFailLimit}
@@ -273,10 +303,10 @@ func (s *Service) StartScore(ctx context.Context, code, userID string, aFailLimi
 			tx.Touch(game.ID)
 			s.publishScoreAfterCommit(tx, game, EventScoreStarted, 0)
 		}
-		if err := idemSave(ctx, tx, userID, idemKey, route+" "+code, map[string]any{}, now); err != nil {
+		if err := idemSave(ctx, tx, userID, idemKey, route+" "+code, fp, map[string]any{}, now); err != nil {
 			return err
 		}
-		sc, err = loadScore(ctx, tx, game, userID)
+		sc, err = loadScore(ctx, tx, game, userID, now)
 		return err
 	})
 	if err != nil {
@@ -303,6 +333,7 @@ func (s *Service) RecordRound(ctx context.Context, code, userID string, expected
 	}
 	now := s.clk.Now()
 	const route = "POST /api/games/{code}/score/rounds"
+	fp := idemFingerprint("expected_round_no", expectedNo, "head_seat", rd.HeadSeat, "partner_place", rd.PartnerPlace)
 
 	var sc *Score
 	err := s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
@@ -311,14 +342,14 @@ func (s *Service) RecordRound(ctx context.Context, code, userID string, expected
 			return err
 		}
 		// 幂等键：超时后重试同一次提交，返回现在的计分，不报「这一局已经有人记了」。
-		if replay, err := idemReplay(ctx, tx, userID, idemKey, route+" "+code); err != nil || replay {
+		if replay, err := idemReplay(ctx, tx, userID, idemKey, route+" "+code, fp); err != nil || replay {
 			if err == nil {
-				sc, err = loadScore(ctx, tx, game, userID)
+				sc, err = loadScore(ctx, tx, game, userID, now)
 			}
 			return err
 		}
 
-		current, err := loadScore(ctx, tx, game, userID)
+		current, err := loadScore(ctx, tx, game, userID, now)
 		if err != nil {
 			return err
 		}
@@ -334,9 +365,15 @@ func (s *Service) RecordRound(ctx context.Context, code, userID string, expected
 		}
 
 		// 主键 (game_id, round_no) 是最后一道防线：写事务串行，正常走不到冲突。
+		// 顺手抄下这一局四个座位上的人（#172）：scoreWriter 已经确认满座。
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
+			INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at,
+			                          seat1_user, seat2_user, seat3_user, seat4_user)
+			VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+			        (SELECT user_id FROM seats WHERE game_id = ?1 AND seat_no = 1),
+			        (SELECT user_id FROM seats WHERE game_id = ?1 AND seat_no = 2),
+			        (SELECT user_id FROM seats WHERE game_id = ?1 AND seat_no = 3),
+			        (SELECT user_id FROM seats WHERE game_id = ?1 AND seat_no = 4))`,
 			game.ID, next, rd.HeadSeat, rd.PartnerPlace, userID, now.Unix()); err != nil {
 			return err
 		}
@@ -346,10 +383,10 @@ func (s *Service) RecordRound(ctx context.Context, code, userID string, expected
 		tx.Touch(game.ID)
 		s.publishScoreAfterCommit(tx, game, EventScoreRound, next)
 
-		if err := idemSave(ctx, tx, userID, idemKey, route+" "+code, map[string]int{"round_no": next}, now); err != nil {
+		if err := idemSave(ctx, tx, userID, idemKey, route+" "+code, fp, map[string]int{"round_no": next}, now); err != nil {
 			return err
 		}
-		sc, err = loadScore(ctx, tx, game, userID)
+		sc, err = loadScore(ctx, tx, game, userID, now)
 		return err
 	})
 	if err != nil {
@@ -359,6 +396,7 @@ func (s *Service) RecordRound(ctx context.Context, code, userID string, expected
 }
 
 // EditRound 改一局（S10）：替换这一局的事实，后面各局随之重算。
+// 只改结果，不改这一局当时座位上的人（#172）：换人之后改前面的局，打那一局的还是原来的人。
 //
 // was 是客户端打开「改一局」时看到的原结果，可以不带。带了而且和库里的不一样，说明别人刚改过，
 // 返回 *RoundChanged 和最新的计分，不悄悄覆盖（和 PATCH 的 If-Match 同一个意思，但只比这一局：
@@ -378,7 +416,7 @@ func (s *Service) EditRound(ctx context.Context, code, userID string, no int, rd
 		if err != nil {
 			return err
 		}
-		current, err := loadScore(ctx, tx, game, userID)
+		current, err := loadScore(ctx, tx, game, userID, now)
 		if err != nil {
 			return err
 		}
@@ -409,7 +447,7 @@ func (s *Service) EditRound(ctx context.Context, code, userID string, no int, rd
 		tx.Touch(game.ID)
 		s.publishScoreAfterCommit(tx, game, EventScoreEdited, no)
 
-		sc, err = loadScore(ctx, tx, game, userID)
+		sc, err = loadScore(ctx, tx, game, userID, now)
 		return err
 	})
 	if err != nil {
@@ -428,27 +466,41 @@ func bumpScoreRevision(ctx context.Context, tx *store.Tx, gameID string) error {
 // ---------------------------------------------------------------------------
 
 // idemReplay 查幂等键：这个键已经用在同一个请求上，返回 true，调用方直接返回现在的结果。
-// 用在了别的请求上（别的路由、别的局）返回 ErrIdemKeyReused。键为空什么也不做。
-func idemReplay(ctx context.Context, tx *store.Tx, userID, key, route string) (bool, error) {
+// 用在了别的请求上（别的路由、别的局，或者同一个接口换了请求体）返回 ErrIdemKeyReused：
+// 客户端误把键复用到下一局时，不能当成重放静默返回 200、实际却没记。键为空什么也不做。
+// 库里的指纹为空（旧版本写的）只比路由。
+func idemReplay(ctx context.Context, tx *store.Tx, userID, key, route, fingerprint string) (bool, error) {
 	if key == "" {
 		return false, nil
 	}
 	var saved string
+	var savedFP sql.NullString
 	err := tx.QueryRowContext(ctx,
-		`SELECT route FROM idempotency_keys WHERE user_id = ? AND key = ?`, userID, key).Scan(&saved)
+		`SELECT route, fingerprint FROM idempotency_keys WHERE user_id = ? AND key = ?`, userID, key).
+		Scan(&saved, &savedFP)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, nil
 	case err != nil:
 		return false, err
-	case saved != route:
+	case saved != route, savedFP.Valid && savedFP.String != fingerprint:
 		return false, ErrIdemKeyReused
 	}
 	return true, nil
 }
 
-// idemSave 记下这个键。计分的响应是「现在的计分」，重放时现读，所以 response 只存一个摘要。
-func idemSave(ctx context.Context, tx *store.Tx, userID, key, route string, summary any, now time.Time) error {
+// idemFingerprint 是请求的指纹：业务参数按给定的顺序拼成 name=value，取 sha256。
+// 用解析后的参数而不是原始请求体，JSON 的字段顺序、空白、省略默认值都不影响。
+func idemFingerprint(kv ...any) string {
+	h := sha256.New()
+	for i := 0; i+1 < len(kv); i += 2 {
+		fmt.Fprintf(h, "%v=%v\n", kv[i], kv[i+1])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// idemSave 记下这个键和请求指纹。计分的响应是「现在的计分」，重放时现读，所以 response 只存一个摘要。
+func idemSave(ctx context.Context, tx *store.Tx, userID, key, route, fingerprint string, summary any, now time.Time) error {
 	if key == "" {
 		return nil
 	}
@@ -457,8 +509,8 @@ func idemSave(ctx context.Context, tx *store.Tx, userID, key, route string, summ
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO idempotency_keys (key, user_id, route, status, response, created_at)
-		VALUES (?, ?, ?, 200, ?, ?)`, key, userID, route, body, now.Unix())
+		INSERT INTO idempotency_keys (key, user_id, route, fingerprint, status, response, created_at)
+		VALUES (?, ?, ?, ?, 200, ?, ?)`, key, userID, route, fingerprint, body, now.Unix())
 	return err
 }
 
@@ -514,12 +566,14 @@ func scoreRoundJSON(r ScoreRound) map[string]any {
 		out["edited_by"] = *r.EditedBy
 		out["edited_at"] = r.EditedAt.Unix()
 	}
+	// 1–4 号座，下标 0 是 1 号；不知道是谁（迁移时那个座号空着）为 null。
+	out["seats"] = r.Seats
 	return out
 }
 
 func toScoreJSON(sc *Score) map[string]any {
 	if !sc.Started {
-		return map[string]any{"started": false, "can_record": sc.CanRecord}
+		return map[string]any{"started": false, "can_record": sc.CanRecord, "can_start": sc.CanStart}
 	}
 	rounds := make([]map[string]any, 0, len(sc.Rounds))
 	for _, r := range sc.Rounds {
@@ -528,6 +582,7 @@ func toScoreJSON(sc *Score) map[string]any {
 	return map[string]any{
 		"started":    true,
 		"can_record": sc.CanRecord,
+		"can_start":  false,
 		"settings":   sc.Settings,
 		"started_by": sc.StartedBy,
 		"started_at": sc.StartedAt.Unix(),

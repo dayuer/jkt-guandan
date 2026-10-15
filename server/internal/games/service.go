@@ -407,9 +407,17 @@ func (s *Service) Join(ctx context.Context, code, userID string) (*Detail, error
 			return err
 		}
 
+		// 记分开始以后，原来坐在某个座号上的人回到自己空出来的那个座号（#168）：
+		// 分队按座号定，回原座号不会换队；过了 JoinGrace 也能回，免得有人误点「退出」后
+		// 剩下三个人再也记不了分。只限本人、只限原座号，被移出的人上面已经挡掉了。
+		ownSeat, err := formerSeatNo(ctx, tx, game.ID, userID)
+		if err != nil {
+			return err
+		}
+
 		// 开局后还能补人到 JoinGrace：缺一个人的局到点了，正是要临时补人的时候。
 		// 再晚就没意义了。（放在「已经在局里」之后，是为了让重复提交仍然幂等。）
-		if now.After(game.StartsAt.Add(JoinGrace)) {
+		if ownSeat == 0 && now.After(game.StartsAt.Add(JoinGrace)) {
 			return ErrStarted
 		}
 
@@ -422,9 +430,11 @@ func (s *Service) Join(ctx context.Context, code, userID string) (*Detail, error
 			return fmt.Errorf("%w：同时最多占 %d 个位置", ErrQuota, MaxConcurrentHolds)
 		}
 
-		seatNo, err := freeSeatNo(ctx, tx, game.ID)
-		if err != nil {
-			return err
+		seatNo := ownSeat
+		if seatNo == 0 {
+			if seatNo, err = freeSeatNo(ctx, tx, game.ID); err != nil {
+				return err
+			}
 		}
 
 		if seatNo == 0 {
@@ -642,6 +652,14 @@ func (s *Service) leaveInTx(ctx context.Context, tx *store.Tx, game Game, userID
 
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM seats WHERE game_id = ? AND seat_no = ?`, game.ID, seatNo); err != nil {
+		return false, err
+	}
+	// 记分已经开始：记下这个座号最后是谁离开的，他以后还能回来（#168）。没开始记分不写（外键）。
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO score_seat_leavers (game_id, seat_no, user_id, left_at)
+		SELECT game_id, ?, ?, ? FROM score_matches WHERE game_id = ?
+		ON CONFLICT (game_id, seat_no) DO UPDATE SET user_id = excluded.user_id, left_at = excluded.left_at`,
+		seatNo, userID, now.Unix(), game.ID); err != nil {
 		return false, err
 	}
 	// 他不用来了，作废他的开局提醒。
