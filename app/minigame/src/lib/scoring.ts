@@ -347,6 +347,6 @@ export function durationShort(sec: number): string {
 /** 「1 小时 52 分」「38 分」 */
 export function durationLong(sec: number): string {
   const m = Math.floor(sec / 60), h = Math.floor(m / 60);
-  if (!h) return `${m} 分`;
+  if (!h) return m ? `${m} 分` : "不到 1 分";
   return m % 60 ? `${h} 小时 ${m % 60} 分` : `${h} 小时`;
 }

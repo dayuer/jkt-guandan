@@ -155,5 +155,6 @@ describe("时间", () => {
     expect(durationLong(112 * 60)).toBe("1 小时 52 分");
     expect(durationLong(38 * 60)).toBe("38 分");
     expect(durationLong(120 * 60)).toBe("2 小时");
+    expect(durationLong(30)).toBe("不到 1 分");
   });
 });

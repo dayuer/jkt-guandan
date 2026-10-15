@@ -444,7 +444,7 @@ export class Detail implements Scene {
       const st = sc.state, n = sc.rounds.length + 1;
       title = st.match_over ? `${TEAM_NAME[st.winner === "black" ? "black" : "red"]}过 A，本场结束` : "这一局正在记分";
       sub = sc.settings.kind === "no-level" ? `红方 ${st.red.wins} : ${st.black.wins} 黑方`
-        : `红方 ${levelName(st.red.level)} · 黑方 ${levelName(st.black.level)} · 已打 ${sc.rounds.length} 局`;
+        : `红方 ${levelName(st.red.level)} · 黑方 ${levelName(st.black.level)}`;
       label = this.seatedHere && sc.can_record ? `回到记分 · 第 ${n} 局` : "看记分";
       onTap = () => this.nav.score(this.code);
     } else {

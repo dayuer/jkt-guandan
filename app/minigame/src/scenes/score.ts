@@ -294,7 +294,8 @@ export class ScoreScene implements Scene {
   private drawLadder(ctx: Ctx, y: number): number {
     const x = PAD, w = this.app.W - PAD * 2, st = this.board, f = this.flip;
     card(ctx, x, y, w, 108, 18);
-    const x0 = x + 62, x1 = x + w - 20, step = (x1 - x0) / 12;
+    // 起点比设计稿右移 10：级数在 2 时圆点不压「红方」两个字
+    const x0 = x + 72, x1 = x + w - 20, step = (x1 - x0) / 12;
     for (let i = 0; i < 13; i++) {
       const l = levelName(i + 2);
       text(ctx, l, x0 + i * step, y + 22, font(11, l === "A" ? "700" : "normal"), l === "A" ? C.ink2 : C.ink4, "center");
@@ -327,7 +328,7 @@ export class ScoreScene implements Scene {
     if (pressed) fillRR(ctx, x + 1, y + 1, w - 2, 66, 17, C.paper);
     const title = `上一局 · 第 ${r.round_no} 局${s.settings.kind === "no-level" ? "" : ` · ${playingTag(r).replace(/^打[红黑] /, "打 ")}`}`;
     text(ctx, title, x + 16, y + 22, font(12), C.ink3);
-    const main = `${TEAM_NAME[r.winner]} ${howText(r.partner_place)}${r.passed_a ? " · 过 A" : ""}`;
+    const main = `${TEAM_NAME[r.winner]} ${howText(r.partner_place)}${aNote(r)}`;
     const right = s.settings.kind === "no-level" ? "" : `${levelName(r.level_before)} → ${levelName(r.level_after)}`;
     const rw = right ? measure(ctx, right, font(20, "900", true)) + 12 : 0;
     text(ctx, ellipsize(ctx, main, w - 56 - rw, font(15, "700")), x + 16, y + 46, font(15, "700"), C.ink);
@@ -388,7 +389,9 @@ export class ScoreScene implements Scene {
     }
     // S14：旁观（候补、别的牌友）只有分享和一行说明；坐着但有人退出了，等坐满
     button(a, ctx, "bar:share", PAD, by + 12, 110, 52, "分享", "dark", () => { if (this.detail) shareSheet(a, this.detail); }, { icon: icon.share });
-    const why = this.seated ? "有人退出了，坐满 4 人才能接着记" : "只有座位上的四个人能记分";
+    const status = this.detail?.game.status;
+    const why = status === "done" || status === "cancelled" ? "这一局已经结束，记分只能看了"
+      : this.seated ? "有人退出了，坐满 4 人才能接着记" : "只有座位上的四个人能记分";
     text(ctx, ellipsize(ctx, why, W - PAD * 2 - 128, font(13)), PAD + 128, by + 38, font(13), C.ink3);
   }
 
@@ -441,6 +444,13 @@ export class ScoreScene implements Scene {
   }
 }
 
+/** 「 · 过 A」「 · 红方没过 A」「 · 红方回到 2」 */
+function aNote(r: ScoreRound): string {
+  if (r.passed_a) return " · 过 A";
+  if (!r.failed_a) return "";
+  return ` · ${TEAM_NAME[r.failed_a as Side]}${r.reset_to_2 ? "回到 2" : "没过 A"}`;
+}
+
 function line(ctx: Ctx, x1: number, y1: number, x2: number, y2: number, c: string, lw: number) {
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
   ctx.strokeStyle = c; ctx.lineWidth = lw; ctx.lineCap = "round"; ctx.stroke(); ctx.lineCap = "butt";
@@ -452,10 +462,11 @@ function recordSheet(sc: ScoreScene, editing: ScoreRound | null) {
   const app = sc.app, s0 = sc.score!;
   const settings = s0.settings, noLevel = settings.kind === "no-level";
   const no = editing ? editing.round_no : s0.rounds.length + 1;
-  // 这一局开打之前的状态：记新的一局看现在的（本场结束了就是下一场），改一局按前面各局重算
+  // 这一局开打之前的状态：记新的一局就是现在的（本场结束了就是下一场）；改一局、或者弹层开着时
+  // 别人先记了这一局（S12 的前奏），按前面各局重算。局号固定，提交时服务端会报 round_taken
   const before = (): ScoreState => {
     const s = sc.score!;
-    return editing ? compute(settings, s.rounds.slice(0, no - 1).map(factOf)).state : s.state;
+    return s.rounds.length === no - 1 ? s.state : compute(settings, s.rounds.slice(0, no - 1).map(factOf)).state;
   };
   const st = { head: editing?.head_seat ?? 0, partner: editing?.partner_place ?? 0, busy: false, err: "", key: "", keyFor: "" };
   const fact = (): RoundFact | null => (st.head && (st.partner || noLevel) ? { head_seat: st.head, partner_place: st.partner || 3 } : null);
@@ -735,8 +746,8 @@ export class RecordsScene implements Scene {
           }
           icon[T.suit](ctx, tx + 6, ry + 23.5, 11, T.c);
           const right = kind === "no-level" ? "" : `${levelName(r.level_before)}→${levelName(r.level_after)}`;
-          const rw = right ? measure(ctx, right, font(17, "900")) + 40 : 30;
-          const how = `${TEAM_NAME[r.winner]} ${howText(r.partner_place)}${r.passed_a ? " · 过 A" : r.reset_to_2 ? ` · ${TEAM_NAME[r.failed_a as Side]}回到 2` : ""}`;
+          const rw = right ? measure(ctx, right, font(17, "900")) + 32 : 30;
+          const how = `${TEAM_NAME[r.winner]} ${howText(r.partner_place)}${aNote(r)}`;
           text(ctx, ellipsize(ctx, how, x + w - rw - tx - 16, font(14, "700")), tx + 16, ry + 23, font(14, "700"), C.ink);
           text(ctx, ellipsize(ctx, whoLine(r, this.sc.names), w - 60 - rw, font(12)), x + 60, ry + 46, font(12), C.ink2);
           const rec = `${r.recorded_by.nickname} ${timeHM(r.recorded_at)} 记`;
