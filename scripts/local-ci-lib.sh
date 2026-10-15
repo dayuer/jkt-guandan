@@ -299,6 +299,87 @@ dirty_tree_action() {
 }
 
 # ---------------------------------------------------------------------------
+# 失败时把完整日志和现场留下来（#202）
+# ---------------------------------------------------------------------------
+# 目的：偶发红要能**当场查清楚**，而不是只能重跑碰运气。#196 上就出过一次查不出原因的
+# `local-ci/docker` 红（rc=1）—— 当时只看了 tail，完整输出没了；之后单独跑 3 次、
+# 完整 CI 1 次全过，无从下手。
+
+# 日志放哪：默认 `$TMPDIR/local-ci-logs`，跨运行留着（不是用完就删的临时文件）。
+# LOCAL_CI_LOG_DIR 可覆盖（自测里指到临时目录）。
+local_ci_log_dir() { printf '%s' "${LOCAL_CI_LOG_DIR:-${TMPDIR:-/tmp}/local-ci-logs}"; }
+
+# 保留最近几份。LOCAL_CI_KEEP_LOGS 可覆盖。
+local_ci_keep_logs() { printf '%s' "${LOCAL_CI_KEEP_LOGS:-20}"; }
+
+# 日志文件名：`<sha 前 7 位>-<context 短名>-<时间戳>.log`。
+# 短名（去掉 `local-ci/` 前缀）是为了 status 描述塞得下 —— GitHub 那边只有 140 字，
+# 而 macOS 的 $TMPDIR 本身就占 45 个字左右。
+log_file_name() { # $1 = sha  $2 = context  $3 = 时间戳（如 20261016-061500）
+  local short="${2:-}"
+  printf '%s-%s-%s.log' "$(printf '%s' "${1:-}" | cut -c1-7)" "${short#local-ci/}" "${3:-}"
+}
+
+# 只留最近 N 份（同一次运行的 `.docker.txt` 跟着一起删）。
+prune_logs() { # $1 = 目录  $2 = 保留几份
+  local dir="${1:-}" keep="${2:-20}" f i=0
+  [ -d "$dir" ] || return 0
+  # ls -1t：新的在前。日志名里没有空格，所以不用管分词。
+  for f in $(ls -1t "$dir"/*.log 2>/dev/null); do
+    [ -e "$f" ] || continue
+    i=$((i + 1))
+    [ "$i" -le "$keep" ] && continue
+    rm -f "$f" "${f%.log}.docker.txt"
+  done
+}
+
+# docker 那项失败时的现场：**只列和这次运行有关的**容器和卷（deploytest / drill / smoke），
+# 免得把一整台机器上别人的东西都抄进日志里。
+docker_scene() {
+  printf '===== docker 现场 =====\n'
+  printf '$ docker ps -a （只列 deploytest / drill / smoke）\n'
+  docker ps -a --format '  {{.Names}}  {{.Status}}  {{.Ports}}' 2>&1 |
+    grep -E 'deploytest|drill|smoke' || printf '  （没有）\n'
+  printf '$ docker volume ls （同上）\n'
+  docker volume ls --format '  {{.Name}}' 2>&1 |
+    grep -E 'deploytest|drill|smoke' || printf '  （没有）\n'
+}
+
+# 跑一条命令，输出**同时**进终端和日志文件。
+#   $1 = context 名（决定要不要附 docker 现场）  $2 = 日志文件；其余 = 要跑的命令
+# 返回那条命令的退出码。
+# 成功 → **把日志删掉**（不留垃圾）；失败 → 留下日志、打印路径，docker 那项另外写一份现场。
+capture_to_log() {
+  local ctx="$1" log="$2"; shift 2
+  local rc rcf scene
+  rcf="$(mktemp "${TMPDIR:-/tmp}/local-ci-rc.XXXXXX")"
+  # 输出要实时可见（tee），退出码用「子壳写进文件」拿 —— `PIPESTATUS` 是 bash 专有，
+  # 而这个 lib 也被 `#!/bin/sh` 的 test-deploy.sh source。
+  # 子壳里 `|| rc=$?` 是必须的：调用方开了 `set -e` 时裸的失败命令会让子壳当场退出。
+  ( rc=0; "$@" 2>&1 || rc=$?; printf '%s' "$rc" > "$rcf" ) | tee "$log"
+  rc="$(cat "$rcf")"
+  rm -f "$rcf"
+  if [ "$rc" -eq 0 ]; then
+    rm -f "$log"
+    return 0
+  fi
+  if [ "$ctx" = local-ci/docker ]; then
+    scene="${log%.log}.docker.txt"
+    { docker_scene; printf '\n===== 这一项日志的最后 200 行 =====\n'; tail -n 200 "$log"; } >"$scene" 2>&1
+    printf '\ndocker 现场：%s\n' "$scene" >&2
+  fi
+  printf '\n这一项的完整日志：%s\n' "$log" >&2
+  return "$rc"
+}
+
+# status 描述里那句「日志在 <路径>」。文件不在了就是空串（成功时日志会被删掉）。
+log_note() {
+  if [ -n "${1:-}" ] && [ -f "${1:-}" ]; then
+    printf '；日志 %s' "$1"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # 协议三项（迁移自 .github/workflows/protocol.yml）+ 脚本卫生（#178）
 # 第 ③ 项**去掉了「仅 impl/* 与 audit/*」的前置条件**：COORDINATION.md §4 的
 # 「PR 描述写清关联的 issue」本来就不限分支前缀。

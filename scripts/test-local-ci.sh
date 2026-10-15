@@ -577,6 +577,87 @@ eq 'approve 对不上 head（复审后又推了）→ stale' 'stale' "$(approve_
 eq '没有任何 approve → none' 'none' "$(approve_vs_head '' 'bbb2222')"
 eq '没拿到 head → nohead（别硬判）' 'nohead' "$(approve_vs_head 'bbb2222' '')"
 
+echo '--- 失败时留下完整日志和现场（#202）---'
+
+# 文件名：sha 前 7 位 + context 短名 + 时间戳。短名是为了 status 描述塞得下
+#（GitHub 只有 140 字，而 macOS 的 $TMPDIR 本身就占 45 个字）。
+eq '日志名：sha 取前 7 位、context 去掉 local-ci/ 前缀' \
+  'ac6c141-docker-20261016-061500.log' \
+  "$(log_file_name ac6c14176552e526641a12de1d0ae66f8d6b1eb2 local-ci/docker 20261016-061500)"
+eq '日志名：别的 context 也一样' \
+  'ac6c141-test-20261016-061500.log' \
+  "$(log_file_name ac6c1417 local-ci/test 20261016-061500)"
+eq '日志名：sha 短于 7 位也不炸' 'abc-x-t.log' "$(log_file_name abc x t)"
+
+# 保留最近 N 份。
+PL=$(mktemp -d)
+for i in 1 2 3 4 5; do printf 'x\n' > "$PL/a-$i.log"; done
+printf 'x\n' > "$PL/a-3.docker.txt"   # 第 3 份的现场，该跟着一起删
+prune_logs "$PL" 2
+eq '只留最近 2 份' '2' "$(ls "$PL"/*.log 2>/dev/null | wc -l | tr -d ' ')"
+eq '留下的确实是最新的两份' 'a-4.log a-5.log' "$(ls "$PL"/*.log 2>/dev/null | xargs -n1 basename | sort | tr '\n' ' ' | sed 's/ $//')"
+eq '被删那份的 .docker.txt 也一起删了' '0' "$(ls "$PL"/a-3.docker.txt 2>/dev/null | wc -l | tr -d ' ')"
+eq '空目录不炸' '0' "$(prune_logs "$PL/nope" 3; echo $?)"
+rm -rf "$PL"
+
+# 真跑一遍 capture_to_log：**成功不留文件、失败留文件**（这就是「用假的失败 context 自测」）。
+CL=$(mktemp -d)
+out=$(capture_to_log local-ci/test "$CL/ok.log" true 2>&1); rc=$?
+eq '跑成功 → 返回 0' '0' "$rc"
+eq '跑成功 → 不留日志文件' '0' "$(ls -A "$CL" | wc -l | tr -d ' ')"
+
+out=$(capture_to_log local-ci/test "$CL/bad.log" sh -c 'echo 出错了; exit 1' 2>&1); rc=$?
+eq '跑失败 → 原样带回退出码' '1' "$rc"
+eq '跑失败 → 留下完整日志' '1' "$(ls "$CL"/bad.log 2>/dev/null | wc -l | tr -d ' ')"
+case "$out" in
+  *"这一项的完整日志：$CL/bad.log"*) ok '跑失败 → 打印日志路径' ;;
+  *) bad '跑失败 → 打印日志路径' "含「这一项的完整日志：$CL/bad.log」" "$out" ;;
+esac
+case "$(cat "$CL/bad.log")" in
+  *"出错了"*) ok '日志里有完整输出' ;;
+  *) bad '日志里有完整输出' '含「出错了」' "$(cat "$CL/bad.log")" ;;
+esac
+eq '非 docker 的项不写现场文件' '0' "$(ls "$CL"/*.docker.txt 2>/dev/null | wc -l | tr -d ' ')"
+
+# docker 那一项失败时另外写一份现场（ps -a / volume ls 的快照 + 最后 200 行）。
+FD=$(mktemp -d)
+cat > "$FD/docker" <<'DK'
+#!/bin/sh
+case "$1 $2" in
+  "ps -a")     printf '  guandan-deploytest-1  Up 2 minutes  127.0.0.1:28480->8080/tcp\n  other-container  Up  1 minute\n' ;;
+  "volume ls") printf '  guandan-deploytest-1-data\n  other-volume\n' ;;
+esac
+DK
+chmod +x "$FD/docker"
+out=$(PATH="$FD:$PATH" capture_to_log local-ci/docker "$CL/d.log" sh -c 'echo 挂了; exit 1' 2>&1); rc=$?
+eq 'docker 失败 → 退出码照旧' '1' "$rc"
+eq 'docker 失败 → 写了现场文件' '1' "$(ls "$CL"/d.docker.txt 2>/dev/null | wc -l | tr -d ' ')"
+scene="$(cat "$CL/d.docker.txt" 2>/dev/null)"
+case "$scene" in
+  *guandan-deploytest-1*) ok '现场里有本次运行的容器' ;;
+  *) bad '现场里有本次运行的容器' '含 guandan-deploytest-1' "$scene" ;;
+esac
+case "$scene" in
+  *other-container*) bad '现场里不该有别人的容器（只列 deploytest/drill/smoke）' '不含 other-container' "$scene" ;;
+  *) ok '现场里不该有别人的容器（只列 deploytest/drill/smoke）' ;;
+esac
+case "$scene" in
+  *"最后 200 行"*) ok '现场里附了日志尾部' ;;
+  *) bad '现场里附了日志尾部' '含「最后 200 行」' "$scene" ;;
+esac
+case "$out" in
+  *"docker 现场：$CL/d.docker.txt"*) ok 'docker 失败 → 也打印现场路径' ;;
+  *) bad 'docker 失败 → 也打印现场路径' "含「docker 现场：$CL/d.docker.txt」" "$out" ;;
+esac
+rm -rf "$CL" "$FD"
+
+# status 描述里那句「日志在 …」：文件在才有，成功时日志已删所以是空串。
+LT=$(mktemp)
+eq '描述：日志还在就写上路径' "；日志 $LT" "$(log_note "$LT")"
+eq '描述：日志不在了就是空串' '' "$(log_note "${LT}.nope")"
+eq '描述：没传也是空串' '' "$(log_note '')"
+rm -f "$LT"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "OK: $0 全过"; exit 0; fi
 echo "FAILED: $fails 条"; exit 1
