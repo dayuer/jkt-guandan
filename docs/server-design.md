@@ -576,7 +576,7 @@ GET  /*                               内嵌的前端页面（单页应用，未
 | `GUANDAN_GROUP_WECHAT_ID` | 空 | 09 牌友顶部「雅加达掼蛋群」横幅里的微信号（#108），经 `GET /api/config` 给前端 |
 | `GUANDAN_GROUP_WHATSAPP_URL` | 空 | 同上，WhatsApp 群链接；必须是 https 地址，否则启动时报错 |
 | `GUANDAN_WX_APPID` | 空 | 小游戏 AppID，`POST /api/wx/login` 调 `code2Session` 用（#84）。和下一项要么都设、要么都不设；都不设时小游戏登录返回 `503 wx_disabled`，开发模式下改为接受 `dev:<openid>` |
-| `GUANDAN_WX_SECRET` | 空 | 小游戏 AppSecret，只放环境变量，不写日志 |
+| `GUANDAN_WX_SECRET` | 空 | 小游戏 AppSecret，只放环境变量，不写日志。AppID 和 Secret 都配了才开微信内容安全检测（#146，§14） |
 | `GUANDAN_WX_TMPL_FULL` | 空 | 订阅消息「牌局状态」模板 ID（#137）：成局（`full`）、有人退出（`seat_left`）。没配时这两类提醒不走订阅消息 |
 | `GUANDAN_WX_TMPL_FULL_KEYS` | `thing1,time2,thing3` | 上面那个模板里「事项、时间、地点」三个字段的名字，按小游戏后台模板详情填 |
 | `GUANDAN_WX_TMPL_REMIND` | 空 | 订阅消息「开局提醒」模板 ID（#137）：开局前 1 小时（`t_minus_1h`）、改时间（`rescheduled`） |
@@ -771,7 +771,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
   4. 出现脚本批量注册时，再在「创建身份」这一步加人机验证。
 
   第 4 步先不做：人机验证在微信内置浏览器里的兼容性需要单独验证，而且会损害「填个称呼就行」的体验。
-- 敏感词过滤，防止涉及金钱（§14）。
+- 敏感词过滤，防止涉及金钱（§14）。小游戏用户的称呼、地点、备注另送微信内容安全检测（§14，#146）。
 
 ### 10.9 防遍历与隐私
 
@@ -983,7 +983,7 @@ guandan restore <快照>                    从备份恢复（§13.3）
 
 - 外部定时探测 `/readyz`（任何免费的探活服务都可以），失败时通知仓库所有者。
 - 日志：`slog` 输出 JSON。每个请求带 `request_id`、路由、状态码、耗时、写锁等待时间。写锁等待超过 100 毫秒、`503 busy`、panic 都记为 warn 及以上级别。
-- `/metrics` 只允许内网或 localhost 访问，内容包括：请求数和延迟、写锁等待时间、WebSocket 连接数、outbox 积压量和发送失败数、备份时间。
+- `/metrics` 只允许内网或 localhost 访问，内容包括：请求数和延迟、写锁等待时间、WebSocket 连接数、outbox 积压量和发送失败数、备份时间、微信内容安全检测的次数（按结论）和耗时（§14）。
 
 ## 14. 合规（印尼）
 
@@ -993,6 +993,20 @@ guandan restore <快照>                    从备份恢复（§13.3）
   - `DELETE /api/me` 用于注销：删除称呼、WhatsApp 号码、设备、推送订阅、微信关联（`user_links`）和订阅消息次数（`wx_subscribe_quota`）；座位记录改成「已注销牌友」，这样历史局的人数统计不会出错；
   - 保留期限：设备 180 天未活跃就删除（§13.1）；埋点数据 1 年后删除；备份 30 天。
 - **赌博监管**：页面上已经写明「不涉及金钱输赢」。服务端对牌局备注和地点做敏感词过滤（赌、钱、筹码、judi、taruhan……），命中就拒绝提交，并提示「请勿涉及金钱」。词表放在仓库里，可以随时更新。
+- **微信内容安全检测（#146，`internal/secheck`）**：微信要求有用户生成内容的小游戏接入内容安全检测。
+  - **接口**：游戏专用版 `POST https://api.weixin.qq.com/wxa/game/content_spam/msg_sec_check`，请求体 `{openid, version: 2, scene, content}`，看 `result.suggest`（`risky` 拦，`pass` / `review` 放行）和 `result.label`。access_token 走 `internal/wxapi`（和订阅消息同一套）。单次超时 1 秒。
+  - **范围**：服务端写入前同步检查，客户端不调。只查**小游戏用户**：请求者在 `user_links` 里有 `wx_openid:<appid>` 才查，没有（H5 测试用户）就跳过；H5 是测试版，小游戏上线后废弃，届时自然全覆盖。凭认领码关联过小游戏的 H5 用户也有 openid，他在 H5 上开局、改局同样会查。
+    | 入口 | 字段 | scene |
+    |---|---|---|
+    | `POST /api/wx/login {nickname}` | 称呼（带了称呼就查，用的是刚换出来的 openid） | 1 资料 |
+    | `POST /api/games` | 地点、备注 | 3 论坛 |
+    | `PATCH /api/games/{code}` | 改到的地点、备注（先确认是局头，别人发 PATCH 不触发调用） | 3 论坛 |
+
+    `POST /api/me` 只给 H5 新建身份（没有 openid），已有身份时不改称呼；`/api/wx/link` 不收任何用户文本（只是把微信挂到已有的 H5 身份上）；目前没有改称呼的接口。以后加了改称呼、或者 B1（#140）要在 `/api/wx/link` 里新建身份，都要接上 scene 1 的检查。
+  - **结果**：`risky` 返回 `422`，错误码**复用 `sensitive_word`**，带 `field`（`nickname` / `venue` / `note`），提示「这段内容不适合发布，请修改后再试」，不告诉用户命中了哪一类。复用是为了让小游戏和 H5 现有的按字段提示直接生效，前端不用区分是本地词表还是微信拦的。本地词表（上一条）先查，过了才送微信。
+  - **失败策略：放行**。微信出错、超时、`suggest` 不认识、查 openid 出错，都当作通过，记指标 `guandan_wx_sec_check_total{outcome}`（`pass` / `risky` / `review` / `error` / `timeout` / `no_openid`）和耗时 `guandan_wx_sec_check_duration_seconds`，并打 warn 日志。理由：这是约局工具，内容只在牌友之间传播；微信抖一下就让人开不了局，代价比偶尔漏过一条大；本地词表仍兜着金钱和赌博。`error` / `timeout` 比例明显升高时看日志里的 errcode。
+  - **隐私**：送给微信的只有这段文本和 openid。日志只记场景、字段名、结论、label、耗时、errcode，**不记原文，也不记 openid**；微信的 errmsg 也不记（不保证不回显内容）。小游戏「隐私与数据」里写明了称呼、地点、备注会发给微信做内容安全检测。
+  - **开关**：没配 `GUANDAN_WX_APPID` / `GUANDAN_WX_SECRET` 时整体关闭。开发模式用假检测器：文本里含「内容安全测试」判 `risky`（label 21000），其余通过，查的是 `wx_openid:dev`，方便在开发者工具里测前端提示。
 - **域名**：`.id` 域名通常需要印尼身份证或本地公司才能注册，所以建议主域名用 `.com` 之类的通用后缀（见 #12）。
 - **电子系统运营商登记（PSE）**：面向印尼用户的服务原则上需要向 Komdigi 登记。这个规模下被查的概率低，但已记入风险清单，用户量明显增长后再评估。
 

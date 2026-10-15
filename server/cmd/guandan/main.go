@@ -34,13 +34,16 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/server/internal/identity"
 	"github.com/dayuer/jkt-guandan/server/internal/janitor"
+	"github.com/dayuer/jkt-guandan/server/internal/metrics"
 	"github.com/dayuer/jkt-guandan/server/internal/notify"
 	"github.com/dayuer/jkt-guandan/server/internal/realtime"
 	"github.com/dayuer/jkt-guandan/server/internal/route"
+	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 	"github.com/dayuer/jkt-guandan/server/internal/share"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 	"github.com/dayuer/jkt-guandan/server/internal/supervise"
 	"github.com/dayuer/jkt-guandan/server/internal/telemetry"
+	"github.com/dayuer/jkt-guandan/server/internal/wxapi"
 )
 
 // minFreeBytes 是启动时要求的数据目录剩余空间（§12.1 第 3 步）。
@@ -156,6 +159,11 @@ func run() error {
 		Build: buildinfo.Get(),
 	})
 	gamesSvc := games.NewService(st, clk, gamesPublisher{hub})
+	// §14 微信内容安全检测（#146）：小游戏用户的称呼、地点、备注写入前送微信查。
+	if guard := newContentGuard(cfg, st, clk, reg.Registry); guard != nil {
+		identitySvc.SetContentGuard(guard)
+		gamesSvc.SetContentGuard(guard)
+	}
 	// 注销（§14）要同时清身份侧和牌局侧的数据，两边在各自的包里，这里接起来。
 	identitySvc.SetGameCleaner(gamesSvc)
 
@@ -363,6 +371,26 @@ func setupWx(svc *identity.Service, cfg config.Config) {
 	default:
 		slog.Info("没有配置 GUANDAN_WX_APPID / GUANDAN_WX_SECRET，小游戏登录关闭")
 	}
+}
+
+// newContentGuard 建微信内容安全检测（#146）。配了 AppID / Secret 用真接口；没配时开发模式用假检测器
+// （含 secheck.DevRiskyWord 判 risky），生产则返回 nil：整体关闭。
+func newContentGuard(cfg config.Config, st *store.Store, clk clock.Clock, reg *metrics.Registry) *secheck.Guard {
+	g := &secheck.Guard{Store: st}
+	switch {
+	case cfg.WxEnabled():
+		tokens := &wxapi.StableToken{AppID: cfg.WxAppID, Secret: cfg.WxSecret, Clock: clk}
+		g.AppID, g.Checker = cfg.WxAppID, secheck.WxChecker{API: &wxapi.Client{Tokens: tokens}}
+		slog.Info("微信内容安全检测已开启")
+	case cfg.Dev:
+		g.AppID, g.Checker = identity.DevWxAppID, secheck.DevChecker{}
+		slog.Info("开发模式：内容安全检测用假检测器", "risky_word", secheck.DevRiskyWord)
+	default:
+		slog.Info("没有配置 GUANDAN_WX_APPID / GUANDAN_WX_SECRET，内容安全检测关闭")
+		return nil
+	}
+	g.Metrics = secheck.NewMetrics(reg)
+	return g
 }
 
 // setupWxSubscribe 接上小游戏订阅消息通道（#137）。没配 AppID / Secret 或模板时关闭，提醒只走 Web Push。

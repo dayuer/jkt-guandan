@@ -63,7 +63,7 @@ make docker     # 镜像 guandan:local
 | `GUANDAN_METRICS_ADDR` | `127.0.0.1:9090` | `/metrics` 的监听地址，默认只有本机能访问；设为空字符串关闭 |
 | `ANTHROPIC_API_KEY` | 空 | 蛋蛋用（phase:3） |
 | `GUANDAN_WX_APPID` | 空 | 小游戏 AppID（#84），和 `GUANDAN_WX_SECRET` 要么都设、要么都不设。都不设时 `POST /api/wx/login` 返回 `503 wx_disabled`；开发模式下改为接受 `dev:<openid>` 形式的假 code |
-| `GUANDAN_WX_SECRET` | 空 | 小游戏 AppSecret，只放环境变量 |
+| `GUANDAN_WX_SECRET` | 空 | 小游戏 AppSecret，只放环境变量。AppID 和 Secret 都配了才开微信内容安全检测（#146）；开发模式下用假检测器，含「内容安全测试」的文本会被拦 |
 | `GUANDAN_WX_TMPL_FULL` | 空 | 小游戏订阅消息「牌局状态」模板 ID（#137）：成局、有人退出。没配 AppID / Secret 或模板时不走订阅消息 |
 | `GUANDAN_WX_TMPL_FULL_KEYS` | `thing1,time2,thing3` | 上面模板里「事项、时间、地点」三个字段的名字，按小游戏后台的模板详情填 |
 | `GUANDAN_WX_TMPL_REMIND` | 空 | 订阅消息「开局提醒」模板 ID（#137）：开局前 1 小时、改时间 |
