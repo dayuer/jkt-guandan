@@ -671,6 +671,11 @@ eq 'failed to authorize + 401 → code（私有镜像没给凭证是配置问题
 eq 'failed to authorize + denied → code' 'code' "$(docker_failure_kind "$DK/authorize-denied.log")"
 eq 'failed to authorize + i/o timeout → network（真的网络故障）' 'network' "$(docker_failure_kind "$DK/authorize-timeout.log")"
 
+cat > "$DK/pull-refused.log" <<'L'
+#2 ERROR: failed to do request: Head "https://registry-1.docker.io/v2/library/node/manifests/22-alpine": dial tcp 44.208.254.194:443: connect: connection refused
+L
+eq '镜像源 connection refused → network（#196 复审意见）' 'network' "$(docker_failure_kind "$DK/pull-refused.log")"
+
 eq '拉镜像 DNS 超时 → network' 'network' "$(docker_failure_kind "$DK/pull-dns.log")"
 eq 'failed to authorize: DeadlineExceeded → network' 'network' "$(docker_failure_kind "$DK/pull-deadline.log")"
 eq '镜像源 Bad Gateway → network' 'network' "$(docker_failure_kind "$DK/pull-502.log")"
@@ -736,11 +741,24 @@ eq '包装：网络抖动确实重试了（3 次）' '3' "$(cat "$DB/o1")"
 
 out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o2" DBG_MODE=down DOCKER_BUILD_RETRY_BASE=0 \
   bash -c ". '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?
-eq '包装：网络一直不好 → 2（编排器发 error）' '2' "$rc"
+eq '包装：网络一直不好 → 75（EX_TEMPFAIL 专用码，不是笼统的 2）' '75' "$rc"
 case "$out" in
   *"环境未就绪"*) ok '包装：说清了这是环境问题' ;;
   *) bad '包装：说清了这是环境问题' '含「环境未就绪」' "$out" ;;
 esac
+
+# 步骤退出码 → run_context 退出码。#196 复审的阻塞就在这条映射上：
+# 原来把 test-deploy.sh 的**任何** exit 2 都当成环境问题，可它跑在 `set -eu` 下，
+# 语法错、引用未设置的变量都退 2 —— 那些是代码 bug，被发成 error 就是假绿。
+# 这几条等价于「test-deploy.sh 退 X 时 run_context 返回什么」。
+step_rc() { docker_step_rc "$1"; }
+eq '步骤退 2（set -eu 下的语法错 / 未定义变量）→ 1（代码红，**不是**环境问题）' '1' "$(step_rc 2)"
+eq '步骤退 75（拉镜像的网络问题）→ 2（环境未就绪）' '2' "$(step_rc 75)"
+eq '步骤退 1 → 1' '1' "$(step_rc 1)"
+eq '步骤退 0 → 0' '0' "$(step_rc 0)"
+eq '步骤退 3 / 127 之类的怪码 → 1（认不出来的一律当代码问题）' '1' "$(step_rc 3)"
+eq '步骤退 126（不能执行）→ 1' '1' "$(step_rc 126)"
+eq '75 就是 sysexits 的 EX_TEMPFAIL，别改成一个会被别处用掉的码' '75' "$EX_TEMPFAIL"
 
 out=$(PATH="$DB:$PATH" DBG_COUNT="$DB/o3" DBG_MODE=code DOCKER_BUILD_RETRY_BASE=0 \
   bash -c ". '$ROOT/scripts/local-ci-lib.sh'; docker_build_or_die -t x ." 2>&1); rc=$?

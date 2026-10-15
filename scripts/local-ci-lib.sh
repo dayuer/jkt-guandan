@@ -250,7 +250,7 @@ context_ready() {
 #   `failed to authorize` / `failed to fetch oauth token` —— 私有镜像没给凭证会报 401 / denied，
 #       那是**配置问题**不是网络问题。只有和上面那些传输特征**同时**出现才算网络
 #       （比如 `failed to authorize: DeadlineExceeded`、`... dial tcp: lookup …: i/o timeout`）。
-DOCKER_NETWORK_RE='i/o timeout|no such host|TLS handshake timeout|context deadline exceeded|DeadlineExceeded|temporary failure in name resolution|connection reset by peer|network is unreachable|no route to host|Bad Gateway|Service Unavailable|Internal Server Error|Too Many Requests|toomanyrequests'
+DOCKER_NETWORK_RE='i/o timeout|no such host|TLS handshake timeout|context deadline exceeded|DeadlineExceeded|temporary failure in name resolution|connection reset by peer|connection refused|network is unreachable|no route to host|Bad Gateway|Service Unavailable|Internal Server Error|Too Many Requests|toomanyrequests'
 
 # run_context 的返回码 → 上报的 state。0 = success；2 / 3 = error（环境未就绪 / 脚本自身出错，
 # 都挡合并，只是描述不同）；其余 = failure（代码红）。
@@ -265,7 +265,28 @@ status_state_for_rc() {
   esac
 }
 
-# 一次 docker build，按结论决定怎么死：成功 0；拉镜像的网络问题 exit 2（环境未就绪）；
+# 拉镜像的网络问题上专用的退出码：EX_TEMPFAIL（sysexits.h，75「临时失败，可以重试」）。
+#
+# 为什么不是直接 `exit 2`：调用这个函数的是 test-deploy.sh / restore-drill.sh 这种
+# **`set -eu` 的整脚本**，它们退 2 的原因多得很 —— 语法错、引用未设置的变量、脚本里
+# 任何一个以 2 结束的命令，都是**代码 bug**。用 2 的话上游分不出「环境没就绪」和
+# 「脚本坏了」，代码红会被发成 error（#196 复审）。75 是这里专用的，别人不会碰。
+EX_TEMPFAIL=75
+
+# 「跑一个 docker 相关的步骤，它的退出码 → run_context 的退出码」。
+#   $1 = 那一步的退出码。回显 0 / 1 / 2。
+#
+# **只有 EX_TEMPFAIL 才算环境未就绪**，其他任何非 0 一律代码红。
+# 这是 run_context 那句「只有明确的预检才返回 2」在 docker 支上的落地。
+docker_step_rc() {
+  case "${1:-}" in
+    0)       echo 0 ;;
+    "$EX_TEMPFAIL") echo 2 ;;
+    *)       echo 1 ;;
+  esac
+}
+
+# 一次 docker build，按结论决定怎么死：成功 0；拉镜像的网络问题 exit **75**（环境未就绪）；
 # 其他 exit 1（代码红）。给**会自己 build 镜像的脚本**用（test-deploy.sh 的场景 6、7）——
 # 那些脚本在 local-ci/docker 里面跑，网络一抖原来会被记成代码红（#196 复审意见）。
 #
@@ -278,9 +299,9 @@ docker_build_or_die() {
   rc=$?
   rm -f "$log"
   case "$rc" in
-    0) return 0 ;;
-    2) printf '失败：镜像源拉不下来（环境未就绪，不是代码问题）。\n' >&2; exit 2 ;;
-    *) printf '失败：docker build 失败。\n' >&2; exit 1 ;;
+    0)  return 0 ;;
+    2)  printf '失败：镜像源拉不下来（环境未就绪，不是代码问题）。\n' >&2; exit "$EX_TEMPFAIL" ;;
+    *)  printf '失败：docker build 失败。\n' >&2; exit 1 ;;
   esac
 }
 
@@ -409,20 +430,24 @@ run_context() {
         docker rmi "$image" >/dev/null 2>&1
         return 1
       fi
-      # test-deploy.sh 自己要 build 几个镜像（场景 6、7），它内部也复用了
-      # docker_build_retrying，所以它可能返回 2（拉镜像的网络问题）—— 那个要原样透出去，
-      # 否则又会变成「网络一抖就代码红」。#196 复审意见。
+      # test-deploy.sh 自己要 build 几个镜像（场景 6、7），拉镜像的网络问题时它退
+      # **EX_TEMPFAIL**（docker_build_or_die 专用的那个码）。
+      #
+      # ⚠️ 不能把所有非 0 都当环境问题：那个脚本跑在 `set -eu` 下，语法错、引用未设置的
+      # 变量、脚本里任何 `exit 2` 都会退 2，那些都是**代码 bug**。所以只有 75 这个专用码
+      # 才映射成 2，其他一律 1（#196 复审）。这条也正好是 run_context 开头那句
+      # 「只有显式的超前检查才返回 2」在 docker 支上的落地。
       scripts/test-deploy.sh "$image"
-      rc=$?
+      rc="$(docker_step_rc "$?")"
       if [ "$rc" -ne 0 ]; then
         [ "$rc" -eq 2 ] && ENV_REASON='拉镜像失败（网络或镜像源）'
         docker rmi "$image" >/dev/null 2>&1
         return "$rc"
       fi
       scripts/restore-drill.sh "$image"
-      rc=$?
+      rc="$(docker_step_rc "$?")"
       docker rmi "$image" >/dev/null 2>&1
-      [ "$rc" -eq 0 ] || return 1
+      [ "$rc" -eq 0 ] || return "$rc"
       ;;
     local-ci/e2e)      make e2e || return 1 ;;
     local-ci/meta)     bash scripts/test-local-ci.sh || return 1 ;;

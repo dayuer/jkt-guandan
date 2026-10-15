@@ -112,10 +112,22 @@ GOOD=${1:?"用法：scripts/test-deploy.sh <镜像> | --print-names"}
 
 # 三个好版本，加两个坏版本。
 for t in good1 good2 good3; do docker tag "$GOOD" "$REPO:$t"; done
+# 从 stdin 读 Dockerfile 的 build 要先把内容落到临时目录：`docker_build_or_die` 失败会
+# **重试**，而 stdin 第一次就读空了 —— 重试那次 `docker build -` 读到 EOF，报的错和原来的
+# 风马牛不相及（#196 复审）。写文件之后每次读到的是同一个上下文。
+#   $1 = Dockerfile 正文；$2 = 镜像标签
+build_from_text() {
+  local dir
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/deploytest-df.XXXXXX")"
+  printf '%s' "$1" > "$dir/Dockerfile"
+  docker_build_or_die -q -t "$2" "$dir" >/dev/null
+  rm -rf "$dir"
+}
+
 # broken：配置没问题，但监听地址非法，启动到最后一步才退出。
-printf 'FROM %s\nENV GUANDAN_ADDR=:99999\n' "$GOOD" | docker_build_or_die -q -t "$REPO:broken" - >/dev/null
+build_from_text "$(printf 'FROM %s\nENV GUANDAN_ADDR=:99999\n' "$GOOD")" "$REPO:broken"
 # unusable：配置都过不了（备份地址不合法），连发布前冷备份都做不了。
-printf 'FROM %s\nENV GUANDAN_BACKUP_URL=bogus://nowhere\n' "$GOOD" | docker_build_or_die -q -t "$REPO:unusable" - >/dev/null
+build_from_text "$(printf 'FROM %s\nENV GUANDAN_BACKUP_URL=bogus://nowhere\n' "$GOOD")" "$REPO:unusable"
 
 # 注意：给 deploy 临时加环境变量要用子 shell，「VAR=x deploy …」在 POSIX sh 里会留在当前 shell。
 # 模拟 deploy.sh 上传静态文件：发布前才放上去。
@@ -188,7 +200,7 @@ mkdir -p "$src"
 git archive HEAD | tar -x -C "$src"
 printf -- '-- 测试用的兼容迁移\nCREATE TABLE deploytest_compat (x INTEGER);\n' > "$src/server/migrations/0999_deploytest_compat.sql"
 docker_build_or_die -q -t "$REPO:migrated-base" "$src" >/dev/null
-printf 'FROM %s\nENV GUANDAN_ADDR=:99999\n' "$REPO:migrated-base" | docker_build_or_die -q -t "$REPO:migrated" - >/dev/null
+build_from_text "$(printf 'FROM %s\nENV GUANDAN_ADDR=:99999\n' "$REPO:migrated-base")" "$REPO:migrated"
 stage migrated
 deploy migrated "已回滚，旧版本恢复服务"
 expect "current" "$(current)" good2
