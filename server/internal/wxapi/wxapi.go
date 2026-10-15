@@ -24,6 +24,14 @@ const DefaultBaseURL = "https://api.weixin.qq.com"
 // tokenEarly：access_token 过期前这么久就换新的，免得用到一半过期。
 const tokenEarly = 5 * time.Minute
 
+// forceCooldown 是两次强制刷新之间的最短间隔。
+//
+// 微信官方文档（获取稳定版接口调用凭据）：
+// 「强制刷新模式每天限用 20 次且需间隔 30 秒」，不到 30 秒服务端根本不刷新，
+// 只白占一次当天的配额；而配额用完就只能等缓存的 token 自然过期。
+// https://developers.weixin.qq.com/doc/service/api/base/api_getstableaccesstoken.html
+const forceCooldown = 30 * time.Second
+
 // 几个要特别处理的 errcode。
 const (
 	ErrCodeBusy         = -1    // 系统繁忙
@@ -70,8 +78,9 @@ func Retryable(err error) bool {
 // TokenSource 提供 access_token。生产用 StableToken，测试用假的。
 type TokenSource interface {
 	Token(ctx context.Context) (string, error)
-	// Invalidate 在微信说 token 无效时调用，下次 Token 强制换新的。
-	Invalidate()
+	// Invalidate 在微信说 token 无效时调用，bad 是**这一次请求实际带出去的那个** token。
+	// 下次 Token 会强制换新的 —— 但如果缓存里已经不是它了就不动（见 StableToken.Invalidate）。
+	Invalidate(bad string)
 }
 
 // StableToken 调 cgi-bin/stable_token 拿 access_token，缓存到过期前 5 分钟。
@@ -83,10 +92,11 @@ type StableToken struct {
 	HTTP    *http.Client
 	Clock   clock.Clock
 
-	mu      sync.Mutex
-	token   string
-	expires time.Time
-	force   bool
+	mu         sync.Mutex
+	token      string
+	expires    time.Time
+	force      bool
+	lastForced time.Time // 上一次真的带 force_refresh=true 出去的时刻，冷却用
 }
 
 func (s *StableToken) now() time.Time {
@@ -100,15 +110,19 @@ func (s *StableToken) now() time.Time {
 func (s *StableToken) Token(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.token != "" && !s.force && s.now().Before(s.expires.Add(-tokenEarly)) {
+	now := s.now()
+	if s.token != "" && !s.force && now.Before(s.expires.Add(-tokenEarly)) {
 		return s.token, nil
 	}
+	// 离上一次强刷不到 30 秒就不要带 force_refresh 了：服务端不会刷新（文档要求至少隔 30 秒），
+	// 还白占一次「每天 20 次」的配额。普通模式会返回平台认为当前有效的那个。
+	force := s.force && now.Sub(s.lastForced) >= forceCooldown
 	var out struct {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int64  `json:"expires_in"`
 	}
 	err := postJSON(ctx, httpClient(s.HTTP), baseURL(s.BaseURL)+"/cgi-bin/stable_token", map[string]any{
-		"grant_type": "client_credential", "appid": s.AppID, "secret": s.Secret, "force_refresh": s.force,
+		"grant_type": "client_credential", "appid": s.AppID, "secret": s.Secret, "force_refresh": force,
 	}, &out)
 	if err != nil {
 		return "", err
@@ -117,15 +131,28 @@ func (s *StableToken) Token(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("stable_token 没有返回 access_token: %w", ErrUnavailable)
 	}
 	s.token, s.force = out.AccessToken, false
-	s.expires = s.now().Add(time.Duration(out.ExpiresIn) * time.Second)
+	if force {
+		s.lastForced = now
+	}
+	s.expires = now.Add(time.Duration(out.ExpiresIn) * time.Second)
 	return s.token, nil
 }
 
-// Invalidate 作废缓存，下次带 force_refresh 重新拿。
-func (s *StableToken) Invalidate() {
+// Invalidate 作废缓存，下次带 force_refresh 重新拿 —— 条件是 bad 还是缓存里的那个。
+//
+// 并发时 N 个请求都带着 tok1 出去、tok1 失效：第一个 40001 回来就该换 tok2，剩下几个是
+// **带着 tok1 发出去的**，它们迟到回来时缓存里已经是 tok2 了，不该再把它顶掉。按文档强刷
+// 会让上一个立刻失效，这么顶来顶去会连锁，也很快用完每天 20 次。
+func (s *StableToken) Invalidate(bad string) {
+	if bad == "" {
+		return
+	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.token != bad {
+		return
+	}
 	s.force = true
-	s.mu.Unlock()
 }
 
 // Client 调带 access_token 的接口。
@@ -145,7 +172,8 @@ func (c *Client) PostJSON(ctx context.Context, path string, req, resp any) error
 	}
 	err = postJSON(ctx, httpClient(c.HTTP), baseURL(c.BaseURL)+path+"?access_token="+token, req, resp)
 	if code, ok := Code(err); ok && IsTokenError(code) {
-		c.Tokens.Invalidate()
+		// 把用过的那个 token 一起带回去：这样「旧 token 的迟到 40001」不会把新 token 顶掉。
+		c.Tokens.Invalidate(token)
 	}
 	return err
 }

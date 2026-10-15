@@ -172,3 +172,176 @@ func TestErrors(t *testing.T) {
 		t.Fatalf("网络错误应是 ErrUnavailable 且不带 URL：%v", err)
 	}
 }
+
+// 等到 cond 成立，或者超时判失败。
+func waitForCond(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal(what)
+}
+
+// #191：**迟到的 40001 不该把刚换上的新 token 再强刷掉**。
+//
+// 并发的样子：8 个请求都带着 tok1 出去，tok1 在服务端失效。
+//   第一个 40001 回来 → 该换 tok2；剩下 7 个是**带着 tok1 发出去的**，它们迟到回来时
+//   缓存里已经是 tok2 了，不该再动它。改之前是 fetches=3 forced=2。
+func TestStaleTokenErrorDoesNotForceRefreshAgain(t *testing.T) {
+	var fetches, forced, blocked atomic.Int32
+	var current atomic.Value // 服务端认为有效的那个
+	gate := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cgi-bin/stable_token" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["force_refresh"] == true {
+				forced.Add(1)
+			}
+			tok := fmt.Sprintf("tok%d", fetches.Add(1))
+			current.Store(tok) // 换出去的就成了当前有效的
+			fmt.Fprintf(w, `{"access_token":%q,"expires_in":7200}`, tok)
+			return
+		}
+		if got := r.URL.Query().Get("access_token"); got != current.Load() {
+			if blocked.Add(1) <= 8 {
+				<-gate // 卡在这里，模拟「带旧 token 发出去的请求现在才回来」
+			}
+			fmt.Fprint(w, `{"errcode":40001,"errmsg":"invalid credential"}`)
+			return
+		}
+		fmt.Fprint(w, `{"errcode":0}`)
+	}))
+	defer srv.Close()
+
+	clk := clock.NewFake(time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
+	tokens := &StableToken{AppID: "wxapp", Secret: "sec", BaseURL: srv.URL, Clock: clk}
+	c := &Client{BaseURL: srv.URL, Tokens: tokens}
+	ctx := context.Background()
+
+	if err := c.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	current.Store("") // tok1 在服务端失效
+
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		go func() { errs <- c.PostJSON(ctx, "/x", nil, nil) }()
+	}
+	waitForCond(t, func() bool { return blocked.Load() == 8 }, "8 个请求都该带着 tok1 卡在服务端")
+
+	// 放出一个：它带回 40001 → 作废缓存里那个 tok1
+	gate <- struct{}{}
+	if err := <-errs; err == nil {
+		t.Fatal("40001 应该报错")
+	}
+
+	// 下一次调用换到新 token（这里得真强刷，否则后面白说）
+	if err := c.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatalf("换过 token 之后应该成功：%v", err)
+	}
+	if n, f := fetches.Load(), forced.Load(); n != 2 || f != 1 {
+		t.Fatalf("这会儿应该只换过一次：fetches=%d forced=%d，期望 2/1", n, f)
+	}
+
+	// 再放掉剩下 7 个迟到的 40001：它们带的是 tok1，不该动已经换上的新 token
+	close(gate)
+	for i := 0; i < 7; i++ {
+		if err := <-errs; err == nil {
+			t.Fatal("迟到的这几个也该报 40001")
+		}
+	}
+
+	if err := c.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n, f := fetches.Load(), forced.Load(); n != 2 || f != 1 {
+		t.Fatalf("迟到的 40001 不该再强刷：fetches=%d forced=%d，期望 2/1", n, f)
+	}
+}
+
+// #191：两次强刷之间要隔开。微信官方文档（获取稳定版接口调用凭据）写的是
+// 「强制刷新模式每天限用 20 次且需间隔 30 秒」—— 间隔不到 30 秒服务端根本不会刷新，
+// 白占一次当天的配额，所以 30 秒内我们自己不发 force_refresh=true。
+func TestForceRefreshRespectsCooldown(t *testing.T) {
+	var fetches, forced atomic.Int32
+	var lastForce atomic.Bool
+	var current atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cgi-bin/stable_token" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f := body["force_refresh"] == true
+			if f {
+				forced.Add(1)
+			}
+			lastForce.Store(f)
+			tok := fmt.Sprintf("tok%d", fetches.Add(1))
+			current.Store(tok)
+			fmt.Fprintf(w, `{"access_token":%q,"expires_in":7200}`, tok)
+			return
+		}
+		if got := r.URL.Query().Get("access_token"); got != current.Load() {
+			fmt.Fprint(w, `{"errcode":40001,"errmsg":"invalid credential"}`)
+			return
+		}
+		fmt.Fprint(w, `{"errcode":0}`)
+	}))
+	defer srv.Close()
+
+	clk := clock.NewFake(time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC))
+	tokens := &StableToken{AppID: "wxapp", Secret: "sec", BaseURL: srv.URL, Clock: clk}
+	c := &Client{BaseURL: srv.URL, Tokens: tokens}
+	ctx := context.Background()
+
+	if err := c.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if lastForce.Load() {
+		t.Fatal("第一次取 token 不该带 force_refresh")
+	}
+
+	// tok1 作废 → 该强刷一次
+	current.Store("")
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+	if err := c.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n, f := fetches.Load(), forced.Load(); n != 2 || f != 1 {
+		t.Fatalf("这会儿应该强刷过一次：fetches=%d forced=%d", n, f)
+	}
+
+	// 只过了 5 秒，新 token 又作废：不该再发 force_refresh=true
+	clk.Advance(5 * time.Second)
+	current.Store("")
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+	_ = c.PostJSON(ctx, "/x", nil, nil)
+	if f := forced.Load(); f != 1 {
+		t.Fatalf("30 秒内不该再强刷，实际 forced=%d", f)
+	}
+	if lastForce.Load() {
+		t.Fatal("30 秒内的这一次不该带 force_refresh=true")
+	}
+
+	// 隔够 30 秒再作废：这次该真强刷
+	clk.Advance(30 * time.Second)
+	current.Store("")
+	if err := c.PostJSON(ctx, "/x", nil, nil); err == nil {
+		t.Fatal("40001 应该报错")
+	}
+	if err := c.PostJSON(ctx, "/x", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if f := forced.Load(); f != 2 {
+		t.Fatalf("间隔够了就该真强刷，实际 forced=%d", f)
+	}
+}
