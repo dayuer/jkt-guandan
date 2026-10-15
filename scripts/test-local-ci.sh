@@ -67,6 +67,12 @@ eq 'Dockerfile 与部署脚本跑 docker' \
   'local-ci/docker' \
   "$(printf 'Dockerfile\nscripts/deploy-remote.sh\nscripts/container-smoke.sh\n' | scope_contexts)"
 
+# 并发隔离自测（#183）：单独改它们也要跑 —— 否则只有被 test-deploy.sh / restore-drill.sh
+# 调起来时才有人跑，而那种改动本身不触发 docker 那项。
+eq '并发隔离自测脚本单独改动也跑 docker' \
+  'local-ci/docker' \
+  "$(printf 'scripts/test-deploy-names.sh\nscripts/test-drill-names.sh\n' | scope_contexts)"
+
 eq 'scripts/agents 不命中（协作脚本，不在 CI 范围）' \
   '' \
   "$(printf 'scripts/agents/board.sh\n' | scope_contexts)"

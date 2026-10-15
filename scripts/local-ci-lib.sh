@@ -63,7 +63,9 @@ _path_to_context() {
       echo 'local-ci/nginx' ;;
     Dockerfile|.dockerignore|deploy/*)
       echo 'local-ci/docker' ;;
-    scripts/deploy.sh|scripts/deploy-remote.sh|scripts/test-deploy.sh|scripts/restore-drill.sh|scripts/container-smoke.sh)
+    # 后两个是 docker 那两项的并发隔离自测（#183）：`test-deploy.sh` / `restore-drill.sh`
+    # 会调它们，但它们自己也要能被单独触发 —— 否则只改这两个文件就没人跑（#178 的同类）。
+    scripts/deploy.sh|scripts/deploy-remote.sh|scripts/test-deploy.sh|scripts/restore-drill.sh|scripts/container-smoke.sh|scripts/test-deploy-names.sh|scripts/test-drill-names.sh)
       echo 'local-ci/docker' ;;
     scripts/e2e-server.sh)
       echo 'local-ci/e2e' ;;
