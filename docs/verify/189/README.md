@@ -1,7 +1,7 @@
 # #189 局头转交的换设备兜底 验证截图
 
 375×667，无头跑**真小游戏 bundle**（`app/minigame/build.mjs` 打出来的 `game.js`）+ **真服务端**（本机 `guandan seed`，`GUANDAN_ADDR=127.0.0.1:18776`）。
-模拟 `wx` 的存储 / 网络 / 触摸，按热区点按，每步截图。脚本见同目录 `steps.js`，逐步断言见 `log.txt`（**30 条全过**）。
+模拟 `wx` 的存储 / 网络 / 触摸，按热区点按，每步截图。脚本见同目录 `steps.js`，逐步断言见 `log.txt`（**24 条 `PASS`，`log.txt` 里可以 `grep -c '^PASS'` 数**）。
 
 本机设备身份是「阿杰」（`MG_OPENID=ajie`）。「换设备」= 把这一台上的 `gd_game_seen:*` / `gd_game_fallback_seen:*` 清掉，身份 token 留着（微信缓存被清 / 换了手机）。
 

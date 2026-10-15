@@ -206,24 +206,28 @@ fi
 # run_context 的返回码：0 = 绿，2 = 环境未就绪，3 = 脚本自身出错，其余 = 代码红。
 # 环境问题发 `error`（一样挡合并 —— 环境没配好时我们根本不知道代码好不好），
 # 但描述写清楚，让人一眼看出「去装依赖」而不是去翻代码。
+# 码 → state 的映射在 status_state_for_rc 里（lib，带自测）：#193 修的「拉镜像失败要发 error
+# 而不是 failure」落地就是这条映射，写在 if 里的话测试碰不到。
 for ctx in $CONTEXTS; do
   printf '\n=== %s ===\n' "$ctx"
   printf '$ %s\n' "$(context_command "$ctx")"
   run_context "$ctx"; rc=$?
   if [ "$rc" -eq 0 ]; then
     printf '%s 通过。\n' "$ctx"
-    post_status "$HEAD_SHA" "$ctx" success "$(context_command "$ctx" | cut -c1-135)"
+    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" "$(context_command "$ctx" | cut -c1-135)"
   elif [ "$rc" -eq 2 ]; then
     printf '%s 环境未就绪（不是代码问题，看上面的说明）。\n' "$ctx"
-    post_status "$HEAD_SHA" "$ctx" error "环境未就绪：$(context_command "$ctx" | cut -c1-100)"
+    # 具体原因优先（比如「拉镜像失败（网络或镜像源）」）—— 比「跑了什么命令」有用得多。
+    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" \
+      "$(env_not_ready_desc "$ENV_REASON" "$(context_command "$ctx")")"
     ENVNOTREADY="$ENVNOTREADY $ctx"
   elif [ "$rc" -eq 3 ]; then
     printf '%s 脚本自身出错（不是环境、也不是代码）。\n' "$ctx"
-    post_status "$HEAD_SHA" "$ctx" error '脚本自身出错：未知 context 或与 context_command 漂移'
+    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" '脚本自身出错：未知 context 或与 context_command 漂移'
     SCRIPTBUG="$SCRIPTBUG $ctx"
   else
     printf '%s 失败。\n' "$ctx"
-    post_status "$HEAD_SHA" "$ctx" failure '见终端输出'
+    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" '见终端输出'
     FAILED="$FAILED $ctx"
   fi
 done
