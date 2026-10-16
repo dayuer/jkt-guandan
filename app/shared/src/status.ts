@@ -15,7 +15,13 @@
  *
  * 快照就是「用户已经知道的状态」：提示被关掉之前不更新对应的字段，所以没关掉的横幅刷新后还在。
  * 按身份分开存；只记我在里面的局，开局时间过了一天的自动清掉。不是凭证，存不下也只是少一次提示。
+ *
+ * #253 P6.5 起**存储由调用方给**（`KeyValueStore` / `StoreReader`），这里不再直接读
+ * `window.localStorage` —— H5 的默认值在 `app/h5/src/status.ts`，小游戏那边（`lib/notice.ts`）
+ * 一直就是自己传存储进来的。
  */
+
+import type { KeyValueStore, StoreReader } from "./store";
 
 /**
  * 「#253 起这一层住在 app/shared」：它只读下面这几个字段，所以**不依赖任何一端的 api 模块**
@@ -94,7 +100,7 @@ export function fromSummary(g: SummaryLike): GameView {
 }
 
 /** 和快照比，得出要给用户看的提示。没有快照（第一次看到这一局）就什么都不提示。 */
-export function noticesFor(v: GameView, meID: string | undefined, store: Pick<Storage, "getItem"> | null = safe()): Notice[] {
+export function noticesFor(v: GameView, meID: string | undefined, store: StoreReader | null): Notice[] {
   if (!meID) return [];
   const prev = load(store, meID)[v.code];
   if (!prev) return [];
@@ -129,8 +135,8 @@ export function noticesFor(v: GameView, meID: string | undefined, store: Pick<St
 export function acknowledge(
   v: GameView,
   meID: string | undefined,
-  kinds?: NoticeKind[],
-  store: Pick<Storage, "getItem" | "setItem"> | null = safe(),
+  kinds: NoticeKind[] | undefined,
+  store: KeyValueStore | null,
   now: number = Math.floor(Date.now() / 1000),
 ): void {
   if (!meID || !store) return;
@@ -167,26 +173,18 @@ export function acknowledge(
 }
 
 /** 一次拿到最新数据后的标准动作：算出提示，没有提示就顺手把快照跟上。 */
-export function observe(v: GameView, meID: string | undefined): Notice[] {
-  const notices = noticesFor(v, meID);
-  if (notices.length === 0) acknowledge(v, meID);
+export function observe(v: GameView, meID: string | undefined, store: KeyValueStore | null): Notice[] {
+  const notices = noticesFor(v, meID, store);
+  if (notices.length === 0) acknowledge(v, meID, undefined, store);
   return notices;
 }
 
-function load(store: Pick<Storage, "getItem"> | null, meID: string): Record<string, Snapshot> {
+function load(store: StoreReader | null, meID: string): Record<string, Snapshot> {
   try {
     const raw = store?.getItem(snapshotKey(meID));
     const parsed = raw ? (JSON.parse(raw) as unknown) : {};
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, Snapshot>) : {};
   } catch {
     return {};
-  }
-}
-
-function safe(): Storage | null {
-  try {
-    return window.localStorage;
-  } catch {
-    return null;
   }
 }

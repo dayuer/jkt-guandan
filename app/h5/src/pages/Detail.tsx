@@ -25,7 +25,7 @@ import { track } from "../telemetry";
 import { GameTable } from "../components/Table";
 import { conflictingFields, describeConflict, type FieldDiff } from "../conflict";
 import { dayLabel, kindLabel, timeHM } from "../format";
-import { acknowledge, fromDetail, observe, type Notice, type NoticeKind } from "../../../shared/src/status";
+import { acknowledge, fromDetail, observe, type Notice, type NoticeKind } from "../status";
 import { gameTitle } from "../title";
 import { useBarHeight } from "../useBarHeight";
 import { OfflineDot, useRealtime, useRealtimeStatus } from "../useRealtime";

@@ -7,11 +7,12 @@
  */
 
 import { doneLessons as readDone, markDone as writeDone } from "../../shared/src/learn";
+import type { KeyValueStore, StoreReader } from "../../shared/src/store";
 
 export * from "../../shared/src/learn";
 
 /** 无痕模式等拿不到 localStorage 时返回 null：进度存不下就当没学过，不报错。 */
-function safeStorage(): Storage | null {
+function safeStorage(): KeyValueStore | null {
   try {
     return window.localStorage;
   } catch {
@@ -19,10 +20,10 @@ function safeStorage(): Storage | null {
   }
 }
 
-export function doneLessons(storage: Storage | null = safeStorage()): Set<string> {
+export function doneLessons(storage: StoreReader | null = safeStorage()): Set<string> {
   return readDone(storage);
 }
 
-export function markDone(id: string, storage: Storage | null = safeStorage()): void {
+export function markDone(id: string, storage: KeyValueStore | null = safeStorage()): void {
   writeDone(id, storage);
 }

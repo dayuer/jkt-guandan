@@ -2,7 +2,7 @@
  * 学牌（#106，设计稿 E1 / E2）：静态的掼蛋规则，按「入门 / 进阶 / 高级」分三组，每组三课。
  *
  * #253 P6 起住在 app/shared：课本正文、分组、以及「下一课 / 某课」这些查询两端共用。
- * 这一层**不碰 window / wx**：学习进度存在哪由调用方给（`LearnStore`），
+ * 这一层**不碰 window / wx**：学习进度存在哪由调用方给（`store.ts` 的 `KeyValueStore`），
  * H5 的默认值（`window.localStorage`）在 `app/h5/src/learn.ts`，
  * 小游戏在 `app/minigame/src/lib/learn.ts`（走 shim.ts 垫的那层 wx 存储）。
  *
@@ -11,6 +11,8 @@
  * app/minigame/src/lib/scoring.ts）用同一套口径。
  * 地方打法和规则冲突时按规则来，所以正文里不再写「常见约定」。
  */
+
+import type { KeyValueStore, StoreReader } from "./store";
 
 export type Level = "basic" | "advanced" | "expert";
 
@@ -356,16 +358,7 @@ export function nextLesson(id: string): Lesson | undefined {
 
 const DONE_KEY = "gd_learn_done";
 
-/**
- * 我们用到的那两个方法。H5 的 `localStorage` 和小游戏垫在 `window.localStorage` 上的
- * 那层 wx 存储都满足；这里不用 DOM 的 `Storage` 类型，共享层就不必依赖 DOM 的 lib。
- */
-export interface LearnStore {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
-
-export function doneLessons(storage: Pick<LearnStore, "getItem"> | null): Set<string> {
+export function doneLessons(storage: StoreReader | null): Set<string> {
   try {
     const raw = storage?.getItem(DONE_KEY);
     const list = raw ? (JSON.parse(raw) as unknown) : [];
@@ -375,7 +368,7 @@ export function doneLessons(storage: Pick<LearnStore, "getItem"> | null): Set<st
   }
 }
 
-export function markDone(id: string, storage: LearnStore | null): void {
+export function markDone(id: string, storage: KeyValueStore | null): void {
   const done = doneLessons(storage);
   done.add(id);
   try {
