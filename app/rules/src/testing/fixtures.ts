@@ -208,10 +208,22 @@ export function readDeal(raw: Json): DealVector[] {
   });
 }
 
-/** 一种解读：牌型名 + 当这个牌型打时的牌面。 */
+/** 牌例里声明的一种顶法：哪张逢人配顶成了什么。`as` 不带副号（README「逢人配」第 3 条）。 */
+export interface WildSpec {
+  card: string;
+  as: string;
+}
+
+/** 一种解读：牌型名 + 当这个牌型打时的牌面 + （可选）哪张逢人配顶成了什么。 */
 export interface ComboSpec {
   kind: string;
   rank: string;
+  /**
+   * 可选。写了就要求实现挑的**正是这一种顶法**（README「逢人配」第 1 条）：
+   * 同一种（牌型 + 牌面）有好几种顶法时两端要给出同一个答案，所以留一种、按顶成的牌
+   * 「点数、花色」最小那种。大多数用例的顶法是唯一的，没必要每条都写。
+   */
+  wilds?: WildSpec[];
 }
 
 export interface CombosVector {
@@ -225,13 +237,27 @@ export interface CombosVector {
   combos: ComboSpec[];
 }
 
+function readWildSpec(value: Json, what: string): WildSpec {
+  const spec = asObject(value, what);
+  rejectUnknownKeys(spec, ["card", "as"], what);
+  return {
+    card: asString(required(spec, "card", what), `${what}.card`),
+    as: asString(required(spec, "as", what), `${what}.as`),
+  };
+}
+
 function readComboSpec(value: Json, what: string): ComboSpec {
   const spec = asObject(value, what);
-  rejectUnknownKeys(spec, ["kind", "rank"], what);
-  return {
+  rejectUnknownKeys(spec, ["kind", "rank", "wilds"], what);
+  const out: ComboSpec = {
     kind: asString(required(spec, "kind", what), `${what}.kind`),
     rank: asString(required(spec, "rank", what), `${what}.rank`),
   };
+  if (spec.wilds !== undefined) {
+    const wilds = asArray(spec.wilds, `${what}.wilds`).map((item, i) => readWildSpec(item, `${what}.wilds[${i}]`));
+    if (wilds.length > 0) out.wilds = wilds; // 空数组等于没写
+  }
+  return out;
 }
 
 export function readCombos(raw: Json): CombosVector[] {
@@ -259,6 +285,11 @@ export function readCombos(raw: Json): CombosVector[] {
 export interface CompareSide {
   kind: string;
   cards: string[];
+  /**
+   * 可选：声明的牌面。同一种牌型有好几种牌面时必须写（比如带逢人配的那几张，顶法不同点数不同）；
+   * 不写就表示这一手牌在那个牌型下只有一种解读。
+   */
+  rank?: string;
 }
 
 export interface CompareVector {
@@ -273,11 +304,13 @@ export interface CompareVector {
 
 function readCompareSide(value: Json, what: string): CompareSide {
   const side = asObject(value, what);
-  rejectUnknownKeys(side, ["kind", "cards"], what);
-  return {
+  rejectUnknownKeys(side, ["kind", "cards", "rank"], what);
+  const out: CompareSide = {
     kind: asString(required(side, "kind", what), `${what}.kind`),
     cards: asStringList(required(side, "cards", what), `${what}.cards`),
   };
+  if (side.rank !== undefined) out.rank = asString(side.rank, `${what}.rank`);
+  return out;
 }
 
 export function readCompare(raw: Json): CompareVector[] {

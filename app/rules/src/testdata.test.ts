@@ -5,7 +5,7 @@
 // 并有自己的单测，这里只查「算出来的结果和牌例写的一样」。
 import { describe, expect, it } from "vitest";
 import { cardKey, newDeck, parseKey, parseRank, type Card, type Rank } from "./card";
-import { comboRankName, compare, findCombo, parseComboType, recognize, type Combo, type Order } from "./combo";
+import { asKey, comboRankName, comboSummary, compare, parseComboType, pick, recognize, type Combo, type Order } from "./combo";
 import { deal, HANDS_EACH, permShuffler, SEATS } from "./deal";
 import { power } from "./power";
 import { handOf } from "./testing/cards";
@@ -14,10 +14,23 @@ import type { CompareSide } from "./testing/fixtures";
 
 const keys = (cards: readonly Card[]): string[] => cards.map(cardKey);
 
-/** `compare.json` 的一边：按声明的牌型找解读，找不到就是牌例和实现对不上。 */
+/** 一条解读里的顶法，写成「哪张牌 当 什么」的一串；**按集合比**（README「逢人配」第 5 条）。 */
+function wildsOf(combo: Combo): string[] {
+  return combo.wilds.map((w) => `${cardKey(w.card)} 当 ${asKey(w.as)}`).sort();
+}
+
+/**
+ * `compare.json` 的一边：按声明的解读认这手牌。牌面写了就一起比；没写表示这一手在那个牌型下
+ * 只有一种解读 —— 有两种及以上时 `pick` 不猜，认不出来就是牌例或实现对不上。
+ */
 function declaredCombo(side: CompareSide, level: Rank, what: string): Combo {
-  const combo = findCombo(handOf(side.cards), level, parseComboType(side.kind));
-  if (!combo) throw new Error(`${what}：这手牌打不出声明的「${side.kind}」`);
+  const combos = recognize(handOf(side.cards), level);
+  const rank = side.rank === undefined ? undefined : parseRank(side.rank);
+  const combo = pick(combos, parseComboType(side.kind), rank);
+  if (!combo) {
+    const declared = `${side.kind}${side.rank === undefined ? "" : ` ${side.rank}`}`;
+    throw new Error(`${what}：这手牌里没有唯一的「${declared}」解读 —— 实际有 ${comboSummary(combos)}`);
+  }
   return combo;
 }
 
@@ -78,11 +91,25 @@ describe("combos.json：一手牌的全部解读（第三条）", () => {
   for (const vector of combosFixture) {
     it(vector.name, () => {
       const level = parseRank(vector.level);
-      const got = recognize(handOf(vector.cards), level).map((combo) => ({
-        kind: combo.type,
-        rank: comboRankName(combo),
-      }));
-      expect(got).toStrictEqual(vector.combos);
+      const combos = recognize(handOf(vector.cards), level);
+
+      // 主断言只比牌型和牌面（顺序也一起比：README 定了「先按牌型表、再按牌面」）。
+      // `wilds`（哪张逢人配顶成了什么）是**可选**的，由下面单独查 —— 大多数用例顶法唯一，
+      // 没必要每条都写。和 Go 的 TestCombosFixture 一个形状（#217 定的）。
+      expect(combos.map((c) => ({ kind: c.type, rank: comboRankName(c) }))).toStrictEqual(
+        vector.combos.map((c) => ({ kind: c.kind, rank: c.rank })),
+      );
+
+      // 牌例声明了顶法的，要求实现挑的**正是那一种**：两头都得按「点数、花色最小」挑，
+      // 不能一边挑最小、一边随便挑。
+      for (const declared of vector.combos) {
+        if (!declared.wilds) continue;
+        const found = combos.find((c) => c.type === declared.kind && comboRankName(c) === declared.rank);
+        if (!found) continue; // 牌型/牌面对不上由上面的主断言报，这里只管顶法
+        expect(wildsOf(found), `${declared.kind} ${declared.rank} 的顶法`).toStrictEqual(
+          declared.wilds.map((w) => `${w.card} 当 ${w.as}`).sort(),
+        );
+      }
     });
   }
 });

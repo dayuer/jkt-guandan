@@ -1,8 +1,8 @@
 // 牌型识别和比较的单测：**不读牌例**，管的是牌例没覆盖到的语义和边界
 // （牌例那份在 testdata.test.ts，两端共用）。两个文件测同一份实现，各有各的用处。
 import { describe, expect, it } from "vitest";
-import { ACE, rankName, SEVEN, TWO } from "./card";
-import { COMBO_TYPES, comboLabel, comboRankName, compare, findCombo, parseComboType, recognize } from "./combo";
+import { ACE, cardKey, rankName, SEVEN, TWO } from "./card";
+import { asKey, COMBO_TYPES, comboLabel, comboRankName, compare, findCombo, parseComboType, recognize } from "./combo";
 import { handOf } from "./testing/cards";
 
 /** 一手牌的全部解读，写成 `牌型 牌面` 的一串，方便断言。 */
@@ -190,5 +190,68 @@ describe("牌型的名字", () => {
     expect(findCombo(handOf(cards), SEVEN, "straight")?.rank).toBe(9);
     expect(findCombo(handOf(cards), SEVEN, "straight-flush")?.rank).toBe(9);
     expect(findCombo(handOf(cards), TWO, "bomb")).toBeUndefined();
+  });
+});
+
+// 逐条对着 README「逢人配」那一节。
+describe("逢人配（第二条 14、第五条 2）", () => {
+  const all = (written: string[], level = SEVEN) => recognize(handOf(written), level);
+  const tops = (written: string[], level = SEVEN) => all(written, level).map((c) => `${c.type} ${comboRankName(c)}`.trim());
+  const wildsOf = (written: string[], type: string, rank: string, level = SEVEN) => {
+    const combo = all(written, level).find((c) => c.type === type && comboRankName(c) === rank);
+    return combo ? combo.wilds.map((w) => `${cardKey(w.card)} 当 ${asKey(w.as)}`).sort() : undefined;
+  };
+
+  it("搭配牌型时枚举全部顶法：♠5678 + ♥7 既是顺子也是同花顺，顶张 8 或 9", () => {
+    // 四张黑桃 + 一张逢人配：顶成 ♠9 是 56789 同花顺，顶成红桃/方块 9 只是顺子；
+    // 顶成 ♠4 是 45678，顶成 ♠9 是 56789 —— 顺子的顶张有 8 和 9 两种。
+    expect(tops(["♠5/0", "♠6/0", "♠7/0", "♠8/0", "♥7/0"])).toEqual([
+      "straight 8",
+      "straight 9",
+      "straight-flush 8",
+      "straight-flush 9",
+    ]);
+  });
+
+  it("同一种（牌型 + 牌面）有好几种顶法时，只留顶法最小的那种", () => {
+    // ♥7 当 ♠A 或当 ♥A 都是一对 A；按「点数、花色」最小挑，留 ♠A。
+    expect(wildsOf(["♠A/0", "♥7/0"], "pair", "A")).toEqual(["♥7/0 当 ♠A"]);
+  });
+
+  it("只拿逢人配自己出（一张、两张）时只按本来的点数算，不枚举顶法", () => {
+    expect(tops(["♥7/0"])).toEqual(["single 7"]);
+    expect(tops(["♥7/0", "♥7/1"])).toEqual(["pair 7"]);
+    // 顶成它自己，界面上显示就是「♥7/0」而不是「♥7/0 当 ♥7」
+    expect(all(["♥7/0"])[0].wilds.map((w) => cardKey(w.card))).toEqual(["♥7/0"]);
+  });
+
+  it("`as` 不带副号（顶出来的不是手里那张牌）", () => {
+    const [combo] = all(["♠7/0", "♥7/1"]);
+    // 只有花色和牌面 —— 多出「副号」会让人以为手里真有那一张
+    expect(Object.keys(combo.wilds[0].as).sort()).toEqual(["rank", "suit"]);
+    expect(asKey(combo.wilds[0].as)).toBe("♠7");
+  });
+
+  it("不能顶王：♥7 + 大王 凑不成对子，两张逢人配也凑不出四大天王", () => {
+    expect(tops(["♥7/0", "大王/0"])).toEqual([]);
+    expect(tops(["大王/0", "小王/0", "♥7/0", "♥7/1"])).toEqual([]);
+  });
+
+  it("顶出来的牌不占真牌的名额：八张 8 加两张逢人配就是十张炸", () => {
+    const eight = ["♠8/0", "♥8/0", "♣8/0", "♦8/0", "♠8/1", "♥8/1", "♣8/1", "♦8/1"];
+    const [combo] = all([...eight, "♥7/0", "♥7/1"]);
+    expect(combo.type).toBe("bomb");
+    expect(combo.cards).toHaveLength(10);
+    expect(comboRankName(combo)).toBe("8");
+  });
+
+  it("实打实的牌超过五个点数：怎么顶都凑不成牌型，直接判打不出去", () => {
+    expect(tops(["♠2/0", "♠3/0", "♠4/0", "♠5/0", "♠6/0", "♠9/0", "♥7/0"])).toEqual([]);
+  });
+
+  it("比大小不看顶法，看牌面和张数（♥7 凑的同花顺就是同花顺）", () => {
+    const wildFlush = all(["♠3/0", "♠4/0", "♠5/0", "♠6/0", "♥7/0"]).find((c) => c.type === "straight-flush")!;
+    const fiveBomb = all(["♠A/0", "♥A/0", "♣A/0", "♦A/0", "♠A/1"])[0];
+    expect(compare(wildFlush, fiveBomb)).toBe("greater");
   });
 });

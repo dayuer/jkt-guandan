@@ -9,7 +9,7 @@
 ## 两端读同一批牌例
 
 对照用例在仓库根 [`testdata/rules/`](../../testdata/rules/)，**格式见那里的 README.md ——
-那是两端的接口说明**。这里的 `src/fixtures.ts` 和服务端的 `server/internal/rules/fixtures_test.go`
+那是两端的接口说明**。这里的 `src/testing/fixtures.ts` 和服务端的 `server/internal/rules/fixtures_test.go`
 读同一批文件：
 
 - 改规则先改牌例，两端一起跑；改字段名/加字段是**破坏性改动**（两端都拒绝未知字段）。
@@ -67,8 +67,8 @@ import { deal, power } from "../../rules/src/index";
 | 步骤 | 状态 |
 |---|---|
 | 1. 牌、发牌、牌点大小 | 已合入（#229） |
-| 2. 牌型识别和比较（不带逢人配） | 本 PR |
-| 3. 逢人配（枚举全部顶法） | |
+| 2. 牌型识别和比较（不含逢人配） | 本 PR |
+| 3. 逢人配（枚举全部顶法） | 本 PR |
 | 4. 领出 / 跟牌的合法出法生成 | |
 | 5. 出牌状态机（过牌、接风、出完顺序） | |
 | 6. 结算、升级、过 A 配置 | |
