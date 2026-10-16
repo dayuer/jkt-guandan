@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"reflect"
 	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -32,8 +35,9 @@ import (
 //	可重放 —— 一副牌打完存成 JSON 再读回来，局面和结果逐项对得上；照着存档重放两遍
 //	         结果一致（引擎不读时间、不读随机数）。
 //
-// **进贡/还贡、下一局的接续不在这里**（第 6 步，见 issue #204）：这一版一副牌打完就停，
-// 接第 6 步时在这个驱动器外面套一层「上一副的结果 → 下一副谁领出」就行。
+// **进贡/还贡、下一局的接续在下面**（#204 第 6 步合入之后接上的）：`playMatch` 在驱动器
+// 外面套了一层「上一副的结果 → 进贡还贡 → 下一副谁领出、打几级」，一路打到过 A 或者打满
+// `simMatchMaxDeals` 副；中途还按 `simRestoreEvery` 步存档读回接着打。
 
 const (
 	// simFullCheckSteps 是每一步都灌非法动作的步数上限、simCheckEvery 是之后的抽样间隔：
@@ -46,17 +50,691 @@ const (
 	// 让搭档先走），模拟里不主动制造的话这条路走不到。
 	simPassPercent = 25
 
-	// simMaxSteps 是「必然结束」的上界，**推出来的**，不是量出来的：
-	// 每出一手，后面最多跟 3 手过牌（在场另外三家各过一次，第 4 次过就结束这一圈，
-	// 第八条 一、3）；出牌手数最多 107 手 —— 一副 108 张、一手至少出一张，
-
+	// simMaxSteps 见下面（推出来的上界，写成 len(NewDeck()) 让它跟着牌堆数量走）。
 )
 
 // simMaxSteps 是「必然结束」的上界，**推出来的**，不是量出来的：
-// 每出一手，后面最多跟 3 手过牌（在场另外三家各过一次，第 4 次过就结束这一圈，第八条 一、3）；
+// 每出一手，后面最多跟 3 手过牌（在场另外三家各过一次，过到第 3 次这一圈就结束，第八条 一、3）；
 // 出牌手数最多 107 手 —— 一副牌 108 张、一手至少出一张，而分出上游时场上至少还有一家
 // 拿着牌（第八条 一、4）。所以步数 < 4×108。写成 len(NewDeck())：牌堆张数变了它跟着变。
 var simMaxSteps = 4 * len(NewDeck())
+
+// ───────────────────────────────────────────────────────────────────────────
+// 第 7 步接续（#204 第 6 步合入之后）：跨多副 —— 进贡/还贡/抗贡、下一副打几、中途存档接着打
+// ───────────────────────────────────────────────────────────────────────────
+
+const (
+	// simMatchCount 是默认打几场（比赛级别：一场会打很多副）；种子基数见 simMatchSeedBase。
+	simMatchCount = 40
+	// simMatchSeedBase 是比赛语料的种子基数：第 i 场只跟 i 有关，跟调度顺序无关。
+	simMatchSeedBase = 20461
+	// simMatchMaxDeals 是一场最多打几副：正常会先「过 A」结束，这是兜底的上限。
+	simMatchMaxDeals = 40
+	// simRestoreEvery 是打一副的过程里「存档 → 读回 → 接着打」的间隔（0 = 不做）。
+	simRestoreEvery = 17
+)
+
+// matchStats 是一场跑完之后的账（测试用它报数、也用它断言）。
+type matchStats struct {
+	deals              int       // 打了几副
+	steps              int       // 一共走了多少步
+	borrowed           int       // 借风几次
+	tributes           int       // 进贡了几副（含还牌）
+	resisted           int       // 抗贡了几副
+	restores           int       // 中途存档读回了几次
+	level              Rank      // 最后打到的级数
+	over               bool      // 是不是过 A 结束了
+	resistedFirstLevel Rank      // 第一次抗贡时的级数（报数用）
+	logs               []dealLog // 每一副的账（跨副存读对照比它）
+}
+
+// playDealFrom 把一副「已经开好」的局面打完：从 g 现在的状态一直走到分出上游。
+// restoreEvery > 0 时，打到第 N 步会存档、读回、用读回来的局面接着打（中途存读接续）。
+func playDealFrom(rnd *rand.Rand, g *Game, level Rank, restoreEvery int) (steps, borrowed, restored int, err error) {
+	model := newSimModel(handsOfGame(g), g.Turn())
+	steps, restored = 0, 0
+
+	for !g.Over() {
+		steps++
+		if steps > simMaxSteps {
+			return steps, model.borrowed, restored, fmt.Errorf("打了 %d 步还没结束（上限 %d）—— 卡住了？局面：%s", steps, simMaxSteps, gameText(g))
+		}
+		seat := g.Turn()
+		for _, done := range g.Finished() {
+			if done == seat {
+				return steps, model.borrowed, restored, fmt.Errorf("第 %d 步：轮到了已经出完的 %d 号座（出完的人不该再轮到）", steps, seat)
+			}
+		}
+
+		lastSeat, _, wasFollowing := g.LastPlay()
+		cards, pass, err := stepOnce(rnd, g, seat, level)
+		if err != nil {
+			return steps, model.borrowed, restored, fmt.Errorf("第 %d 步：%w", steps, err)
+		}
+		if pass {
+			model.pass(seat)
+		} else {
+			model.play(seat, len(cards))
+		}
+		if err := model.check(g, steps, lastSeat, wasFollowing); err != nil {
+			return steps, model.borrowed, restored, err
+		}
+		if err := checkHandsConserved(g); err != nil {
+			return steps, model.borrowed, restored, fmt.Errorf("第 %d 步之后：%w", steps, err)
+		}
+		if steps <= simFullCheckSteps || steps%simCheckEvery == 0 {
+			if err := checkIllegalActions(g, level); err != nil {
+				return steps, model.borrowed, restored, fmt.Errorf("第 %d 步之后：%w", steps, err)
+			}
+		}
+
+		// 中途存读接续：存档 → 读回 → 用读回来的局面接着打完。
+		// 读回来的必须和原来**一模一样**（局面、动作序列都在 gameText 里），不然接着打的就是
+		// 另一副牌了；后面 TestSimMatchRestoreKeepsResult 还会拿「存过档的」和「没存过档的」
+		// 两跑同一个种子做对照。
+		if restoreEvery > 0 && steps%restoreEvery == 0 {
+			restored++
+			if err := checkArchiveRoundTrip(g); err != nil {
+				return steps, model.borrowed, restored, fmt.Errorf("第 %d 步存档读回：%w", steps, err)
+			}
+			back, err := gameFromArchive(g)
+			if err != nil {
+				return steps, model.borrowed, restored, fmt.Errorf("第 %d 步读回存档：%w", steps, err)
+			}
+			// 就地换内容（不是换指针）：调用方手里那个局面还得是同一个 —— 不然
+			// playMatch 打完去问的就是**没打完的那一份**（这条一开始就是这么挂的）。
+			*g = *back
+		}
+	}
+	return steps, model.borrowed, restored, nil
+}
+
+// checkArchiveRoundTrip 存档读回来必须和存档前一模一样。
+func checkArchiveRoundTrip(g *Game) error {
+	back, err := gameFromArchive(g)
+	if err != nil {
+		return err
+	}
+	if got, want := gameText(back), gameText(g); got != want {
+		return fmt.Errorf("读回来的局面和存档前不一样：\n存档前：%s\n读回来：%s", want, got)
+	}
+	return nil
+}
+
+// gameFromArchive 把局面存成 JSON 再读回来。
+func gameFromArchive(g *Game) (*Game, error) {
+	data, err := json.Marshal(g)
+	if err != nil {
+		return nil, err
+	}
+	var back Game
+	if err := json.Unmarshal(data, &back); err != nil {
+		return nil, err
+	}
+	return &back, nil
+}
+
+// handsOfGame 把现在的四家手牌取出来（开局用，simModel 要用它起账）。
+func handsOfGame(g *Game) [Seats][]Card {
+	var out [Seats][]Card
+	for i := range out {
+		out[i] = g.Hand(i + 1)
+	}
+	return out
+}
+
+// playMatch 打一场：从 2 打起，每副「发牌 →（该进贡就按规则进贡还贡）→ 打完 → 算下一副」，
+// 直到过 A 或者打满 simMatchMaxDeals 副。
+//
+// 「下一副打几、要不要进贡、本场结束没有」由测试自己按规则推（simRule），和引擎给的比 ——
+// 不是拿 Next 和 scoring 自己比。
+func playMatch(rnd *rand.Rand, restoreEvery int) (*matchStats, error) {
+	st := &matchStats{level: Two}
+	rule := newSimRule()
+	var results []Result
+
+	for deal := 0; deal < simMatchMaxDeals; deal++ {
+		if err := checkNextMatchesRule(mustNext(results), rule); err != nil {
+			return nil, fmt.Errorf("第 %d 副之前：%w", deal+1, err)
+		}
+		next, err := Next(results)
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 副之前算打几：%w", deal+1, err)
+		}
+		level := rule.playing
+		if level != next.Level {
+			return nil, fmt.Errorf("第 %d 副：按规则该打 %s，引擎说打 %s",
+				deal+1, level.RankName(), next.Level.RankName())
+		}
+		st.level = level
+
+		firstLeader := 1 + rnd.Intn(Seats) // 一场的第一副：谁领出由调用方定（这里随机）
+		hands, err := dealFor(rnd, firstLeader)
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 副发牌：%w", deal+1, err)
+		}
+
+		log := dealLog{level: level, tribute: "none", receivers: map[int]int{}, moves: nil}
+		if rule.tributeNeeded() {
+			if !next.Tribute {
+				return nil, fmt.Errorf("第 %d 副：按规则该进贡，引擎说不用", deal+1)
+			}
+			prev := results[len(results)-1]
+			tr, err := NewTribute(level, hands, prev)
+			if err != nil {
+				return nil, fmt.Errorf("第 %d 副开贡牌：%w", deal+1, err)
+			}
+			plan, err := driveTribute(rnd, tr, level, hands, prev)
+			if err != nil {
+				return nil, fmt.Errorf("第 %d 副走贡牌：%w", deal+1, err)
+			}
+			log.givers = append([]int{}, plan.givers...)
+			for g, r := range plan.to {
+				log.receivers[g] = r
+			}
+			log.leader = plan.leader
+			if plan.resisted {
+				log.tribute = "resisted"
+				if st.resisted == 0 {
+					st.resistedFirstLevel = level
+				}
+				st.resisted++
+			} else {
+				log.tribute = "single"
+				if len(plan.givers) == 2 {
+					log.tribute = "double"
+				}
+				st.tributes++
+			}
+			if hands, err = tr.Hands(); err != nil {
+				return nil, fmt.Errorf("第 %d 副取贡完的手牌：%w", deal+1, err)
+			}
+			// 引擎定下来的首圈领出必须和推出来的一致；开局后轮到的也得是他。
+			gotLeader, ok := tr.Leader()
+			if !ok || gotLeader != plan.leader {
+				return nil, fmt.Errorf("第 %d 副首圈领出对不上：推的是 %d 号座，引擎给的是 %d（ok=%v）",
+					deal+1, plan.leader, gotLeader, ok)
+			}
+			firstLeader = plan.leader
+		}
+
+		g, err := NewGame(level, hands, firstLeader)
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 副开局：%w", deal+1, err)
+		}
+		if g.Turn() != firstLeader {
+			return nil, fmt.Errorf("第 %d 副：开局该轮到 %d 号座，实际是 %d 号座", deal+1, firstLeader, g.Turn())
+		}
+		steps, borrowed, restores, err := playDealFrom(rnd, g, level, restoreEvery)
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 副（打 %s，%d 号座领出）：%w", deal+1, level.RankName(), firstLeader, err)
+		}
+		st.steps += steps
+		st.borrowed += borrowed
+		st.restores += restores
+
+		res, ok, err := g.Result()
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 副取结果：%w", deal+1, err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("第 %d 副打完了却取不到结果", deal+1)
+		}
+		if err := checkFinishedDeal(g); err != nil {
+			return nil, fmt.Errorf("第 %d 副：%w", deal+1, err)
+		}
+		// 每一副的账（存读对照比它）：结果、动作序列、贡牌记录。
+		log.steps, log.result = steps, res
+		for _, mv := range g.Moves() {
+			if mv.Pass {
+				log.moves = append(log.moves, fmt.Sprintf("%d过", mv.Seat))
+				continue
+			}
+			log.moves = append(log.moves, fmt.Sprintf("%d出%s", mv.Seat, mv.Combo.String()))
+		}
+		st.logs = append(st.logs, log)
+
+		results = append(results, res)
+		st.deals++
+		if err := rule.advance(res); err != nil {
+			return nil, fmt.Errorf("第 %d 副记结果：%w", deal+1, err)
+		}
+		if rule.over {
+			st.over = true
+			break
+		}
+	}
+	return st, nil
+}
+
+// mustNext 是「按到现在为止的结果算下一副」——只用来给 checkNextMatchesRule 递个参数，
+// 真值以规则推的为准（这里不让任何错误悄悄溜过去）。
+func mustNext(results []Result) NextHand {
+	next, err := Next(results)
+	if err != nil {
+		panic(err)
+	}
+	return next
+}
+
+// simRule 是测试自己按第二条 12–14、第十二条推的「下一副打几、本场过没过 A、要不要进贡」。
+//
+// 为什么另写一份：只看「Next == scoring.Compute」是自己比自己（Next 就是包了 Compute），
+// 真正拿来开局的 next.Level / next.Tribute 反而没人查 —— auditor-251 把 Level 改死，sim 照样绿。
+// 这里按规则推一份，和引擎给的对。
+type simRule struct {
+	level       [3]Rank // 下标 1、2 是两队：1&3 号座一队、2&4 号座一队
+	playing     Rank    // 这一副打几（打上一副赢的那一队的级；第一副两队都 2）
+	playingTeam int     // 打的是哪一队的级
+	over        bool    // 过 A 了，本场结束
+	deals       int
+}
+
+func newSimRule() *simRule {
+	return &simRule{level: [3]Rank{0, Two, Two}, playing: Two, playingTeam: 0}
+}
+
+// teamOf 是座位属于哪一队：1、3 一队，2、4 一队。
+func teamOf(seat int) int {
+	if seat%2 == 1 {
+		return 1
+	}
+	return 2
+}
+
+// advance 记一副的结果，推下一副打几、本场过没过 A。
+//
+//	第二条 12：双下升 3 级、三游升 2 级、下游升 1 级，到 A 封顶；
+//	第十二条：打自己那一队的 A 时，拿了头游、搭档又不是末游 → 过 A，本场结束
+//	          （2022 版没有再「回 2」这一说）。
+func (r *simRule) advance(res Result) error {
+	delta := 5 - res.PartnerPlace // 搭档第 2 → 3 级；第 3 → 2 级；第 4 → 1 级
+	if delta < 1 || delta > 3 {
+		return fmt.Errorf("搭档名次 %d 不该出现（该是 2–4）", res.PartnerPlace)
+	}
+	winner := teamOf(res.HeadSeat)
+
+	// 过 A：这一副打的正好是赢的那一队的 A，而且搭档不是末游。
+	if r.deals > 0 && r.playing == Ace && r.playingTeam == winner && res.PartnerPlace != 4 {
+		r.over = true
+	}
+	r.deals++
+
+	if next := Rank(int(r.level[winner]) + delta); next > Ace {
+		r.level[winner] = Ace
+	} else {
+		r.level[winner] = next
+	}
+	r.playing, r.playingTeam = r.level[winner], winner
+	return nil
+}
+
+// tributeNeeded 是下一副要不要进贡：一场打过至少一副、而且本场还没结束（第十条 二）。
+func (r *simRule) tributeNeeded() bool { return r.deals > 0 && !r.over }
+
+// checkNextMatchesRule 核引擎给的「下一副打几 / 要不要进贡 / 本场结束没有」和按规则推的一样。
+func checkNextMatchesRule(next NextHand, r *simRule) error {
+	if next.Level != r.playing {
+		return fmt.Errorf("下一副打几对不上：按规则推的是 %s（%s），引擎说是 %s",
+			r.playing.RankName(), playedByTeam(r.playingTeam), next.Level.RankName())
+	}
+	if next.Tribute != r.tributeNeeded() {
+		return fmt.Errorf("要不要进贡对不上：按规则推的是 %v，引擎说是 %v", r.tributeNeeded(), next.Tribute)
+	}
+	if next.Score.MatchOver != r.over {
+		return fmt.Errorf("本场结束没有对不上：按规则推的是 %v，引擎说是 %v", r.over, next.Score.MatchOver)
+	}
+	return nil
+}
+
+// playedByTeam 是报错用的一句话：这一副打的是哪一队的级。
+func playedByTeam(team int) string {
+	if team == 0 {
+		return "第一副，两队都从 2 打起"
+	}
+	return fmt.Sprintf("%d 队的级", team)
+}
+
+// dealLog 是一副的账（跨副存读对照比它，比只比汇总数细得多）。
+type dealLog struct {
+	steps     int
+	result    Result
+	tribute   string      // single/double/resisted/none
+	givers    []int       // 要进贡的人
+	receivers map[int]int // 进的 → 收的
+	leader    int         // 首圈领出
+	level     Rank        // 这一副打几
+	moves     []string    // 每一步动作（写成人能看的串，比得出就行）
+}
+
+// simTributePlan 是测试**按第十条独立推**出来的贡牌过程：抗不抗贡、谁该贡、贡给谁、首圈谁领出。
+//
+// 有了它，「进贡」这一层就不是「引擎说啥就是啥」了：驱动器按规则推一份、引擎给一份，逐项对；
+// 对不上就是引擎（或者规则理解）有问题。auditor-251 的反证正是冲着这一点来的 —— 原来只查
+// 「引擎收下了我挑的牌」，双贡分配反了、抗贡判定改错、首圈领出改错，sim 全是绿的。
+type simTributePlan struct {
+	resisted bool
+	givers   []int
+	to       map[int]int // 进贡的人 → 贡给谁
+	leader   int         // 首圈领出的人
+	powers   map[int]int // 每人贡的那张的牌力（一样大时用来定「顺时针」）
+}
+
+// planTribute 按第十条推这一副的贡牌过程。hands 是刚发到各家手里的牌。
+func planTribute(level Rank, hands [Seats][]Card, prev Result) (simTributePlan, error) {
+	plan := simTributePlan{to: map[int]int{}, powers: map[int]int{}}
+
+	// 谁该贡：第十条 二（下游贡上游）、第十条 三（双下时对方两家都贡）。
+	if prev.PartnerPlace == 2 {
+		a, b := NextSeat(prev.HeadSeat), PartnerSeat(NextSeat(prev.HeadSeat))
+		if a > b {
+			a, b = b, a
+		}
+		plan.givers = []int{a, b}
+	} else {
+		plan.givers = []int{prev.Order[Seats-1]} // 末游（下游）
+	}
+
+	// 抗贡：要进贡的一方**合计**两个大王（第十条 四）。
+	bigJokers := 0
+	for _, g := range plan.givers {
+		for _, c := range hands[g-1] {
+			if c.Rank == BigJoker {
+				bigJokers++
+			}
+		}
+	}
+	if bigJokers >= 2 {
+		plan.resisted, plan.leader = true, prev.HeadSeat // 抗贡时首圈由上游领出
+		return plan, nil
+	}
+
+	// 每家贡的那张（最大的一张、红心级牌除外）：只用来推「谁收贡」——「最大的一张」这一族
+	// 牌力都一样，挑哪一张同大的都不影响归属。
+	for _, g := range plan.givers {
+		best := biggestForTribute(hands[g-1], level)
+		if len(best) == 0 {
+			return plan, fmt.Errorf("%d 号座手里没有能贡的牌", g)
+		}
+		plan.powers[g] = best[0].Power(level)
+	}
+
+	if len(plan.givers) == 1 {
+		g := plan.givers[0]
+		plan.to[g] = prev.HeadSeat
+		plan.leader = g // 单贡：首圈由下游领出（第十条 二）
+		return plan, nil
+	}
+
+	// 双贡：大的给上游、小的给上游的搭档；一样大时各给自己顺时针的邻座（第十条 三）。
+	a, b := plan.givers[0], plan.givers[1]
+	switch {
+	case plan.powers[a] > plan.powers[b]:
+		plan.to[a], plan.to[b] = prev.HeadSeat, PartnerSeat(prev.HeadSeat)
+	case plan.powers[a] < plan.powers[b]:
+		plan.to[b], plan.to[a] = prev.HeadSeat, PartnerSeat(prev.HeadSeat)
+	default:
+		plan.to[a], plan.to[b] = ClockwiseSeat(a), ClockwiseSeat(b)
+	}
+	for g, r := range plan.to {
+		if r == prev.HeadSeat {
+			plan.leader = g // 双贡：首圈由贡给上游的那位领出（第十条 三）
+		}
+	}
+	return plan, nil
+}
+
+// driveTribute 替玩家把进贡、还牌走完（抗贡就什么都不做），顺带把引擎和「按规则推出来的那份」
+// 逐项对上。返回推出来的那份（调用方还要拿它核开局的首圈领出）。
+func driveTribute(rnd *rand.Rand, tr *Tribute, level Rank, hands [Seats][]Card, prev Result) (simTributePlan, error) {
+	plan, err := planTribute(level, hands, prev)
+	if err != nil {
+		return plan, err
+	}
+
+	// 抗不抗贡、谁该贡：引擎必须和推出来的一致。
+	if got := tr.Kind() == TributeResisted; got != plan.resisted {
+		return plan, fmt.Errorf("抗贡与否对不上：按规则推的是 %v（要进贡的 %v 手里合计 %d 张大王），引擎说 %v",
+			plan.resisted, plan.givers, countBigJokers(hands, plan.givers), got)
+	}
+	if got := tr.Givers(); !sameSeats(got, plan.givers) {
+		return plan, fmt.Errorf("要进贡的人对不上：按规则推的是 %v，引擎说 %v", plan.givers, got)
+	}
+	if plan.resisted {
+		if err := probeRejected("抗贡了还进贡", ErrTributeResisted, tr, func() error {
+			return tr.Give(plan.givers[0], hands[plan.givers[0]-1][0])
+		}); err != nil {
+			return plan, err
+		}
+		return plan, nil
+	}
+
+	now := hands
+	given := map[int]Card{} // 驱动器自己挑的那张（后面补收贡人的手牌要用它，不读引擎内部）
+	// ① 各家贡牌：按规则挑最大的一张（同大任选），引擎必须收下；另外试两张必须被拒的。
+	for _, giver := range plan.givers {
+		legal := biggestForTribute(now[giver-1], level)
+		if len(legal) == 0 {
+			return plan, fmt.Errorf("%d 号座手里没有能贡的牌", giver)
+		}
+		// 探针一：贡红心级牌必须被拒（第十条 二）。
+		if wild, ok := wildIn(now[giver-1], level); ok {
+			if err := probeRejected("贡红心级牌", ErrTributeWildCannotGive, tr, func() error {
+				return tr.Give(giver, wild)
+			}); err != nil {
+				return plan, err
+			}
+		}
+		// 探针二：贡一张「不是最大」的必须被拒（第十条 二）。
+		if other, ok := notBiggestIn(now[giver-1], level, legal); ok {
+			if err := probeRejected("贡不是最大的那张", ErrTributeNotBiggest, tr, func() error {
+				return tr.Give(giver, other)
+			}); err != nil {
+				return plan, err
+			}
+		}
+		card := legal[rnd.Intn(len(legal))]
+		if err := tr.Give(giver, card); err != nil {
+			return plan, fmt.Errorf("%d 号座贡规则要求的那张 %s 被拒：%w", giver, card.Key(), err)
+		}
+		given[giver] = card
+		now[giver-1] = without(now[giver-1], card)
+	}
+
+	// ② 谁收贡：引擎必须和推出来的一致（双贡分配反了，这里就红）。
+	for _, giver := range plan.givers {
+		seat, ok := tr.Receiver(giver)
+		if !ok {
+			return plan, fmt.Errorf("贡完了却没定下 %d 号座贡给谁", giver)
+		}
+		want := plan.to[giver]
+		if seat != want {
+			return plan, fmt.Errorf("%d 号座的贡牌该给 %d 号座，引擎说给 %d 号座", giver, want, seat)
+		}
+		// 按**推出来**的收贡人、用**驱动器自己挑的那张**补牌（不读引擎内部），
+		// 这样最后逐座比手牌才是在查东西。
+		now[want-1] = append(now[want-1], given[giver])
+	}
+
+	// ③ 还牌：按规则挑（牌面 ≤ 10 的，或全大于 10 时最小的），引擎必须收下；再试两张必须被拒的。
+	for _, giver := range plan.givers {
+		seat := plan.to[giver]
+		legal := returnableFrom(now[seat-1], level)
+		if len(legal) == 0 {
+			return plan, fmt.Errorf("%d 号座手里没有能还的牌", seat)
+		}
+		// 探针三：还一张「超过 10」的（手里有 ≤ 10 的前提下）必须被拒（第十条 二）。
+		if tooBig, ok := aboveTenIn(now[seat-1]); ok {
+			if err := probeRejected("还超过 10 的牌", ErrTributeCannotReturn, tr, func() error {
+				return tr.Return(seat, tooBig)
+			}); err != nil {
+				return plan, err
+			}
+		}
+		card := legal[rnd.Intn(len(legal))]
+		if err := tr.Return(seat, card); err != nil {
+			return plan, fmt.Errorf("%d 号座还规则允许的 %s 被拒：%w", seat, card.Key(), err)
+		}
+		now[seat-1] = without(now[seat-1], card)
+		now[giver-1] = append(now[giver-1], card)
+	}
+
+	// ④ 贡完还完的**每一家手牌**：推出来的那份必须和引擎给的一样（这一次是真在查牌）。
+	gotHands, err := tr.Hands()
+	if err != nil {
+		return plan, fmt.Errorf("取贡完的手牌：%w", err)
+	}
+	for seat := 1; seat <= Seats; seat++ {
+		if got, want := cardsMultiset(gotHands[seat-1]), cardsMultiset(now[seat-1]); got != want {
+			return plan, fmt.Errorf("%d 号座贡完还完的手牌对不上：\n引擎：%s\n推的：%s",
+				seat, cardsText(gotHands[seat-1]), cardsText(now[seat-1]))
+		}
+	}
+
+	// ⑤ 首圈领出：引擎必须和推出来的一致（单贡由下游、双贡由贡给上游的那位、抗贡由上游）。
+	leader, ok := tr.Leader()
+	if !ok {
+		return plan, fmt.Errorf("贡牌走完了却没定下首圈领出的人")
+	}
+	if leader != plan.leader {
+		return plan, fmt.Errorf("首圈领出的人该是 %d 号座，引擎说是 %d 号座", plan.leader, leader)
+	}
+	if !tr.Done() {
+		return plan, fmt.Errorf("贡完还完了，引擎却说没完")
+	}
+	return plan, nil
+}
+
+// countBigJokers 数这些人手里合计几个大王（抗贡判定用）。
+func countBigJokers(hands [Seats][]Card, seats []int) int {
+	n := 0
+	for _, s := range seats {
+		for _, c := range hands[s-1] {
+			if c.Rank == BigJoker {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// wildIn 找一张红心级牌（用来试「贡它必须被拒」）。
+func wildIn(hand []Card, level Rank) (Card, bool) {
+	for _, c := range hand {
+		if c.IsWild(level) {
+			return c, true
+		}
+	}
+	return Card{}, false
+}
+
+// aboveTenIn 找一张牌面大于 10 的牌（用来试「手里有 ≤ 10 的牌时，还它必须被拒」）。
+func aboveTenIn(hand []Card) (Card, bool) {
+	small := false
+	for _, c := range hand {
+		if !c.Rank.IsJoker() && c.Rank <= Ten {
+			small = true
+		}
+	}
+	if !small {
+		return Card{}, false
+	}
+	for _, c := range hand {
+		if c.Rank.IsJoker() || c.Rank > Ten {
+			return c, true
+		}
+	}
+	return Card{}, false
+}
+
+// cardsMultiset 把一手牌写成「排好序的牌面」，比手牌用（顺序不算）。
+func cardsMultiset(hand []Card) string {
+	ks := make([]string, len(hand))
+	for i, c := range hand {
+		ks[i] = c.Key()
+	}
+	sort.Strings(ks)
+	return strings.Join(ks, " ")
+}
+
+// probeRejected 灌一个该被拒的动作：必须被拒、错误码对得上。
+func probeRejected(what string, want error, tr *Tribute, act func() error) error {
+	err := act()
+	if err == nil {
+		return fmt.Errorf("%s：这个动作不合规，却被接受了", what)
+	}
+	if !errors.Is(err, want) {
+		return fmt.Errorf("%s：错误码不对，想要 %v，拿到 %v", what, want, err)
+	}
+	return nil
+}
+
+// biggestForTribute 是规则要求的那一张（的一族）：手里**非逢人配**里牌力最大的那些牌。
+// 有几张一样大（两张同点数的 A、不同花色的级牌）任选一张都对（第十条 二）。
+func biggestForTribute(hand []Card, level Rank) []Card {
+	max := -1
+	for _, c := range hand {
+		if c.IsWild(level) {
+			continue
+		}
+		if p := c.Power(level); p > max {
+			max = p
+		}
+	}
+	var out []Card
+	for _, c := range hand {
+		if !c.IsWild(level) && c.Power(level) == max {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// notBiggestIn 从手里挑一张「贡了必须被拒、而且拒的理由就是 not-biggest」的牌：
+// 既不是最大的那些，**也不能是红心级牌**（逢人配会被 wild-cannot-give 先拦下来，
+// 那就试不出 not-biggest 这一条了 —— 第一次写这条探针时就被它绊了一下）。
+func notBiggestIn(hand []Card, level Rank, biggest []Card) (Card, bool) {
+	isBig := map[int]bool{}
+	for _, c := range biggest {
+		isBig[c.ID] = true
+	}
+	for _, c := range hand {
+		if !isBig[c.ID] && !c.IsWild(level) {
+			return c, true
+		}
+	}
+	return Card{}, false
+}
+
+// returnableFrom 是规则允许还的那些牌（第十条 二，读法 A：按牌面数字）：
+// 手里有牌面不超过 10 的牌时只能还这种；全都大于 10 时还牌力最小的那些。
+//
+// 判定和实现里的 canReturn 是**同一套规矩、分开写的**：这里要是和它不一致，driveTribute
+// 会被引擎拒（测试红）。真改成读法 B 时，这两处要一起改（canReturn 一处 + 这里一处）。
+func returnableFrom(hand []Card, level Rank) []Card {
+	small := func(c Card) bool { return !c.Rank.IsJoker() && c.Rank <= Ten }
+	var out []Card
+	for _, c := range hand {
+		if small(c) {
+			out = append(out, c)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	min := -1
+	for _, c := range hand {
+		if p := c.Power(level); min < 0 || p < min {
+			min = p
+		}
+	}
+	for _, c := range hand {
+		if c.Power(level) == min {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 // randomPerm 生成一个发牌排列：引擎自己不掷骰子，随机源从外面注入，
 // 同一个种子跑出来的牌局完全一样（第 1 步的口径）。
@@ -78,7 +756,7 @@ func dealFor(rnd *rand.Rand, leader int) ([Seats][]Card, error) {
 	return bySeat, nil
 }
 
-// playDeal 打完一副牌：从 leader 领出开始，一直走到分出上游。
+// playDeal 发一副牌并打完：从 leader 领出开始，一直走到分出上游。
 // 返回结束后的局面、步数、借风次数（借风是第九条那条路径，得让调用方看得见它走到过）。
 func playDeal(rnd *rand.Rand, level Rank, leader int) (*Game, int, int, error) {
 	hands, err := dealFor(rnd, leader)
@@ -89,46 +767,11 @@ func playDeal(rnd *rand.Rand, level Rank, leader int) (*Game, int, int, error) {
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("开一副牌：%w", err)
 	}
-
-	model := newSimModel(hands, leader)
-
-	steps := 0
-	for !g.Over() {
-		steps++
-		if steps > simMaxSteps {
-			return nil, steps, model.borrowed, fmt.Errorf("打了 %d 步还没结束（上限 %d）—— 卡住了？局面：%s", steps, simMaxSteps, gameText(g))
-		}
-		seat := g.Turn()
-		for _, done := range g.Finished() {
-			if done == seat {
-				return nil, steps, model.borrowed, fmt.Errorf("第 %d 步：轮到了已经出完的 %d 号座（出完的人不该再轮到）", steps, seat)
-			}
-		}
-
-		lastSeat, _, wasFollowing := g.LastPlay()
-		cards, pass, err := stepOnce(rnd, g, seat, level)
-		if err != nil {
-			return nil, steps, model.borrowed, fmt.Errorf("第 %d 步：%w", steps, err)
-		}
-		// 测试这边按规则独立记一遍，再和引擎逐步对（B1）。
-		if pass {
-			model.pass(seat)
-		} else {
-			model.play(seat, len(cards))
-		}
-		if err := model.check(g, steps, lastSeat, wasFollowing); err != nil {
-			return nil, steps, model.borrowed, err
-		}
-		if err := checkHandsConserved(g); err != nil {
-			return nil, steps, model.borrowed, fmt.Errorf("第 %d 步之后：%w", steps, err)
-		}
-		if steps <= simFullCheckSteps || steps%simCheckEvery == 0 {
-			if err := checkIllegalActions(g, level); err != nil {
-				return nil, steps, model.borrowed, fmt.Errorf("第 %d 步之后：%w", steps, err)
-			}
-		}
+	steps, borrowed, _, err := playDealFrom(rnd, g, level, 0)
+	if err != nil {
+		return nil, steps, borrowed, err
 	}
-	return g, steps, model.borrowed, nil
+	return g, steps, borrowed, nil
 }
 
 // stepOnce 是驱动器的一步：按 Moves 给的选择出牌或者过牌。
@@ -777,6 +1420,115 @@ func TestSimReplayIsDeterministic(t *testing.T) {
 		}
 		if gameText(first) != gameText(second) {
 			t.Fatalf("同一个种子跑出来局面不一样：\n%s\n%s", gameText(first), gameText(second))
+		}
+	}
+}
+
+// TestSimManyMatches 打若干场完整比赛：每场从 2 打起，跨多副、带进贡/还贡/抗贡，
+// 一路打到过 A 或打满上限（#204 第 7 步的接续）。
+//
+// 和 TestSimManyDeals 的分工：那边是「一副一副」的快语料（覆盖面广、跑得动），
+// 这边是「一场一场」的完整链路（进贡、下一副打几级、跨副状态都在里面），副数少一些。
+func TestSimManyMatches(t *testing.T) {
+	matches := simMatchCount / perfScale
+	if testing.Short() {
+		matches = 3
+	}
+
+	stats := make([]*matchStats, matches)
+	errs := make([]error, matches)
+	workers := runtime.GOMAXPROCS(0)
+	if workers > matches {
+		workers = matches
+	}
+	var wg sync.WaitGroup
+	next := make(chan int)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				func(i int) {
+					// 一场整个跑在 recover 里：一场挂了只算这一场，其它场的账还在。
+					defer func() {
+						if r := recover(); r != nil {
+							errs[i] = fmt.Errorf("引擎 panic 了：%v", r)
+						}
+					}()
+					stats[i], errs[i] = playMatch(rand.New(rand.NewSource(int64(simMatchSeedBase)+int64(i))), 0)
+				}(i)
+			}
+		}()
+	}
+	for i := 0; i < matches; i++ {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+
+	deals, steps, borrowed, tributes, resisted, over := 0, 0, 0, 0, 0, 0
+	firstErr := error(nil)
+	for i, err := range errs {
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("第 %d 场：%w", i+1, err)
+			}
+			continue
+		}
+		st := stats[i]
+		deals += st.deals
+		steps += st.steps
+		borrowed += st.borrowed
+		tributes += st.tributes
+		resisted += st.resisted
+		if st.over {
+			over++
+		}
+	}
+	if firstErr != nil {
+		t.Fatalf("有没跑过的场：%v", firstErr)
+	}
+	t.Logf("跑了 %d 场：一共 %d 副、%d 步，进贡 %d 副、抗贡 %d 副、借风 %d 次，%d 场过 A 结束",
+		matches, deals, steps, tributes, resisted, borrowed, over)
+
+	// 进贡这条路必须真的走到（40 场里第一副之后每副都该进贡或抗贡）。
+	if tributes+resisted < deals-matches {
+		t.Fatalf("进贡/抗贡只走了 %d 次，第一副之外有 %d 副，对不上", tributes+resisted, deals-matches)
+	}
+	if tributes == 0 {
+		t.Fatal("一场都没进贡 —— 这条路没被走到，测试等于没测")
+	}
+	if over == 0 {
+		t.Fatal("一场都没过 A —— 「下一副打几」那条路没走全")
+	}
+}
+
+// TestSimMatchRestoreKeepsResult 同一个种子跑同一场比赛两遍：一遍中途「存档 → 读回 → 接着打」，
+// 一遍不存。两遍的账必须一模一样 —— 存读接续不该改变任何东西（#246 复审提的那条不阻塞项）。
+func TestSimMatchRestoreKeepsResult(t *testing.T) {
+	for i := 0; i < 4; i++ {
+		seed := int64(simMatchSeedBase + 500 + i)
+		plain, err := playMatch(rand.New(rand.NewSource(seed)), 0)
+		if err != nil {
+			t.Fatalf("第 %d 场（不存档）：%v", i+1, err)
+		}
+		saved, err := playMatch(rand.New(rand.NewSource(seed)), simRestoreEvery)
+		if err != nil {
+			t.Fatalf("第 %d 场（一路存档）：%v", i+1, err)
+		}
+		if saved.restores == 0 {
+			t.Fatalf("第 %d 场一次档都没存过，这条测试没起作用", i+1)
+		}
+		// 比**每一副的账**（名次、级数、进贡/还贡记录、每一步动作），不是只比几个汇总数
+		// —— 汇总数撞巧一样的可能不小（auditor-251 提的那条）。
+		if !reflect.DeepEqual(plain.logs, saved.logs) {
+			t.Fatalf("第 %d 场：存过档和没存过档每一副的账不一样（%d 副 / %d 副）",
+				i+1, len(saved.logs), len(plain.logs))
+		}
+		if plain.deals != saved.deals || plain.steps != saved.steps || plain.borrowed != saved.borrowed ||
+			plain.tributes != saved.tributes || plain.resisted != saved.resisted ||
+			plain.level != saved.level || plain.over != saved.over {
+			t.Fatalf("第 %d 场存过档和没存过档结果不一样：\n不存：%+v\n存过：%+v", i+1, plain, saved)
 		}
 	}
 }
