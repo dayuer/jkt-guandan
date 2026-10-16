@@ -3,10 +3,10 @@
 H5（`app/h5`）和小游戏（`app/minigame`）**都** import 这里。它没有 `package.json`、没有构建步骤：
 两端各自用相对路径 import（`../../shared/src/…`），打包时跟着各端编进各自的产物。
 
-（#253 之前小游戏是直接 import `app/h5/src` 里的模块的，反向依赖 12 处；现在两边都从这里拿，小游戏
-对 `app/h5` 的 import 是 0。）
+（#253 之前小游戏是直接 import `app/h5/src` 里的模块的：8 条 import、落在 7 个文件里；现在两边都从这里拿，
+小游戏对 `app/h5` 的 import 是 0。）
 
-## 三条规矩
+## 四条规矩
 
 ### 1. 不碰 DOM / 浏览器 API；默认值留在各端的**壳**里
 
@@ -15,7 +15,7 @@ H5（`app/h5`）和小游戏（`app/minigame`）**都** import 这里。它没�
 
 | 需要什么 | H5 的默认值在哪 | 小游戏的默认值在哪 |
 |---|---|---|
-| 本地存储 | `app/h5/src/{status,learn}.ts` 的 `window.localStorage` | `app/minigame/src/lib/{status,learn}.ts`（`shim.ts` 垫在 `window.localStorage` 上的 wx 存储） |
+| 本地存储 | `app/h5/src/{status,learn}.ts` 的 `window.localStorage` | `app/minigame/src/lib/learn.ts` 的 `globalThis.window?.localStorage`；状态提示那条链（`lib/notice.ts`）一直自己把存储传进来 |
 | 站点地址 | `app/h5/src/{share,invite}.ts` 的 `window.location.origin` | 调用点直接传 `API_BASE` |
 | 时间怎么写 | `app/h5/src/format.ts`（`Intl` + Asia/Jakarta） | `app/minigame/src/lib/fmt.ts`（自己按 UTC+7 算，安卓微信不一定有 `Intl`） |
 
@@ -26,7 +26,9 @@ H5（`app/h5`）和小游戏（`app/minigame`）**都** import 这里。它没�
 **还有一条运行期的理由**（比编译期更硬）：小游戏的 vitest 跑在 **node** 环境里，没有 `window`；
 共享层里任何一句**顶层求值**的浏览器 API，会让 import 它的测试 `ReferenceError: window is not defined`
 —— 在 **import 那一刻**就炸，不是等到调用它才炸。实测过一次：在共享层写一句 `window.location.href`，
-`local-ci/test` 和 `local-ci/minigame` 一起红（`src/scenes/me.ts → lib/api.ts → shared/wa.ts` 这条链）。
+`local-ci/test` 和 `local-ci/minigame` 一起红 —— 当时是往共享层的 `wa.ts` 里加的，小游戏那边
+`src/scenes/me.ts:10` 直接 import 它。也就是说那条链上只要有**一个**共享模块顶层碰了 `window`，
+小游戏侧整片测试就起不来。
 
 ### 2. 文件之间只许 `import type`
 
@@ -37,23 +39,42 @@ H5（`app/h5`）和小游戏（`app/minigame`）**都** import 这里。它没�
 它的产物；链上只要有个模块顶层碰了浏览器 API（见规矩 1），那端的测试/打包就会连带炸。
 
 **工具**：`node scripts/check-shared-imports.mjs`（也在 `make shared-check` 里，同一条 `make test`）。
-`tsc` 和 `isolatedModules` 都拦不住值 import，所以由这个脚本按语句扫：
+`tsc` 和 `isolatedModules` 都拦不住值 import，所以这个脚本用 **TypeScript 编译器 API**（不是正则）解析
+`app/shared/src` 下的每个 `.ts` / `.tsx` / `.mts` / `.cts`（含子目录）再判。正则版本被审出过一串漏网：
+副作用 import、不写分号时被 `export type Foo = string` 藏住的值 import、`import x = require()`、
+`require()`，行号还会偏一行 —— 那些写法现在都在脚本的自测里
+（`scripts/check-shared-imports.test.mjs`，`make shared-check` 里跟着跑）。
 
-- ✅ `import type { KeyValueStore } from "./store"`、`import { type A, type B } from "./store"`
-- ❌ `import { KeyValueStore } from "./store"`、`import { type A, B } from "./store"`、`export * from "./store"`
+- ✅ `import type { KeyValueStore } from "./store"`、`import { type A, type B } from "./store"`、
+  `export type { A } from "./store"`、`export type * from "./store"`、`type A = import("./store").Foo`
+- ❌ `import { KeyValueStore } from "./store"`、`import { type A, B } from "./store"`、
+  `import D from "./store"`、`import * as m from "./store"`、`export * from "./store"`、
+  `export * as ns from "./store"`
+- ❌ **副作用 import**：`import "./store"` —— 它只为执行对方模块的顶层代码而存在，正是规矩 1 里
+  「顶层碰了浏览器 API 就在 import 那一刻炸」最纯的形态
+- ❌ `import x = require("./store")`、`require("./store")`、`import("./store")`（含 `await`）
 
-### 3. 端的差异用「注入」表达，不在这里写 `if (是 H5)`
+### 3. 不引 npm 包（零运行期依赖）
+
+共享层不 import 任何 npm 包 —— 它是两端共用的中间层，多一个依赖就多一份「两端的打包都要跟着装」的成本，
+小游戏的包体尤其敏感。需要类型就从自己这层声明（`KeyValueStore`、`FieldLabels` 都是这么来的）。
+
+值 import 由上面那道守门拦；`import type … from "npm包"` 守门放行（擦得掉），但 `app/shared` 往上找不到
+任何 `node_modules`，`tsc -p app/shared` 会先报 `TS2307`，所以事实上也写不出来。
+
+### 4. 端的差异用「注入」表达，不在这里写 `if (是 H5)`
 
 需要端上才知道的东西（时间怎么显示、链接前缀、往哪存），一律做成参数由调用方给。共享层不知道
-自己跑在浏览器还是微信里 —— 这也是前面两条能成立的原因。
+自己跑在浏览器还是微信里 —— 这也是前面几条能成立的原因。
 
 ## 加一个共享模块的清单
 
 1. 只放**与端无关**的东西：纯函数、类型、常量、数据（比如课本正文 `learn.ts`）。
 2. 要读端上的东西？做成参数（`origin` / `when` / `store`），**别读全局**。
-3. 在两端各留一个**薄壳**（形状：`export *` 转出 + 把默认值绑好再导出），这样调用点不用动；
-   两端壳的路径和写法可参照 `app/h5/src/{status,learn,share,invite}.ts` 与
-   `app/minigame/src/lib/{status,learn,share,conflict}.ts`。
+3. 在需要默认值的那端留一个**薄壳**（形状：`export *` 转出 + 把默认值绑好再导出），这样调用点不用动；
+   可参照 `app/h5/src/{status,learn,share,invite}.ts` 与
+   `app/minigame/src/lib/{learn,share,conflict}.ts`（小游戏的状态提示不用壳：`lib/notice.ts`
+   一直自己把存储传进来）。
 4. 跑 `make shared-check`（类型 + 守门）和两端的测试；两端的用例要能因为**改共享层**而红
    （小游戏侧曾经出现过「改共享层文案只有 h5 红」的窟窿）。
 5. `local-ci` 的范围：`app/shared/*` 已经映射到 `local-ci/test` + `local-ci/minigame` +
