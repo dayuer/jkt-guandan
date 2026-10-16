@@ -203,3 +203,65 @@ func TestMergeUsersMovesScoreRecords(t *testing.T) {
 		t.Fatalf("离座记录没搬：%q %v", leaver, err)
 	}
 }
+
+// 合并时「我的牌局」里删掉过的记录也要搬（#211）：两边删过同一局就只留一条，
+// 各自删过的也要并过来 —— 不然合并之后那几局又会冒回历史列表里。
+func TestMergeUsersMovesHiddenGames(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+			_, err := tx.ExecContext(ctx, q, args...)
+			return err
+		}); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	for i, id := range []string{"u-primary", "u-other"} {
+		exec(`INSERT INTO users (id, nickname, created_at) VALUES (?, ?, ?)`, id, id, 100+i)
+	}
+	for i, code := range []string{"g1", "g2", "g3"} {
+		exec(`INSERT INTO games (id, short_code, host_id, starts_at, area, venue, kind, status, created_at)
+		      VALUES (?, ?, 'u-primary', 0, 'SCBD', 'Pacific Place', 'classic', 'done', ?)`, code, code, i)
+	}
+	exec(`INSERT INTO hidden_games (user_id, game_id, hidden_at) VALUES ('u-primary', 'g1', 1)`) // 保留方删过
+	exec(`INSERT INTO hidden_games (user_id, game_id, hidden_at) VALUES ('u-other', 'g2', 2)`)   // 被合并方删过 → 要搬
+	exec(`INSERT INTO hidden_games (user_id, game_id, hidden_at) VALUES ('u-primary', 'g3', 3)`)
+	exec(`INSERT INTO hidden_games (user_id, game_id, hidden_at) VALUES ('u-other', 'g3', 3)`) // 两边都删过 → 只留一条
+
+	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		_, err := mergeUsers(ctx, tx, "u-other", "u-primary")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := st.Read().Query(`SELECT user_id || '>' || game_id FROM hidden_games ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var s string
+		_ = rows.Scan(&s)
+		got = append(got, s)
+	}
+	want := []string{"u-primary>g1", "u-primary>g2", "u-primary>g3"}
+	if len(got) != len(want) {
+		t.Fatalf("合并后的隐藏记录 %v，期望 %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("合并后的隐藏记录 %v，期望 %v", got, want)
+		}
+	}
+}
