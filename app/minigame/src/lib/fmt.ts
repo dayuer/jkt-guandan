@@ -41,9 +41,8 @@ export function monthDay(unixSeconds: number): string {
   return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`;
 }
 
-export function kindLabel(kind: string): string {
-  return ({ classic: "经典掼蛋", "no-level": "不升级", teaching: "带新手" } as Record<string, string>)[kind] ?? kind;
-}
+// 不碰时间，两端一样，#253 起住在 app/shared；这里转出去，fmt 的使用方不用动。
+export { kindLabel } from "../../../shared/src/labels";
 
 /** 详情页顶部：「今天 10/13 周二」 */
 export function dayLabel(unixSeconds: number, now: number = nowSec()): string {
