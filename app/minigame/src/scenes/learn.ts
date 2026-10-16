@@ -3,7 +3,7 @@
 import type { App, Scene } from "../core/app";
 import { C, Ctx, Scroller, fillRR, font, paragraph, strokeRR, text, wrap, ellipsize } from "../core/ui";
 import { PAD, button, icon, nav, segmented, suit } from "../core/widgets";
-import { LESSONS, LEVELS, doneLessons, lessonById, lessonsOf, markDone, nextLesson, type Level } from "../../../h5/src/learn";
+import { LESSONS, LEVELS, doneLessons, lessonById, lessonsOf, markDone, nextLesson, type Level } from "../lib/learn";
 import { TAB_H } from "./home";
 import type { Nav } from "./nav";
 

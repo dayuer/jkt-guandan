@@ -1,4 +1,4 @@
-// 小游戏没有 window / localStorage。复用的 H5 模块（status.ts、learn.ts）会读 window.localStorage，
+// 小游戏没有 window / localStorage。共享层（app/shared 的 status.ts、learn.ts）会读 window.localStorage，
 // 这里用 wx 的本地存储垫一层。必须是 main.ts 的第一个 import。
 
 const g: any = typeof GameGlobal !== "undefined" ? GameGlobal : globalThis;
