@@ -318,24 +318,70 @@ func TestMovesFixture(t *testing.T) {
 		}
 		for i, want := range v.Moves {
 			got := moves[i]
-			if got.Type.String() != want.Kind || got.Rank.RankName() != want.Rank || len(got.Cards) != want.Size {
+			if got.Type.String() != want.Kind || rankText(got) != want.Rank || len(got.Cards) != want.Size {
 				t.Fatalf("%s：第 %d 手不一样\n算出 %s\n牌例 %s\n（全部）算出 %s\n（全部）牌例 %s",
 					v.Name, i+1, moveText(got), wantText(want), movesText(moves), wantsText(v.Moves))
 			}
 			if len(got.Wilds) != len(want.Wilds) {
 				t.Fatalf("%s：第 %d 手的顶法不一样\n算出 %s\n牌例 %s", v.Name, i+1, moveText(got), wantText(want))
 			}
-			for k, w := range want.Wilds {
-				if got.Wilds[k].Card.Key() != w.Card || asKey(got.Wilds[k].As) != w.As {
-					t.Fatalf("%s：第 %d 手的顶法不一样\n算出 %s\n牌例 %s", v.Name, i+1, moveText(got), wantText(want))
-				}
+			// 按集合比，不比顺序：README「逢人配」第 5 条 —— 一手牌里两张逢人配谁先谁后
+			// 是「用哪几张牌」的差别，两端各挑一套就行，顺序不该影响判定。
+			if gotSet, wantSet := wildSet(got.Wilds), wildSetOfDecl(want.Wilds); !sameSet(gotSet, wantSet) {
+				t.Fatalf("%s：第 %d 手的顶法不一样\n算出 %s\n牌例 %s", v.Name, i+1, moveText(got), wantText(want))
 			}
 		}
 	}
 }
 
+// wildSet 把顶法写成一组「顶成了什么」，用来**按集合**比：
+// 既不比顺序（README 逢人配第 5 条），也**不比用的是哪一张逢人配** —— 那是「用哪几张牌」
+// 的差别，而且 TS 端根本没有副号这个概念，比它就等于要求两端的牌编号一致。
+func wildSet(wilds []Wildcard) []string {
+	out := make([]string, 0, len(wilds))
+	for _, w := range wilds {
+		out = append(out, asKey(w.As))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func wildSetOfDecl(wilds []wildDecl) []string {
+	out := make([]string, 0, len(wilds))
+	for _, w := range wilds {
+		out = append(out, w.As)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// rankText 是这一手在牌例里写的「牌面」：四大天王没有牌面，写空串（README）。
+// 直接拿 Rank.RankName() 会写出 "0"（四大天王的 Rank 是 0），牌例按 README 写空串就对不上。
+func rankText(c Combo) string {
+	if c.Type == TypeJokerBomb {
+		return ""
+	}
+	return c.Rank.RankName()
+}
+
 func moveText(c Combo) string {
-	out := c.Type.String() + " " + c.Rank.RankName() + " " + strconv.Itoa(len(c.Cards)) + " 张"
+	rank := rankText(c)
+	if rank != "" {
+		rank = " " + rank
+	}
+	out := c.Type.String() + rank + " " + strconv.Itoa(len(c.Cards)) + " 张"
 	for _, w := range c.Wilds {
 		out += "（" + w.Card.Key() + " 当 " + asKey(w.As) + "）"
 	}

@@ -191,6 +191,83 @@ func TestMovesFollowMatchesBruteForce(t *testing.T) {
 	t.Logf("跟牌对拍了 %d 手牌", checked)
 }
 
+// edgeHands 是**随机手牌抽不到**的边界牌型：A 当 1 的三种窗口、绕圈边界的 QKA、
+// 两张逢人配、七个 3（炸弹张数）。随机手牌被 randomHand 压在 3..K，A2345 这种一次也抽不出来，
+// 于是「A 当 1」的窗口整段漏掉它也是绿的 —— jkt-2 在 TS 端把 rankWindows 里的 A 当 1 删干净，
+// 全部测试照样过。这里的每一手都写死，并且和暴力枚举对拍（对拍用的是 Recognize，独立于生成器）。
+var edgeHands = []struct {
+	name  string
+	cards []string
+	level string
+}{
+	{"A 当 1 的顺子", []string{"♠A/0", "♠2/0", "♠3/0", "♠4/0", "♠5/0"}, "7"},
+	{"A 当 1 的顺子（两个窗口挨着）", []string{"♠A/0", "♠2/0", "♠3/0", "♠4/0", "♠5/0", "♠6/0"}, "7"},
+	{"A 当 1 的顺子 + 逢人配", []string{"♠2/0", "♠3/0", "♠4/0", "♠5/0", "♥7/0"}, "7"},
+	{"A 当 1 的三连对", []string{"♠A/0", "♥A/0", "♠2/0", "♥2/0", "♠3/0", "♥3/0"}, "7"},
+	{"A 当 1 的三同连张", []string{"♠A/0", "♥A/0", "♦A/0", "♠2/0", "♥2/0", "♦2/0"}, "7"},
+	{"绕圈另一头：三连对 QKA", []string{"♠Q/0", "♥Q/0", "♠K/0", "♥K/0", "♠A/0", "♥A/0"}, "7"},
+	{"绕圈另一头：三同连张 KKA（不连着，不该有）", []string{"♠Q/0", "♥Q/0", "♦Q/0", "♠A/0", "♥A/0", "♦A/0"}, "7"},
+	{"两张逢人配", []string{"♥7/0", "♥7/1"}, "7"},
+	{"两张逢人配 + 顺子", []string{"♠3/0", "♠4/0", "♠5/0", "♥7/0", "♥7/1"}, "7"},
+	{"七个 3：炸弹张数", []string{"♠3/0", "♥3/0", "♣3/0", "♦3/0", "♠3/1", "♥3/1", "♣3/1"}, "7"},
+	{"七个 3 + 一张逢人配：炸弹张数×顶法", []string{"♠3/0", "♥3/0", "♣3/0", "♦3/0", "♠3/1", "♥3/1", "♣3/1", "♥7/0"}, "7"},
+	{"四大天王", []string{"大王/0", "大王/1", "小王/0", "小王/1"}, "7"},
+	{"两张逢人配都要用上：三带对 9 的三种打法", []string{"♠9/0", "♥9/0", "♣9/0", "♠5/0", "♥7/0", "♥7/1"}, "7"},
+	{"级牌自己：2 是级数时的 A 当 1", []string{"♠A/0", "♠2/0", "♠3/0", "♠4/0", "♠5/0"}, "2"},
+}
+
+// 边界手牌也要和暴力枚举对拍：领出一次，再拿手里每种解读当上一手各对一次（顺带压到跟牌那条路）。
+func TestMovesEdgeHandsMatchBruteForce(t *testing.T) {
+	cases := 0
+	for _, h := range edgeHands {
+		level, err := ParseRank(h.level)
+		if err != nil {
+			t.Fatalf("%s：级数 %q：%v", h.name, h.level, err)
+		}
+		hand := cardsOf(t, h.cards)
+		want := bruteForceMoves(t, hand, level)
+		got, err := Moves(hand, level, nil)
+		if err != nil {
+			t.Fatalf("%s：%v", h.name, err)
+		}
+		compareMoves(t, h.name+"（领出）", hand, level, nil, got, want)
+		cases++
+
+		for _, lead := range want {
+			var wantFollow []Combo
+			for _, c := range want {
+				if c.Compare(lead) == Greater {
+					wantFollow = append(wantFollow, c)
+				}
+			}
+			gotFollow, err := Moves(hand, level, &lead)
+			if err != nil {
+				t.Fatalf("%s：%v", h.name, err)
+			}
+			compareMoves(t, h.name+"（跟 "+lead.String()+"）", hand, level, &lead, gotFollow, wantFollow)
+			cases++
+		}
+	}
+	if cases == 0 {
+		t.Fatal("一手都没对拍，用例没起作用")
+	}
+	t.Logf("边界手牌对拍了 %d 次（%d 手牌 × 领出 + 每种解读当上一手）", cases, len(edgeHands))
+}
+
+// compareMoves 逐条比两批出法（连顺序一起）。
+func compareMoves(t *testing.T, what string, hand []Card, level Rank, lead *Combo, got, want []Combo) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s：Moves 给了 %d 手，暴力枚举 %d 手\nMoves：%s\n暴力：%s",
+			what, len(got), len(want), comboListText(got), comboListText(want))
+	}
+	for k := range want {
+		if comboKey(got[k]) != comboKey(want[k]) || !sameCards(got[k].Cards, want[k].Cards) {
+			t.Fatalf("%s：第 %d 手不一样\nMoves：%s\n暴力：%s", what, k+1, comboListText(got), comboListText(want))
+		}
+	}
+}
+
 // bruteForceMoves 把全部子集（1–10 张）认一遍，按和 Moves 一样的规矩去重排序。
 // 它只用来对拍，不追求性能。
 func bruteForceMoves(t *testing.T, hand []Card, level Rank) []Combo {
@@ -310,15 +387,33 @@ func comboSize(t ComboType) int {
 // 真机上的用途：练习局里每走一步，服务端都要算一遍「能跟哪些牌」（客户端提示走同一条路）。
 // 27 张手牌 + 2 张逢人配是最坏的一档。
 //
-// 数字（本机、2026-10）：跟一对 9 不到 1ms；领出最重（要造全部牌型）最慢一次约 140ms、最多列出约 500 手。
-// 上限取得比实测宽一个量级 —— 它要守的是「不能退化成枚举子集那种做法」（那会从毫秒掉到秒级），
-// 不是抠具体毫秒，也免得机器 load 高时偶尔变红。
+// 实测（本机、2026-10，27 张手牌）：
+//
+//	跟一对 9：最快 21µs、最慢 13ms
+//	领出：    最快 75µs、最慢 89ms（最多一次列出 498 手）
+//
+// 快慢差三个量级，不是机器 load，是**手牌本身**：手里有 2 张逢人配时，每个候选都要
+// 让 Recognize 把 13² 种顶法试一遍，慢的就是这一档。所以：
+//
+//   - 用「最快一次」当主断言 —— 它跟 load 无关，守的是「不能退化成枚举子集」这类
+//     数量级退化（那会从 µs 掉到秒级），不会因为机器忙就乱红；
+//   - 「最慢一次」只挂一个大到不会误伤的上限，当「别挂住」的哨兵（load 高时最慢那条
+//     在 CI 上量到过 690ms，是同一份代码）。
+//
+// 精确的行为契约不靠时间：moves.json 的 8 条牌例把「这一手牌该有哪些打法」逐条钉死了，
+// 还有和暴力枚举的对拍，都跟机器快慢无关。
 func TestMoves27CardsPerformance(t *testing.T) {
 	deck := NewDeck()
 	rnd := rand.New(rand.NewSource(20265))
-	const followBudget = 100 * time.Millisecond
-	const leadBudget = 500 * time.Millisecond
+	// 上限按 `-race` 实测重定：本地 CI 跑的是 `go test -race`，插桩后实测慢 ~5 倍
+	// （同一手牌：不带 -race 领出最慢 138ms，带 -race 582ms），倍数放在 perfScale 里，
+	// 由 build tag 二选一（perf_race_on_test.go / perf_race_off_test.go）。
+	const followFastBudget = 5 * time.Millisecond * perfScale
+	const leadFastBudget = 20 * time.Millisecond * perfScale
+	const followSlowBudget = 500 * time.Millisecond * perfScale
+	const leadSlowBudget = 3 * time.Second * perfScale
 
+	followFast, followSlow := time.Hour, time.Duration(0)
 	for i := 0; i < 50; i++ {
 		level := Seven
 		hand := randomHand(rnd, deck, 27, level)
@@ -329,16 +424,16 @@ func TestMoves27CardsPerformance(t *testing.T) {
 			t.Fatal(err)
 		}
 		elapsed := time.Since(start)
-		if i == 0 {
-			t.Logf("27 张手牌跟一对 9：%v", elapsed)
+		if elapsed < followFast {
+			followFast = elapsed
 		}
-		if elapsed > followBudget {
-			t.Fatalf("27 张手牌求跟牌用了 %v，超过上限 %v", elapsed, followBudget)
+		if elapsed > followSlow {
+			followSlow = elapsed
 		}
 	}
 
 	// 领出：要造全部牌型，是最重的一条路。
-	worstMoves, worstElapsed := 0, time.Duration(0)
+	leadFast, leadSlow, worstMoves := time.Hour, time.Duration(0), 0
 	for i := 0; i < 20; i++ {
 		level := Seven
 		hand := randomHand(rnd, deck, 27, level)
@@ -348,15 +443,29 @@ func TestMoves27CardsPerformance(t *testing.T) {
 			t.Fatal(err)
 		}
 		elapsed := time.Since(start)
+		if elapsed < leadFast {
+			leadFast = elapsed
+		}
+		if elapsed > leadSlow {
+			leadSlow = elapsed
+		}
 		if len(moves) > worstMoves {
 			worstMoves = len(moves)
 		}
-		if elapsed > worstElapsed {
-			worstElapsed = elapsed
-		}
-		if elapsed > leadBudget {
-			t.Fatalf("27 张手牌领出用了 %v，超过上限 %v", elapsed, leadBudget)
-		}
 	}
-	t.Logf("27 张手牌领出：最慢一次 %v、最多列出 %d 手", worstElapsed, worstMoves)
+	t.Logf("27 张手牌：跟一对 9 最快 %v／最慢 %v；领出最快 %v／最慢 %v，最多列出 %d 手",
+		followFast, followSlow, leadFast, leadSlow, worstMoves)
+
+	if followFast > followFastBudget {
+		t.Fatalf("27 张手牌求跟牌，最快一次也要 %v，超过 %v —— 像是退化成枚举子集了", followFast, followFastBudget)
+	}
+	if leadFast > leadFastBudget {
+		t.Fatalf("27 张手牌领出，最快一次也要 %v，超过 %v —— 像是退化成枚举子集了", leadFast, leadFastBudget)
+	}
+	if followSlow > followSlowBudget {
+		t.Fatalf("27 张手牌求跟牌，最慢一次 %v，超过哨兵上限 %v", followSlow, followSlowBudget)
+	}
+	if leadSlow > leadSlowBudget {
+		t.Fatalf("27 张手牌领出，最慢一次 %v，超过哨兵上限 %v", leadSlow, leadSlowBudget)
+	}
 }

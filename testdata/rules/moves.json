@@ -126,6 +126,181 @@
     {"kind": "straight-flush", "rank": "9", "size": 5,
      "wilds": [{"card": "♥7/0", "as": "♠9"}]}
    ]
+  },
+  {
+   "name": "领出：手里两张逢人配 —— 单出 7 只列一条（哪张逢人配不另算一种打法）",
+   "rule": ["第三条 1", "第三条 2", "第二条 14"],
+   "level": "7",
+   "hand": ["♥7/0", "♥7/1"],
+   "moves": [
+    {"kind": "single", "rank": "7", "size": 1, "wilds": [{"card": "♥7/0", "as": "♥7"}]},
+    {"kind": "pair", "rank": "7", "size": 2, "wilds": [{"card": "♥7/0", "as": "♥7"}, {"card": "♥7/1", "as": "♥7"}]}
+   ]
+  },
+  {
+   "name": "领出：两张逢人配补顺子 —— 两张逢人配换个槽位还是同一手，不列两遍",
+   "rule": ["第三条 7", "第三条 9", "第二条 14", "第五条 1"],
+   "level": "7",
+   "hand": ["♠3/0", "♠4/0", "♠5/0", "♥7/0", "♥7/1"],
+   "moves": [
+    {"kind": "single", "rank": "3", "size": 1},
+    {"kind": "single", "rank": "4", "size": 1},
+    {"kind": "single", "rank": "5", "size": 1},
+    {"kind": "single", "rank": "7", "size": 1, "wilds": [{"card": "♥7/0", "as": "♥7"}]},
+    {"kind": "pair", "rank": "3", "size": 2, "wilds": [{"card": "♥7/0", "as": "♠3"}]},
+    {"kind": "pair", "rank": "4", "size": 2, "wilds": [{"card": "♥7/0", "as": "♠4"}]},
+    {"kind": "pair", "rank": "5", "size": 2, "wilds": [{"card": "♥7/0", "as": "♠5"}]},
+    {"kind": "pair", "rank": "7", "size": 2, "wilds": [{"card": "♥7/0", "as": "♥7"}, {"card": "♥7/1", "as": "♥7"}]},
+    {"kind": "triple", "rank": "3", "size": 3, "wilds": [{"card": "♥7/0", "as": "♠3"}, {"card": "♥7/1", "as": "♠3"}]},
+    {"kind": "triple", "rank": "4", "size": 3, "wilds": [{"card": "♥7/0", "as": "♠4"}, {"card": "♥7/1", "as": "♠4"}]},
+    {"kind": "triple", "rank": "5", "size": 3, "wilds": [{"card": "♥7/0", "as": "♠5"}, {"card": "♥7/1", "as": "♠5"}]},
+    {"kind": "straight", "rank": "5", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠2"}, {"card": "♥7/1", "as": "♠A"}]},
+    {"kind": "straight", "rank": "6", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠2"}, {"card": "♥7/1", "as": "♠6"}]},
+    {"kind": "straight", "rank": "7", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠6"}, {"card": "♥7/1", "as": "♠7"}]},
+    {"kind": "straight-flush", "rank": "5", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠2"}, {"card": "♥7/1", "as": "♠A"}]},
+    {"kind": "straight-flush", "rank": "6", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠2"}, {"card": "♥7/1", "as": "♠6"}]},
+    {"kind": "straight-flush", "rank": "7", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠6"}, {"card": "♥7/1", "as": "♠7"}]}
+   ]
+  },
+  {
+   "name": "领出：A 当 1 的顺子 —— A2345 顶张是 5",
+   "rule": ["第三条 7", "第三条 9"],
+   "level": "7",
+   "hand": ["♠A/0", "♠2/0", "♠3/0", "♠4/0", "♠5/0"],
+   "moves": [
+    {"kind": "single", "rank": "2", "size": 1},
+    {"kind": "single", "rank": "3", "size": 1},
+    {"kind": "single", "rank": "4", "size": 1},
+    {"kind": "single", "rank": "5", "size": 1},
+    {"kind": "single", "rank": "A", "size": 1},
+    {"kind": "straight", "rank": "5", "size": 5},
+    {"kind": "straight-flush", "rank": "5", "size": 5}
+   ]
+  },
+  {
+   "name": "领出：A 当 1 的三连对 —— AA2233 顶张是 3",
+   "rule": ["第三条 6", "第三条 7"],
+   "level": "7",
+   "hand": ["♠A/0", "♥A/0", "♠2/0", "♥2/0", "♠3/0", "♥3/0"],
+   "moves": [
+    {"kind": "single", "rank": "2", "size": 1},
+    {"kind": "single", "rank": "3", "size": 1},
+    {"kind": "single", "rank": "A", "size": 1},
+    {"kind": "pair", "rank": "2", "size": 2},
+    {"kind": "pair", "rank": "3", "size": 2},
+    {"kind": "pair", "rank": "A", "size": 2},
+    {"kind": "tube", "rank": "3", "size": 6}
+   ]
+  },
+  {
+   "name": "领出：A 当 1 的三同连张 —— AAA222 顶张是 2",
+   "rule": ["第三条 5", "第三条 7"],
+   "level": "7",
+   "hand": ["♠A/0", "♥A/0", "♦A/0", "♠2/0", "♥2/0", "♦2/0"],
+   "moves": [
+    {"kind": "single", "rank": "2", "size": 1},
+    {"kind": "single", "rank": "A", "size": 1},
+    {"kind": "pair", "rank": "2", "size": 2},
+    {"kind": "pair", "rank": "A", "size": 2},
+    {"kind": "triple", "rank": "2", "size": 3},
+    {"kind": "triple", "rank": "A", "size": 3},
+    {"kind": "triple-pair", "rank": "2", "size": 5},
+    {"kind": "triple-pair", "rank": "A", "size": 5},
+    {"kind": "plate", "rank": "2", "size": 6}
+   ]
+  },
+  {
+   "name": "领出：逢人配补出 A 当 1 的顺子 —— 顶成 ♠A 是 A2345，顶成 ♠6 是 23456",
+   "rule": ["第三条 7", "第三条 9", "第二条 14", "第五条 1"],
+   "level": "7",
+   "hand": ["♠2/0", "♠3/0", "♠4/0", "♠5/0", "♥7/0"],
+   "moves": [
+    {"kind": "single", "rank": "2", "size": 1},
+    {"kind": "single", "rank": "3", "size": 1},
+    {"kind": "single", "rank": "4", "size": 1},
+    {"kind": "single", "rank": "5", "size": 1},
+    {"kind": "single", "rank": "7", "size": 1, "wilds": [{"card": "♥7/0", "as": "♥7"}]},
+    {"kind": "pair", "rank": "2", "size": 2, "wilds": [{"card": "♥7/0", "as": "♠2"}]},
+    {"kind": "pair", "rank": "3", "size": 2, "wilds": [{"card": "♥7/0", "as": "♠3"}]},
+    {"kind": "pair", "rank": "4", "size": 2, "wilds": [{"card": "♥7/0", "as": "♠4"}]},
+    {"kind": "pair", "rank": "5", "size": 2, "wilds": [{"card": "♥7/0", "as": "♠5"}]},
+    {"kind": "straight", "rank": "5", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠A"}]},
+    {"kind": "straight", "rank": "6", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠6"}]},
+    {"kind": "straight-flush", "rank": "5", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠A"}]},
+    {"kind": "straight-flush", "rank": "6", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠6"}]}
+   ]
+  },
+  {
+   "name": "领出：七个 3 加一张逢人配 —— 炸弹按「张数、顶法」排（4张不带配、4张带配、5张…8张带配）",
+   "rule": ["第三条 1", "第三条 2", "第三条 8", "第二条 14"],
+   "level": "7",
+   "hand": ["♠3/0", "♥3/0", "♣3/0", "♦3/0", "♠3/1", "♥3/1", "♣3/1", "♥7/0"],
+   "moves": [
+    {"kind": "single", "rank": "3", "size": 1},
+    {"kind": "single", "rank": "7", "size": 1, "wilds": [{"card": "♥7/0", "as": "♥7"}]},
+    {"kind": "pair", "rank": "3", "size": 2},
+    {"kind": "pair", "rank": "3", "size": 2, "wilds": [{"card": "♥7/0", "as": "♠3"}]},
+    {"kind": "triple", "rank": "3", "size": 3},
+    {"kind": "triple", "rank": "3", "size": 3, "wilds": [{"card": "♥7/0", "as": "♠3"}]},
+    {"kind": "bomb", "rank": "3", "size": 4},
+    {"kind": "bomb", "rank": "3", "size": 4, "wilds": [{"card": "♥7/0", "as": "♠3"}]},
+    {"kind": "bomb", "rank": "3", "size": 5},
+    {"kind": "bomb", "rank": "3", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠3"}]},
+    {"kind": "bomb", "rank": "3", "size": 6},
+    {"kind": "bomb", "rank": "3", "size": 6, "wilds": [{"card": "♥7/0", "as": "♠3"}]},
+    {"kind": "bomb", "rank": "3", "size": 7},
+    {"kind": "bomb", "rank": "3", "size": 7, "wilds": [{"card": "♥7/0", "as": "♠3"}]},
+    {"kind": "bomb", "rank": "3", "size": 8, "wilds": [{"card": "♥7/0", "as": "♠3"}]}
+   ]
+  },
+  {
+   "name": "领出：四大天王（大小王各两张）—— 单张、对子、四大天王，牌面写空串",
+   "rule": ["第三条 10", "第三条 1", "第三条 2"],
+   "level": "7",
+   "hand": ["大王/0", "大王/1", "小王/0", "小王/1"],
+   "moves": [
+    {"kind": "single", "rank": "小王", "size": 1},
+    {"kind": "single", "rank": "大王", "size": 1},
+    {"kind": "pair", "rank": "小王", "size": 2},
+    {"kind": "pair", "rank": "大王", "size": 2},
+    {"kind": "joker-bomb", "rank": "", "size": 4}
+   ]
+  },
+  {
+   "name": "跟牌：四大天王压得住炸弹",
+   "rule": ["第四条 二、（二）", "第三条 10"],
+   "level": "7",
+   "hand": ["大王/0", "大王/1", "小王/0", "小王/1"],
+   "lead": {"kind": "bomb", "cards": ["♠8/0", "♥8/0", "♣8/0", "♦8/0"]},
+   "moves": [
+    {"kind": "joker-bomb", "rank": "", "size": 4}
+   ]
+  },
+  {
+   "name": "领出：三带对 9 的三种打法各列一条 —— 999+5带配、99带配+5带配、999+两张配当 2",
+   "rule": ["第三条 4", "第三条 6", "第三条 8", "第二条 14"],
+   "level": "7",
+   "hand": ["♠9/0", "♥9/0", "♣9/0", "♠5/0", "♥7/0", "♥7/1"],
+   "moves": [
+    {"kind": "single", "rank": "5", "size": 1},
+    {"kind": "single", "rank": "7", "size": 1, "wilds": [{"card": "♥7/0", "as": "♥7"}]},
+    {"kind": "single", "rank": "9", "size": 1},
+    {"kind": "pair", "rank": "5", "size": 2, "wilds": [{"card": "♥7/0", "as": "♠5"}]},
+    {"kind": "pair", "rank": "7", "size": 2, "wilds": [{"card": "♥7/0", "as": "♥7"}, {"card": "♥7/1", "as": "♥7"}]},
+    {"kind": "pair", "rank": "9", "size": 2},
+    {"kind": "pair", "rank": "9", "size": 2, "wilds": [{"card": "♥7/0", "as": "♠9"}]},
+    {"kind": "triple", "rank": "5", "size": 3, "wilds": [{"card": "♥7/0", "as": "♠5"}, {"card": "♥7/1", "as": "♠5"}]},
+    {"kind": "triple", "rank": "9", "size": 3},
+    {"kind": "triple", "rank": "9", "size": 3, "wilds": [{"card": "♥7/0", "as": "♠9"}]},
+    {"kind": "triple", "rank": "9", "size": 3, "wilds": [{"card": "♥7/0", "as": "♠9"}, {"card": "♥7/1", "as": "♠9"}]},
+    {"kind": "triple-pair", "rank": "5", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠5"}, {"card": "♥7/1", "as": "♠5"}]},
+    {"kind": "triple-pair", "rank": "9", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠5"}]},
+    {"kind": "triple-pair", "rank": "9", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠2"}, {"card": "♥7/1", "as": "♠2"}]},
+    {"kind": "triple-pair", "rank": "9", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠5"}, {"card": "♥7/1", "as": "♠9"}]},
+    {"kind": "bomb", "rank": "9", "size": 4, "wilds": [{"card": "♥7/0", "as": "♠9"}]},
+    {"kind": "bomb", "rank": "9", "size": 4, "wilds": [{"card": "♥7/0", "as": "♠9"}, {"card": "♥7/1", "as": "♠9"}]},
+    {"kind": "bomb", "rank": "9", "size": 5, "wilds": [{"card": "♥7/0", "as": "♠9"}, {"card": "♥7/1", "as": "♠9"}]}
+   ]
   }
  ]
 }

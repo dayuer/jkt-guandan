@@ -92,10 +92,25 @@ func splitWilds(cards []Card, level Rank) (wilds, solids []Card) {
 // 张数也要算进去：炸弹 4 张、5 张、7 张是**三种打法**（比大小的档次都不一样），
 // 少了这一项它们会被当成同一条、只留下最小的那种 —— 手里七个 3 就只剩「4 张炸弹」，
 // 跟别人 5 张炸弹的时候明明有 6 张、7 张能压，却报「无牌可跟」（#204 第 4 步踩过）。
+// 顶法那一项**不比副号**（用 `asKey` 而不是 `w.Card.ID`）：手里两张逢人配 ♥7/0、♥7/1
+// 单出一张都是「单张 7」，按 README 的比对规矩（顶法只比点数花色、逢人配用哪一张算
+// 「用哪几张牌」）这两条相等，就该只列一条 —— 用 ID 会并列两条（jkt-2 在 TS 端先撞上的）。
+//
+// 片段排一下序：键的定义不该依赖生成器枚举逢人配的内部顺序。现在生成器本来就是按槽位顺序
+// 给的，所以**没有用例能区分有没有这行**（去掉它全部测试照样绿）—— 留着是兜底，不是为了
+// 挡某个已复现的 bug，写清楚免得有人以为是死代码或者反过来以为它有牌例守着。
 func comboKey(c Combo) string {
 	key := fmt.Sprintf("%s/%s/%d", c.Type.String(), c.Rank.RankName(), len(c.Cards))
+	if len(c.Wilds) == 0 {
+		return key
+	}
+	parts := make([]string, 0, len(c.Wilds))
 	for _, w := range c.Wilds {
-		key += "/" + fmt.Sprintf("%d-%s", w.Card.ID, asKey(w.As))
+		parts = append(parts, asKey(w.As)+"←"+asKey(w.Card))
+	}
+	sort.Strings(parts)
+	for _, p := range parts {
+		key += "/" + p
 	}
 	return key
 }
@@ -150,6 +165,11 @@ func sortCombos2(combos []Combo) []Combo {
 		}
 		if a.Rank != b.Rank {
 			return a.Rank < b.Rank
+		}
+		// **张数**排在顶法前面（格式说明：牌型 → 牌面 → 张数 → 顶法）：炸弹 4、5、6 张是
+		// 三个不同的档次，少了这一项就会把「4 张带逢人配」排到「5 张实牌」前面去。
+		if len(a.Cards) != len(b.Cards) {
+			return len(a.Cards) < len(b.Cards)
 		}
 		if len(a.Wilds) != len(b.Wilds) {
 			return len(a.Wilds) < len(b.Wilds)
