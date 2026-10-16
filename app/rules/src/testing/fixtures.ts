@@ -614,9 +614,8 @@ function readTributeStep(value: Json, what: string): TributeStep {
     }
     out.reject = reason as TributeRejectReason;
   }
-  if (out.reject !== undefined && out.after !== undefined) {
-    throw new Error(`${what}：reject 和 after 互斥（被拒的那一步局面不变，不需要 after）`);
-  }
+  // `reject` 和 `after` **可以同时写**（#204 复核定的）：被拒的那一步局面不变，牌例自己写一遍
+  // `after` 是把「被拒不改局面」直接钉在共用牌例里，而不是只靠两端驱动器各自的快照。不写也行。
   if (out.reject === undefined && out.give === undefined && out.return === undefined) {
     throw new Error(`${what}：这一步既没写 give / return，也没写 reject`);
   }

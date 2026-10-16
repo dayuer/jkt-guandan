@@ -4,7 +4,8 @@
   "口径是 2022《竞技掼蛋竞赛规则（试行）》第十条，三处歧义的读法见 README「进贡与还贡」一节。",
   "hands 下标 0–3 就是座位 1–4（和 play.json 一样；deal.json 是按首抓者起逆时针第 k 家，那个不一样）。",
   "prev.order 是上一副出完的先后（上游在前，四家都在）。head_seat / partner_place 由它推出来；写了就必须和它一致（不一致是牌例自己写错了）。",
-  "每条 steps[k] 是这一步**成功之后**的局面；某一步不合法时写 reject 而不是 after —— 两个字段互斥。",
+  "每条 steps[k] 的 after 是这一步之后的局面（只断言写了的字段）。被拒的步骤也可以写 after —— 用来把「被拒不改局面」直接钉在牌例里（两端口径以它为准）；不写也行，不写时两端各自的驱动器还兜一道。",
+  "hands 按**集合**比：一家里那几张牌写成什么顺序不算数（两端内部的排法可能不一样），只有「这一家到底是哪几张」算数。",
   "reject 的取值是封闭的十个（见 README 的表）：牌例只比这个取值，不比给人看的错误句子。",
   "抗贡的用例 steps 是**空数组** —— 抗贡在开局就判定了，本来就没有动作可做（allow 空 steps 只对进贡这一类）。",
   "「不超过 10」怎么算有两读（见 README「待确认」）：按读法 A（牌面数字）写的用例带 pending 字段标出来。"
@@ -152,7 +153,9 @@
    "hands": [["♠K/0", "♣5/0"], ["大王/0", "♥3/0"], ["♠Q/0", "♦8/0"], ["大王/1", "♥4/0"]],
    "prev": {"order": [1, 3, 2, 4], "head_seat": 1, "partner_place": 2},
    "steps": [
-    {"seat": 2, "give": "♥3/0", "reject": "resisted"},
+    {"seat": 2, "give": "♥3/0", "reject": "resisted",
+     "after": {"kind": "resisted", "done": true, "leader": 1,
+                "hands": [["♠K/0", "♣5/0"], ["大王/0", "♥3/0"], ["♠Q/0", "♦8/0"], ["大王/1", "♥4/0"]]}},
     {"seat": 1, "return": "♣5/0", "reject": "resisted"}
    ],
    "expect": {
@@ -193,7 +196,8 @@
     {"seat": 4, "give": "♥7/0", "reject": "wild-cannot-give"},
     {"seat": 4, "give": "♠5/0", "reject": "not-biggest"},
     {"seat": 4, "give": "♦9/0", "reject": "card-not-in-hand"},
-    {"seat": 1, "return": "♣5/0", "reject": "not-all-given"},
+    {"seat": 1, "return": "♣5/0", "reject": "not-all-given",
+     "after": {"done": false, "hands": [["♠K/0", "♣5/0"], ["♠3/0"], ["♠4/0"], ["♠A/0", "♥7/0", "♠5/0"]]}},
     {"seat": 4, "give": "♠A/0"},
     {"seat": 4, "give": "♠5/0", "reject": "already-gave"},
     {"seat": 2, "return": "♠3/0", "reject": "not-a-receiver"},

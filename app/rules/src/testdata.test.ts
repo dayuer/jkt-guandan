@@ -13,7 +13,7 @@ import { Tribute, TributeError } from "./tribute";
 import { power } from "./power";
 import { handOf } from "./testing/cards";
 import { compareFixture, combosFixture, dealFixture, deckFixture, movesFixture, playFixture, powerFixture, tributeFixture } from "./testing/testdata";
-import type { CompareSide, PlayStep, TributeStep } from "./testing/fixtures";
+import type { CompareSide, PlayStep, TributeState, TributeStep } from "./testing/fixtures";
 
 const keys = (cards: readonly Card[]): string[] => cards.map(cardKey);
 
@@ -266,6 +266,21 @@ describe("tribute.json：进贡 / 还贡 / 抗贡（第十条）", () => {
     return state;
   };
 
+  /**
+   * 断言局面：只能写了的字段（`kind` / `givers` / `receiver` / `leader` / `done` / `hands`）。
+   *
+   * `hands` **按集合比**（#204 复核）：一家里那几张牌写成什么顺序不算数 —— 两端内部怎么排
+   * （贡进来 / 还回去的牌放在哪）是实现细节，不该由牌例钉死。只有「这一家到底是哪几张」算数。
+   */
+  const checkState = (got: Record<string, unknown>, want: TributeState, what: string): void => {
+    const { hands, ...rest } = want;
+    if (Object.keys(rest).length > 0) expect(got, what).toMatchObject(rest);
+    if (hands !== undefined) {
+      const norm = (list: string[][]): string[] => list.map((h) => [...h].sort().join(" "));
+      expect(norm(got.hands as string[][]), `${what}：四家手牌`).toStrictEqual(norm(hands));
+    }
+  };
+
   /** 走一步。牌按牌例里的写法取**整副牌里的那一张**（ID 要对得上，而且可能不在这一家手里）。 */
   const applyStep = (tr: Tribute, step: TributeStep): void => {
     const card = handOf([step.give ?? step.return ?? ""])[0]!;
@@ -303,20 +318,21 @@ describe("tribute.json：进贡 / 还贡 / 抗贡（第十条）", () => {
         if (step.reject !== undefined) {
           expect(rejectReasonOf(() => applyStep(tr, step)), what).toBe(step.reject);
           // 「被拒」的全部含义就是局面没动 —— 先挪了牌再报错，局面就坏了。
+          // 牌例也可以自己写 `after` 把这一点钉住；两条都留着（结构这一条不写牌例也生效）。
           expect(stateOf(tr), `${what}：被拒之后局面不该变`).toStrictEqual(before);
-          return;
+        } else {
+          applyStep(tr, step);
         }
-        applyStep(tr, step);
         // `after` 是**可选**的：只在「这一步之后值得单独断一下」的地方写（比如双贡两人都贡完之后
-        // 收贡的人定下来那一步）。一条用例到底走对没有，最后由 `expect` 兜 —— 那里面四家手牌是**全比**的。
-        if (step.after) expect(stateOf(tr), what).toMatchObject(step.after);
+        // 收贡的人定下来那一步，或者被拒的那一步要钉住局面）。一条用例到底走对没有，最后由 `expect` 兜。
+        checkState(stateOf(tr), step.after ?? {}, what);
       });
 
-      // `leader` 只在贡完还完之后有意义：写了 leader 就必须写 done: true，反过来也一样。
+      // `leader` 只在贡完还完之后有意义：写了 leader 就必须写 done: true。
       if (vector.expect.leader !== undefined) {
         expect(vector.expect.done, "expect 写了 leader，就必须写 done: true").toBe(true);
       }
-      expect(stateOf(tr)).toMatchObject(vector.expect);
+      checkState(stateOf(tr), vector.expect, "走完之后");
     });
   }
 });
