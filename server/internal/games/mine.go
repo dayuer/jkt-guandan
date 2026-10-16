@@ -33,14 +33,17 @@ var ErrNotHistory = errors.New("这一局还没开始，不能从历史里删")
 // 只放本仓库语言里本来就有的数字（§4：不涉及金钱，没有分数、倍率、金额）：
 // 「双上几次」是牌桌上会说的话，级数是牌面本身。
 type ScoreBrief struct {
-	Kind string `json:"kind"`   // classic / no-level
-	Rounds int  `json:"rounds"` // 记了几局
+	Kind   string `json:"kind"`   // classic / no-level
+	Rounds int    `json:"rounds"` // 记了几局
 	// Winner 是过了 A 的那一队（red / black）；没打完是空串。
 	Winner         string `json:"winner,omitempty"`
 	RedLevel       int    `json:"red_level"`
 	BlackLevel     int    `json:"black_level"`
 	RedDoubleUps   int    `json:"red_double_ups"`
 	BlackDoubleUps int    `json:"black_double_ups"`
+	// 赢了几局：不升级玩法只看这个（级数不动）。
+	RedWins   int `json:"red_wins"`
+	BlackWins int `json:"black_wins"`
 }
 
 // HistoryItem 是历史列表里的一条：列表摘要 + 可选比分。
@@ -163,6 +166,8 @@ func (s *Service) scoreBrief(ctx context.Context, g Game) (*ScoreBrief, error) {
 		BlackLevel:     sc.State.Black.Level,
 		RedDoubleUps:   sc.State.Red.DoubleUps,
 		BlackDoubleUps: sc.State.Black.DoubleUps,
+		RedWins:        sc.State.Red.Wins,
+		BlackWins:      sc.State.Black.Wins,
 	}, nil
 }
 

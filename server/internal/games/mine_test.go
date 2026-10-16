@@ -245,7 +245,7 @@ func TestMyGamesHistoryScore(t *testing.T) {
 		t.Fatalf("历史：%v %v %v", len(items), more, err)
 	}
 	sc := items[0].Score
-	if sc == nil || sc.Rounds != 1 || sc.RedDoubleUps != 1 || sc.RedLevel <= 2 {
+	if sc == nil || sc.Rounds != 1 || sc.RedDoubleUps != 1 || sc.RedWins != 1 || sc.BlackWins != 0 || sc.RedLevel <= 2 {
 		t.Fatalf("比分摘要不对：%+v", sc)
 	}
 

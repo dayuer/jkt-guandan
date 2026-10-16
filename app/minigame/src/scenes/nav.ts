@@ -9,6 +9,8 @@ export interface Nav {
   lesson(id: string): void;
   /** 牌桌计分（#165） */
   score(code: string): void;
+  /** 「我的」→ 设置（#211） */
+  settings(): void;
   devices(): void;
   privacy(): void;
   back(): void;
