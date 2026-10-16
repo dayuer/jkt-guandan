@@ -322,3 +322,25 @@ func handText(cards []Card) string {
 	}
 	return strings.Join(parts, " ")
 }
+
+// 单出逢人配（复审建议）：一手只有一张 ♥7 时只有一种解读 —— 单张级牌。
+// 所以 FindCombo 不靠牌面也找得到（原来会给出 13 种，只能靠声明牌面才挑得出）。
+func TestFindComboLoneWild(t *testing.T) {
+	cards := cardsOf(t, []string{"♥7/0"})
+	c, ok, err := FindCombo(cards, Seven, TypeSingle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || c.Rank != Seven {
+		t.Fatalf("单张 ♥7 应当就是单张 7，得到 ok=%v rank=%s", ok, c.Rank.RankName())
+	}
+	// 别的牌型认不出来。
+	if _, ok, _ := FindCombo(cards, Seven, TypePair); ok {
+		t.Error("一张牌不该认成对子")
+	}
+	// 两张逢人配：就是一对级牌，也只有一种解读。
+	pair := cardsOf(t, []string{"♥7/0", "♥7/1"})
+	if c, ok, err := FindCombo(pair, Seven, TypePair); err != nil || !ok || c.Rank != Seven {
+		t.Fatalf("两张 ♥7 应当就是一对 7，得到 ok=%v err=%v", ok, err)
+	}
+}

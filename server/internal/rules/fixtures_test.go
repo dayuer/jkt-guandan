@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -56,6 +57,34 @@ func saveFixture(t *testing.T, name string, v any) {
 	t.Logf("已重写 %s", name)
 }
 
+// 条款号的写法（README「条款号的写法」一节）：`第X条`，后面可以跟款项和条目：
+//
+//	第二条 14            条 + 条目
+//	第四条 一             条 + 款
+//	第四条 一、2          条 + 款 + 条目
+//	第四条 二、（一）4     条 + 款 + 再下一层 + 条目
+//
+// 校验是为了挡住手写时的笔误：写错一个字的条款号比不写更糟 —— 看着像有依据，
+// 翻原文找不到（#213 复审：现在只查了数组非空，`[""]` 照样过）。
+var ruleRe = regexp.MustCompile(
+	`^第[一二三四五六七八九十]+条( [一二三四五六七八九十]+(、（[一二三四五六七八九十]+）[0-9]*|、[0-9]+)?| [0-9]+)?$`)
+
+// checkRules 查一条用例的 rule 字段：至少一条、每条非空、写法对。
+func checkRules(t *testing.T, what string, rules []string) {
+	t.Helper()
+	if len(rules) == 0 {
+		t.Fatalf("%s：没写 rule（条款号）", what)
+	}
+	for _, r := range rules {
+		if strings.TrimSpace(r) == "" {
+			t.Fatalf("%s：rule 里有空字符串 —— 要么写条款号，要么整条不要写", what)
+		}
+		if !ruleRe.MatchString(r) {
+			t.Fatalf("%s：条款号 %q 的写法不对（见 testdata/rules/README.md 的「条款号的写法」）", what, r)
+		}
+	}
+}
+
 // 整副牌的顺序：两端必须一样，否则同一串牌例在两边指的不是同一张牌。
 type deckFixture struct {
 	Comment []string `json:"_comment"`
@@ -77,9 +106,7 @@ func TestDeckFixture(t *testing.T) {
 	deck := NewDeck()
 	want := deckKeys(deck)
 
-	if len(f.Rule) == 0 {
-		t.Fatal("deck.json 没写 rule（条款号）")
-	}
+	checkRules(t, "deck.json", f.Rule)
 	if len(f.Order) != len(want) {
 		t.Fatalf("牌例写了 %d 张，整副牌有 %d 张", len(f.Order), len(want))
 	}
@@ -100,7 +127,7 @@ func TestDeckFixture(t *testing.T) {
 	}
 }
 
-// 牌点大小（第四条一）：一条用例一个级数，order 是从大到小的 15 个牌点。
+// 牌点大小（第四条 一）：一条用例一个级数，order 是从大到小的 15 个牌点。
 type powerVector struct {
 	Name  string   `json:"name"`
 	Rule  []string `json:"rule"`
@@ -120,9 +147,7 @@ func TestPowerFixture(t *testing.T) {
 		t.Fatal("没有用例")
 	}
 	for _, v := range f.Vectors {
-		if len(v.Rule) == 0 {
-			t.Fatalf("%s：没写 rule（条款号）", v.Name)
-		}
+		checkRules(t, v.Name, v.Rule)
 		level, err := ParseRank(v.Level)
 		if err != nil {
 			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
@@ -145,13 +170,13 @@ func TestPowerFixture(t *testing.T) {
 			}
 			prev, _ := ParseRank(v.Order[i-1])
 			if prev.Power(level) <= r.Power(level) {
-				t.Fatalf("%s：打 %s 时 %s 应比 %s 大（第四条一）", v.Name, v.Level, v.Order[i-1], name)
+				t.Fatalf("%s：打 %s 时 %s 应比 %s 大（第四条 一）", v.Name, v.Level, v.Order[i-1], name)
 			}
 		}
 	}
 }
 
-// 发牌（第七条一）：shuffle 是出牌顺序，hands 是按座位发的四手牌。
+// 发牌（第七条 一、5）：shuffle 是发牌顺序，hands 是从首抓者起逆时针的四手牌。
 type dealVector struct {
 	Name    string     `json:"name"`
 	Rule    []string   `json:"rule"`
@@ -172,9 +197,7 @@ func TestDealFixture(t *testing.T) {
 	}
 	for i := range f.Vectors {
 		v := &f.Vectors[i]
-		if len(v.Rule) == 0 {
-			t.Fatalf("%s：没写 rule（条款号）", v.Name)
-		}
+		checkRules(t, v.Name, v.Rule)
 		hands, err := Deal(PermShuffler(v.Shuffle))
 		if err != nil {
 			t.Fatalf("%s：%v", v.Name, err)
@@ -185,7 +208,7 @@ func TestDealFixture(t *testing.T) {
 		all := map[int]bool{}
 		for seat, hand := range hands {
 			if len(hand) != 27 {
-				t.Fatalf("%s：%d 号座发了 %d 张，应该 27 张", v.Name, seat+1, len(hand))
+				t.Fatalf("%s：从首抓者起第 %d 家发了 %d 张，应该 27 张", v.Name, seat+1, len(hand))
 			}
 			for _, c := range hand {
 				if all[c.ID] {
@@ -341,9 +364,7 @@ func TestCombosFixture(t *testing.T) {
 		t.Fatal("没有用例")
 	}
 	for _, v := range f.Vectors {
-		if len(v.Rule) == 0 {
-			t.Fatalf("%s：没写 rule（条款号）", v.Name)
-		}
+		checkRules(t, v.Name, v.Rule)
 		level, err := ParseRank(v.Level)
 		if err != nil {
 			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
@@ -423,9 +444,7 @@ func TestCompareFixture(t *testing.T) {
 		t.Fatal("没有用例")
 	}
 	for _, v := range f.Vectors {
-		if len(v.Rule) == 0 {
-			t.Fatalf("%s：没写 rule（条款号）", v.Name)
-		}
+		checkRules(t, v.Name, v.Rule)
 		level, err := ParseRank(v.Level)
 		if err != nil {
 			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
