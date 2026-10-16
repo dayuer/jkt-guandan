@@ -157,3 +157,29 @@ export function previewEdit(s: ScoreSettings, rounds: RoundFact[], no: number, f
   const after = compute(s, facts);
   return { round: after.rounds[no - 1], state: after.state, later: rounds.length - no };
 }
+
+// ── 接下一副 ──
+
+/** 「接下来这一副」要知道的：打几、要不要进贡，以及完整的计分状态（界面直接用）。 */
+export interface NextHand {
+  /** 下一副打几（到 A 封顶；本场刚结束时是下一场的 2）。 */
+  level: number;
+  /** 要不要进贡：这一场已经打过至少一副（新一场的第一副不贡，第十条 二）。 */
+  tribute: boolean;
+  score: ScoreState;
+}
+
+/**
+ * 按本场到现在为止每一副的结果，算下一副打几、要不要进贡 —— 对应服务端的 `NextHand`
+ * （Go 的 `res.Next`）。
+ *
+ * 升级、到 A 封顶、过 A、打谁的级**全由 `compute` 算**（第二条 12-14、第十二条），这里只是把
+ * 下一副要用的那两项端出来；不另写一份规则。玩法固定按升级玩法（和服务端 `Next` 一样）。
+ *
+ * 和服务端的一处差别：Go 的 `Compute` 会校验头游座号（1–4）和搭档名次（2–4），这边不校验
+ * （`compute` 本来就不校验，输入的合法性由调用方保证）—— 模拟对局、界面都是拿真实结果来算。
+ */
+export function nextHand(facts: RoundFact[]): NextHand {
+  const { state } = compute({ kind: "classic" }, facts);
+  return { level: state.playing_level, tribute: state.match_rounds > 0 && !state.match_over, score: state };
+}

@@ -17,4 +17,8 @@ export * from "./combo";
 export * from "./moves";
 export * from "./play";
 export * from "./tribute";
-export * from "./scoring";
+// scoring 单独走**命名空间**：它导出的 `apply` / `compute` / `A` / `other` 都是很泛的名字，
+// 平铺在 barrel 上迟早和别的模块撞，而且看 `import { A } from "…"` 完全不知道是哪个 A
+// （#254 复审提的）。用法：`import { scoring } from "…"`，然后 `scoring.compute(...)`。
+// ⚠️ 小游戏那边是从 `../rules/src/scoring` **直接 import 模块**的，不受这里影响。
+export * as scoring from "./scoring";
