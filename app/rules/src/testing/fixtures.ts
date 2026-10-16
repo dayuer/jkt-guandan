@@ -94,14 +94,31 @@ function requiredVectors(obj: Record<string, Json>, what: string): Json[] {
 }
 
 /**
- * 查一条用例的 `rule` 字段：至少一条、每条非空。写法见 README「条款号的写法」一节。
+ * 条款号的写法（README「条款号的写法」一节）。五种：
  *
- * 写错一个字的条款号比不写更糟 —— 看着像有依据，翻原文找不到，所以最终要用正则卡死写法。
- * **但格式校验这里先不加**：#213 第三轮加过一版（`fixtures_test.go` 的 `ruleRe`），
- * 它和 README 的写法对不上 —— README 的 `第四条 二、（一）4` 过不了，`第四条 二、（一）、4`
- * 反而能过。jkt 在改，以 README 为准。等 #213 合入、格式定死之后，这里按**最终版的正则和
- * 它的正反例表**一起加，和 Go 端逐条一致：牌例是两端共用的，一边有一边没有，同一条牌例
- * 就会在一端过、在另一端挂（#213 开 PR 前审计的 S2 说的就是这个）。
+ *   第X条                条
+ *   第X条 甲             条 + 款
+ *   第X条 N              条 + 条目
+ *   第X条 甲、N          条 + 款 + 条目
+ *   第X条 甲、（乙）N     条 + 款 + 再下一层 + 条目
+ *
+ * X、甲、乙是中文数字，N 是阿拉伯数字的条目号。款和条目之间是「、」；但写到再下一层时，
+ * **`（乙）` 后面直接跟条目号，不再多一个「、」** —— 是 `第四条 二、（一）4`，不是
+ * `第四条 二、（一）、4`（这一条 #213 第三轮的正则就是在这儿写错的，TS 端第一版也跟着写错了）。
+ *
+ * 第一、二种是 #213 第三轮复审补进 README 的（`power.json` 全 13 条用的是第二种）。
+ *
+ * **这个字符串要和 Go 端 `fixtures_test.go` 的 `ruleRe` 逐字符相同**：牌例是两端共用的，
+ * 一边有一边没有、或者写法不一样，同一条牌例就会在一端过、在另一端挂（#213 开 PR 前
+ * 审计的 S2 说的就是这个）。改就两边一起改，正反例表也一起跑。
+ */
+const RULE_RE =
+  /^第[一二三四五六七八九十]+条( [一二三四五六七八九十]+(、（[一二三四五六七八九十]+）[0-9]+|、[0-9]+)?| [0-9]+)?$/;
+
+/**
+ * 查一条用例的 `rule` 字段：至少一条、每条非空、写法对。
+ *
+ * 写错一个字的条款号比不写更糟 —— 看着像有依据，翻原文找不到。
  */
 function requiredRule(obj: Record<string, Json>, what: string): string[] {
   const rules = asStringList(required(obj, "rule", what), `${what}.rule`);
@@ -111,6 +128,9 @@ function requiredRule(obj: Record<string, Json>, what: string): string[] {
   for (const rule of rules) {
     if (rule.trim() === "") {
       throw new Error(`${what}：rule 里有空字符串 —— 要么写条款号，要么整条不要写`);
+    }
+    if (!RULE_RE.test(rule)) {
+      throw new Error(`${what}：条款号 ${JSON.stringify(rule)} 的写法不对（见 ${README} 的「条款号的写法」）`);
     }
   }
   return rules;
