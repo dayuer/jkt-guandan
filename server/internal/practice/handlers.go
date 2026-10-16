@@ -3,11 +3,13 @@ package practice
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/dayuer/jkt-guandan/server/internal/identity"
 	"github.com/dayuer/jkt-guandan/server/internal/route"
+	"github.com/dayuer/jkt-guandan/server/internal/rules"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
@@ -20,6 +22,7 @@ func Routes(svc *Service) []route.Route {
 	return []route.Route{
 		{Method: http.MethodPost, Pattern: "/api/practice", Access: route.User, Handler: http.HandlerFunc(h.create)},
 		{Method: http.MethodGet, Pattern: "/api/practice/{id}", Access: route.User, Handler: http.HandlerFunc(h.get)},
+		{Method: http.MethodPost, Pattern: "/api/practice/{id}/play", Access: route.User, Handler: http.HandlerFunc(h.play)},
 	}
 }
 
@@ -54,6 +57,75 @@ func (h *handler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
+// play 出牌（`POST /api/practice/{id}/play`）。体：
+//
+//	{"cards":["♠K/0"],"kind":"single","rank":"K","expected_revision":3}
+//	{"pass":true,                              "expected_revision":3}
+//
+// `expected_revision` 必须带（少了是 400）—— 它是乐观锁，和 games 那边 `If-Match` 的规矩一致：
+// 宁可不做，也不要拿一个「不知道自己是哪一版」的请求去改局面。
+func (h *handler) play(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Cards            []string `json:"cards"`
+		Kind             string   `json:"kind"`
+		Rank             string   `json:"rank"`
+		Pass             bool     `json:"pass"`
+		ExpectedRevision *int64   `json:"expected_revision"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求体不是合法的 JSON")
+		return
+	}
+	if body.ExpectedRevision == nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "缺少 expected_revision")
+		return
+	}
+	mv, err := parseMove(body.Cards, body.Kind, body.Rank, body.Pass)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	v, err := h.svc.Play(r.Context(), r.PathValue("id"), userID, mv, *body.ExpectedRevision,
+		r.Header.Get("Idempotency-Key"))
+	if err != nil {
+		writeServiceError(w, "练习局出牌失败", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// parseMove 把请求体里的牌面 key / 牌型 / 点数解析成引擎的类型。
+// 解析放在这一层：引擎要的是它自己的类型，而线上传的是客户端那套写法（两端共用牌例的写法）。
+func parseMove(cards []string, kind, rank string, pass bool) (Move, error) {
+	if pass {
+		return Move{Pass: true}, nil
+	}
+	if len(cards) == 0 {
+		return Move{}, errors.New("出牌要给 cards（不出请 pass:true）")
+	}
+	out := make([]rules.Card, 0, len(cards))
+	for _, k := range cards {
+		c, err := rules.ParseKey(k)
+		if err != nil {
+			return Move{}, fmt.Errorf("牌 %q：%w", k, err)
+		}
+		out = append(out, c)
+	}
+	t, err := rules.ParseComboType(kind)
+	if err != nil {
+		return Move{}, fmt.Errorf("牌型 %q：%w", kind, err)
+	}
+	rk, err := rules.ParseRank(rank)
+	if err != nil {
+		return Move{}, fmt.Errorf("点数 %q：%w", rank, err)
+	}
+	return Move{Cards: out, Type: t, Rank: rk}, nil
+}
+
 // requireUser 取当前身份；没有就 401。
 func requireUser(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if id := identity.UserID(r.Context()); id != "" {
@@ -68,7 +140,25 @@ func requireUser(w http.ResponseWriter, r *http.Request) (string, bool) {
 // 特别地：**「不是你的局」和「不存在」返回同一个 404**（`ErrNotFound`）——
 // id 是不透明的随机串，没必要让对方知道「这个 id 存在、但不是你的」（见 Service.Get）。
 func writeServiceError(w http.ResponseWriter, what string, err error) {
+	var (
+		conflict *VersionConflict
+		rejected *MoveRejected
+	)
 	switch {
+	case errors.As(err, &conflict):
+		// 409 带上**最新局面**（`practice` 键里，和成功响应的形状一样），客户端直接刷新重来。
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":    map[string]string{"code": "version_conflict", "message": err.Error()},
+			"practice": conflict.Latest,
+		})
+	case errors.As(err, &rejected):
+		// 一手不成立：**原因码就是引擎那一套**（not-your-turn / does-not-beat / bad-combo / ……），
+		// 客户端拿它和自己本地算出来的对照，提示文案可以共用。局面一点没动。
+		writeError(w, http.StatusConflict, rejected.Reason, "这一手不成立（"+rejected.Reason+"）")
+	case errors.Is(err, ErrDealOver):
+		writeError(w, http.StatusConflict, "deal_over", err.Error())
+	case IsIdemKeyReused(err):
+		writeError(w, http.StatusUnprocessableEntity, "idempotency_key_reused", "这个幂等键已经用在别的请求上了")
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, "practice_not_found", "练习局不存在")
 	case errors.Is(err, ErrRateLimited):

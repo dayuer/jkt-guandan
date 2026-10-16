@@ -531,7 +531,21 @@ CREATE TABLE hidden_games (
   （牌局必须不可预测）。
 - **不是自己的局返回 404**（不是 403）：id 是不透明的随机串，没必要让对方知道「这个 id 存在、
   但不是你的」。「不存在」和「不是你的」的响应**一模一样**。
-- **限流**：建局每人每分钟 30 次，超出 429 `rate_limited`。
+- **出牌**（`POST /api/practice/{id}/play`）：体 `{cards, kind, rank, expected_revision}` 或
+  `{pass:true, expected_revision}`。
+  - **一手不成立** → **409 + 引擎的原因码**（`error.code` 就是 `rules` 那七个封闭取值：
+    `not-your-turn` / `leading-cannot-pass` / `no-cards` / `cards-not-in-hand` / `bad-combo` /
+    `does-not-beat` / `game-over`），**局面一点不动** —— 客户端拿到的取值和它本地 `app/rules`
+    算出来的是同一套，提示文案可以共用；
+  - `expected_revision` 对不上（或并发改过）→ **409 `version_conflict`**，响应里带**最新局面**
+    （`practice` 键，和成功响应同形状），客户端直接刷新重来；少了这个字段是 400
+    （和 games 的 `If-Match` 同一个规矩：宁可不做，也不拿一个不知道自己是哪一版的请求去改局面）；
+  - `Idempotency-Key`（可选）重发 → **不落两次**，返回现在的局面（可能比第一次新 —— 幂等说的是
+    「这一手不落两次」，不是「响应冻住」）；同一个键用在别的请求上 → 422 `idempotency_key_reused`；
+  - 这一副打完了还出牌 → 409 `deal_over`（下一副是后面的事）；
+  - **服务端不替 AI 走棋**：出完手 `turn` 可能落在 AI 座位上（AI 回合在下一件）。
+- **限流**：建局每人每分钟 30 次，超出 429 `rate_limited`。（出牌不限流：它的写量被
+  `expected_revision` 卡着 —— 只有轮到自己、且 revision 对得上才写得进去。）
 - 还没做（后面的件）：出牌裁决、AI 回合与 `practice.played` 推送、进贡/跨副、断线恢复与复盘、
   客户端牌桌。练习局**不算真人局战绩**（#88 的记录只在自己页面显示）。
 
@@ -570,6 +584,7 @@ PUT/DELETE /api/follows/{user_id}     星标牌友
 GET  /api/friends                     牌友列表（含一起打过几局）
 POST /api/practice                    开一局练习局（#88）：发牌、落库，返回局面（只含自己的手牌）
 GET  /api/practice/{id}              练习局局面：断线回来 / 刷新 / 复盘（§5.7）
+POST /api/practice/{id}/play         出一手（或过牌）：服务端校验 + 推进（§5.7）
 POST /api/events                      埋点批量上报（#117，见下面「埋点」）
 POST /api/client-errors               前端错误上报（#117）
 DELETE /api/me                        注销并删除个人数据（§14）
