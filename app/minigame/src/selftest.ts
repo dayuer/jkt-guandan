@@ -1,12 +1,18 @@
 // 诊断用的自检（只在 `node build.mjs --dev --selftest` 打出来的包里）：
 // 把报错、触摸、场景状态发到本机 127.0.0.1:18675 的日志接收端，启动后自动切一遍 Tab。
-const SINK = "http://127.0.0.1:18675/";
+// 端口由构建时定（build.mjs 的 SELFTEST_SINK_PORT），默认 18675 —— 两个会话同时跑自检时
+// 各自换一个，免得把对方的日志和截图收走。
+declare const __SELFTEST_SINK__: string;
+const SINK = typeof __SELFTEST_SINK__ !== "undefined" ? __SELFTEST_SINK__ : "http://127.0.0.1:18675/";
 function send(kind: string, data: unknown) {
   try {
     wx.request({ url: SINK, method: "POST", data: JSON.stringify({ kind, data }), header: { "content-type": "text/plain" } });
   } catch { /* ignore */ }
 }
+import { runAccept165 } from "./accept165";
+
 const g: any = typeof GameGlobal !== "undefined" ? GameGlobal : globalThis;
+
 
 /** 必须在 new App() 之前调：要先包住 wx.onTouchStart。 */
 export function installSelftest() {
@@ -32,7 +38,20 @@ export function installSelftest() {
   });
 }
 
+declare const __SELFTEST_SCENARIO__: string;
+
 export function runSelftest() {
+  // 走查场景（#165 验收 S1–S12）：`SELFTEST_SCENARIO=165` 构建时编进来，否则跑原来的切 Tab 自检。
+  if (typeof __SELFTEST_SCENARIO__ !== "undefined" && __SELFTEST_SCENARIO__ === "165") {
+    const shot165 = (label: string) => {
+      try {
+        const path = g.__app.canvas.toTempFilePathSync({ fileType: "png" });
+        wx.uploadFile({ url: SINK + "?name=" + encodeURIComponent("165-" + label.replace(/\W+/g, "-")), filePath: path, name: "f" });
+      } catch (err: any) { send("shot-throw", { label, message: err?.message }); }
+    };
+    runAccept165({ send, shot: shot165, sink: SINK });
+    return;
+  }
   const app = g.__app, nav = g.__nav;
   const shot = (label: string) => {
     try {
