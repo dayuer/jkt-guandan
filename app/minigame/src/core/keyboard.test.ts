@@ -359,6 +359,19 @@ describe("KeyboardSession：点同一个字段 / 收起 / 切后台", () => {
     expect(h.s.isEditing("place")).toBe(false);
   });
 
+  it("正常收起（complete 先到、高度后归零）之后再点字段：立刻起来，不用等那 500ms 兜底", () => {
+    // #209 复审的不阻塞建议：以前高度归零**一律**进「收尾中」并挂计时器，
+    // 于是这之后 0.5 秒内点字段会先排队、等计时器到点才起来。
+    const h = harness();
+    h.s.focus(place(() => {}));
+    h.wx.height(336);
+    h.wx.complete("去楼下星巴克");     // 正常收尾：complete 先到
+    expect(h.s.isEditing("place")).toBe(false);
+    h.wx.height(0);                    // 高度这才归零（同一件事的另一个通知）
+    h.s.focus(memo(() => {}));
+    expect(h.s.isEditing("memo")).toBe(true);   // 立刻是备注，不是「排着队等兜底」
+  });
+
   it("正常收起：高度归零之后 complete 一直不来 → 兜底把会话收干净，不会一直「编辑中」", () => {
     const h = harness();
     h.s.focus(place(() => {}));
