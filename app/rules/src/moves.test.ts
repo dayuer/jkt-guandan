@@ -1,7 +1,7 @@
 // 合法出法的单测和性质测试。牌例那份（两端共用）在 testdata.test.ts；这里管牌例没覆盖到的
 // 边界，以及**和暴力枚举对拍** —— 那条是 #204 第 4 步验证过、抓出过真 bug 的（见下面）。
 import { describe, expect, it } from "vitest";
-import { SEVEN, type Card, type Rank } from "./card";
+import { SEVEN, TWO, type Card, type Rank } from "./card";
 import { comboRankName, compare, recognize, sortCards, type Combo, type ComboType } from "./combo";
 import { comboKey, moves } from "./moves";
 import { handOf } from "./testing/cards";
@@ -274,4 +274,61 @@ describe("性质：和暴力枚举对拍（≤ 8 张）", () => {
       );
     }
   }, 60000);
+});
+
+/**
+ * 边界手牌：照搬 Go 的 `edgeHands`（14 手，含 A 当 1 的绕圈、两张逢人配、七个 3、四大天王），
+ * 再加一手**单花色 34567** —— 那一手是 auditor-240 用变异测试找出来的：把 `shapesBeating` 里的
+ * `straight-flush` 去掉（跟牌不生成同花顺），294 条测试**一条都不红**。Go 那边有这条对拍，TS 没移植。
+ */
+const EDGE_HANDS: { name: string; cards: string[]; level: Rank }[] = [
+  { name: "A 当 1 的顺子", cards: ["♠A/0", "♠2/0", "♠3/0", "♠4/0", "♠5/0"], level: SEVEN },
+  { name: "A 当 1 的顺子（两个窗口挨着）", cards: ["♠A/0", "♠2/0", "♠3/0", "♠4/0", "♠5/0", "♠6/0"], level: SEVEN },
+  { name: "A 当 1 的顺子 + 逢人配", cards: ["♠2/0", "♠3/0", "♠4/0", "♠5/0", "♥7/0"], level: SEVEN },
+  { name: "A 当 1 的三连对", cards: ["♠A/0", "♥A/0", "♠2/0", "♥2/0", "♠3/0", "♥3/0"], level: SEVEN },
+  { name: "A 当 1 的三同连张", cards: ["♠A/0", "♥A/0", "♦A/0", "♠2/0", "♥2/0", "♦2/0"], level: SEVEN },
+  { name: "绕圈另一头：三连对 QKA", cards: ["♠Q/0", "♥Q/0", "♠K/0", "♥K/0", "♠A/0", "♥A/0"], level: SEVEN },
+  { name: "绕圈另一头：Q 和 A 不连着，不该有三同连张", cards: ["♠Q/0", "♥Q/0", "♦Q/0", "♠A/0", "♥A/0", "♦A/0"], level: SEVEN },
+  { name: "两张逢人配", cards: ["♥7/0", "♥7/1"], level: SEVEN },
+  { name: "两张逢人配 + 顺子", cards: ["♠3/0", "♠4/0", "♠5/0", "♥7/0", "♥7/1"], level: SEVEN },
+  { name: "七个 3：炸弹张数", cards: ["♠3/0", "♥3/0", "♣3/0", "♦3/0", "♠3/1", "♥3/1", "♣3/1"], level: SEVEN },
+  {
+    name: "七个 3 + 一张逢人配：炸弹张数×顶法",
+    cards: ["♠3/0", "♥3/0", "♣3/0", "♦3/0", "♠3/1", "♥3/1", "♣3/1", "♥7/0"],
+    level: SEVEN,
+  },
+  { name: "四大天王", cards: ["大王/0", "大王/1", "小王/0", "小王/1"], level: SEVEN },
+  { name: "两张逢人配都要用上：三带对 9 的三种打法", cards: ["♠9/0", "♥9/0", "♣9/0", "♠5/0", "♥7/0", "♥7/1"], level: SEVEN },
+  { name: "级牌自己：打 2 时的 A 当 1", cards: ["♠A/0", "♠2/0", "♠3/0", "♠4/0", "♠5/0"], level: TWO },
+  { name: "单花色 34567：是顺子也是同花顺", cards: ["♠3/0", "♠4/0", "♠5/0", "♠6/0", "♠7/0"], level: SEVEN },
+];
+
+describe("性质：边界手牌和暴力枚举对拍（照搬 Go 的 EdgeHands）", () => {
+  it("领出一致；再把手里每一种解读当上一手，跟牌也要一致", () => {
+    let cases = 0;
+    for (const edge of EDGE_HANDS) {
+      const cards = handOf(edge.cards);
+      const want = bruteMoves(cards, edge.level);
+      expect(treatments(moves(cards, edge.level)), `${edge.name}（领出）`).toStrictEqual(treatments(want));
+      cases++;
+      // 拿**每一种解读**当上一手各对一次 —— 跟牌那条路就是在这里被压到的。
+      for (const lead of want) {
+        const wantFollow = want.filter((c) => compare(c, lead) === "greater");
+        const what = `${edge.name}（跟 ${lead.type} ${comboRankName(lead)}）`;
+        expect(treatments(moves(cards, edge.level, lead)), what).toStrictEqual(treatments(wantFollow));
+        cases++;
+      }
+    }
+    expect(cases, "一手都没对拍，用例没起作用").toBeGreaterThan(100);
+  }, 60000);
+
+  // auditor-240 报的那两条：上一手不是手里能打出的牌，所以上面那组压不到，单列出来。
+  // 去掉 `shapesBeating` 里的 straight-flush，这两条就会红。
+  it("跟普通牌型和跟炸弹，都要把同花顺列出来（同花顺是炸弹，压得住两者）", () => {
+    const cards = handOf(["♠3/0", "♠4/0", "♠5/0", "♠6/0", "♠7/0"]); // 单花色 34567
+    const pairK = comboOf(["♠K/0", "♥K/1"], "pair", 9);
+    const bomb8 = comboOf(["♠8/0", "♥8/0", "♣8/0", "♦8/0"], "bomb", 9);
+    expect(listed(moves(cards, 9, pairK))).toEqual(["straight-flush 7"]);
+    expect(listed(moves(cards, 9, bomb8))).toEqual(["straight-flush 7"]);
+  });
 });
