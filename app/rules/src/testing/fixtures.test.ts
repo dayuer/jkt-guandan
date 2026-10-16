@@ -2,7 +2,7 @@
 // 每条拒绝都有用例盯着 —— 这些是 #213 开 PR 前审计时手试出来的，固化成测试，
 // 以后改读取器不会悄悄放松。
 import { describe, expect, it } from "vitest";
-import { readCombos, readCompare, readDeal, readDeck, readPower } from "./fixtures";
+import { readCombos, readCompare, readDeal, readDeck, readMoves, readPower } from "./fixtures";
 
 /** 去掉一个字段（比赋值 undefined 更接近「根本没写」）。 */
 const without = (obj: object, key: string): Record<string, unknown> => {
@@ -184,6 +184,62 @@ describe("读取器：compare.json（a 能不能压 b）", () => {
   it("类型不对说「应该是……」", () => {
     expect(() => readCompare(at({ result: 1 }))).toThrow(/result：应该是字符串/);
     expect(() => readCompare(at({ a: ["♠K/0"] }))).toThrow(/a：应该是对象/);
+  });
+});
+
+describe("读取器：moves.json（合法出法）", () => {
+  const ok = {
+    _comment: ["说明"],
+    vectors: [
+      {
+        name: "领出",
+        rule: ["第三条 1"],
+        level: "7",
+        hand: ["♠K/0", "♥7/0"],
+        moves: [
+          { kind: "single", rank: "K", size: 1 },
+          { kind: "single", rank: "7", size: 1, wilds: [{ card: "♥7/0", as: "♥7" }] },
+        ],
+      },
+    ],
+  };
+  const at = (patch: Record<string, unknown>) => ({ vectors: [{ ...ok.vectors[0], ...patch }] });
+
+  it("最小的牌例读得过；lead 可写可不写", () => {
+    expect(readMoves(ok)).toEqual(ok.vectors);
+    const lead = { kind: "pair", cards: ["♠K/0", "♥K/1"], rank: "K" };
+    expect(readMoves(at({ lead }))[0].lead).toEqual(lead);
+  });
+
+  it("lead 的 rank 空串等于没写（和 Go 的 `side.Rank != \"\"` 一个口径）", () => {
+    const lead = { kind: "pair", cards: ["♠K/0", "♥K/1"], rank: "" };
+    expect(readMoves(at({ lead }))[0].lead).toEqual({ kind: "pair", cards: ["♠K/0", "♥K/1"] });
+  });
+
+  it("空用例列表要拒绝", () => expect(() => readMoves({ ...ok, vectors: [] })).toThrow(/没有用例/));
+
+  it("缺字段说「缺字段 X（必填…）」", () => {
+    expect(() => readMoves(at({ hand: undefined }))).toThrow(/缺字段 hand（必填/);
+    expect(() => readMoves(at({ moves: [without(ok.vectors[0].moves[0], "size")] }))).toThrow(/缺字段 size（必填/);
+    expect(() => readMoves(at({ moves: [without(ok.vectors[0].moves[0], "rank")] }))).toThrow(/缺字段 rank（必填/);
+  });
+
+  it("未知字段要拒绝：顶层、用例里、出法里、lead 里", () => {
+    expect(() => readMoves({ ...ok, seats: 4 })).toThrow(/不认识的字段 "seats"/);
+    expect(() => readMoves(at({ winner: 1 }))).toThrow(/不认识的字段 "winner"/);
+    expect(() => readMoves(at({ moves: [{ kind: "single", rank: "K", size: 1, extra: 1 }] }))).toThrow(
+      /不认识的字段 "extra"/,
+    );
+    expect(() => readMoves(at({ lead: { kind: "pair", cards: ["♠K/0"], extra: 1 } }))).toThrow(/不认识的字段 "extra"/);
+  });
+
+  it("类型不对说「应该是……」", () => {
+    expect(() => readMoves(at({ hand: "♠K/0" }))).toThrow(/hand：应该是数组/);
+    expect(() => readMoves(at({ moves: [{ kind: "single", rank: "K", size: 1.5 }] }))).toThrow(/size：应该是整数/);
+    expect(() => readMoves(at({ moves: [{ kind: "single", rank: "K", size: "1" }] }))).toThrow(/size：应该是整数/);
+    expect(() => readMoves(at({ moves: [{ kind: "single", rank: "K", size: 1, wilds: [{ card: "♥7/0" }] }] }))).toThrow(
+      /缺字段 as（必填/,
+    );
   });
 });
 

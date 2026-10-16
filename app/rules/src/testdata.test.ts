@@ -7,9 +7,10 @@ import { describe, expect, it } from "vitest";
 import { cardKey, newDeck, parseKey, parseRank, type Card, type Rank } from "./card";
 import { asKey, comboRankName, comboSummary, compare, parseComboType, pick, recognize, type Combo, type Order } from "./combo";
 import { deal, HANDS_EACH, permShuffler, SEATS } from "./deal";
+import { moves } from "./moves";
 import { power } from "./power";
 import { handOf } from "./testing/cards";
-import { compareFixture, combosFixture, dealFixture, deckFixture, powerFixture } from "./testing/testdata";
+import { compareFixture, combosFixture, dealFixture, deckFixture, movesFixture, powerFixture } from "./testing/testdata";
 import type { CompareSide } from "./testing/fixtures";
 
 const keys = (cards: readonly Card[]): string[] => cards.map(cardKey);
@@ -130,6 +131,24 @@ describe("compare.json：谁压得住谁（第四条 二）", () => {
 
       expect(compare(a, b), "a 比 b").toBe(want);
       expect(compare(b, a), "b 比 a").toBe(REVERSED[want]);
+    });
+  }
+});
+
+describe("moves.json：合法出法（第三条、第四条 二）", () => {
+  /** 一手出法写成牌例里的样子；`wilds` 只在真用了逢人配时才写（顶法唯一时牌例也不写）。 */
+  const moveSpec = (combo: Combo): { kind: string; rank: string; size: number; wilds?: { card: string; as: string }[] } => {
+    const spec = { kind: combo.type, rank: comboRankName(combo), size: combo.cards.length };
+    return combo.wilds.length > 0
+      ? { ...spec, wilds: combo.wilds.map((w) => ({ card: cardKey(w.card), as: asKey(w.as) })) }
+      : spec;
+  };
+
+  for (const vector of movesFixture) {
+    it(vector.name, () => {
+      const level = parseRank(vector.level);
+      const lead = vector.lead ? declaredCombo(vector.lead, level, `${vector.name}（上一手）`) : undefined;
+      expect(moves(handOf(vector.hand), level, lead).map(moveSpec)).toStrictEqual(vector.moves);
     });
   }
 });

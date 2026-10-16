@@ -6,11 +6,13 @@ import combosRaw from "../../../../testdata/rules/combos.json";
 import compareRaw from "../../../../testdata/rules/compare.json";
 import dealRaw from "../../../../testdata/rules/deal.json";
 import deckRaw from "../../../../testdata/rules/deck.json";
+import movesRaw from "../../../../testdata/rules/moves.json";
 import powerRaw from "../../../../testdata/rules/power.json";
-import { readCombos, readCompare, readDeal, readDeck, readPower } from "./fixtures";
+import { readCombos, readCompare, readDeal, readDeck, readMoves, readPower } from "./fixtures";
 
 export const deckFixture = readDeck(deckRaw);
 export const powerFixture = readPower(powerRaw);
 export const dealFixture = readDeal(dealRaw);
 export const combosFixture = readCombos(combosRaw);
 export const compareFixture = readCompare(compareRaw);
+export const movesFixture = readMoves(movesRaw);
