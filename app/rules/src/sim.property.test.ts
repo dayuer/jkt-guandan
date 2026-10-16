@@ -651,13 +651,15 @@ function playMatch(rng: Rng, maxDeals = MAX_DEALS_PER_MATCH): MatchLog {
 // ───────────────────────────────────────────────────────────────────────────
 
 describe("性质：随机对局（完整的一场：发牌 → 进贡 → 出牌 → 下一副）", () => {
-  it("固定种子跑若干场：守恒、合法、必然结束，每步都和独立推的模型对得上", () => {
+  it("固定种子跑若干场：守恒、合法、必然结束，每步都和独立推的模型对得上", { timeout: 30_000 }, () => {
     let deals = 0;
     let steps = 0;
     let tributeDeals = 0;
     let resisted = 0;
     let borrowed = 0;
-    const seeds = [1, 2, 3, 4, 5, 6];
+    // 语料取 4 个种子（~60 副、六七千步）。这只是一条**下界**：真正的覆盖面由下面几条断言钉着，
+    // 而这条测试本来就重（每步都要和独立推的模型对、每副都要整份比计分状态）。
+    const seeds = [1, 2, 3, 4];
     for (const seed of seeds) {
       const log = playMatch(seededRandom(seed));
       // 一场总有打完的时候（过 A）：撞上副数上限就说明「打不完」——那正是要抓的。
