@@ -205,6 +205,16 @@ func slotVariants(slots []slot, byRank map[Rank][]Card, wilds []Card, suit *Suit
 				if freeSlot >= 0 && counts[freeSlot] == slots[freeSlot].n {
 					cand.known = false
 				}
+				// 五张的槽位（炸弹那一路）里放三张实牌 + 两张逢人配：这张逢人配既可以
+				// 顶成同一个点数（炸弹），也可以顶成**一对别的点数**（三带对）——
+				// 「777 + 两张逢人配」就是「炸弹 7」和「三带对 7（两张逢人配顶成一对 2）」
+				// 两种打法，实牌只有一个点数时三带对那一路自己造不出候选，是 Recognize
+				// 认这组牌时顺带枚举出来的（auditor-242 抓到的漏一手）。
+				for i := range slots {
+					if counts[i] == 2 && slots[i].n == 5 {
+						cand.known = false
+					}
+				}
 				out = append(out, cand)
 			}
 		}
@@ -259,7 +269,9 @@ func fillSlots(slots []slot, byRank map[Rank][]Card, wilds []Card, counts []int,
 			next++
 			used[w.ID] = true
 			out = append(out, w)
-			as := Card{Rank: sl.rank, Suit: Spade, Deck: w.Deck, ID: w.ID}
+			// As 只是「顶成了哪一张」的说明，不是手里某张真牌：ID、副号留 0，
+			// 和 Recognize（从「能顶成哪些牌」那张模板表里取）给出来的一样。
+			as := Card{Rank: sl.rank, Suit: Spade}
 			if suit != nil {
 				as.Suit = *suit // 同花顺：顶出来的那张必须是这个花色
 			}

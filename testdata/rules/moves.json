@@ -321,6 +321,47 @@
    "moves": [
     {"kind": "straight-flush", "rank": "7", "size": 5}
    ]
+  },
+  {
+   "name": "领出：两张逢人配的顶法按「点数小的配 ID 小的那张」分",
+   "rule": ["第三条 1", "第三条 2", "第三条 3", "第三条 7", "第二条 14", "第五条 1"],
+   "level": "6",
+   "hand": ["♥6/0", "♥6/1", "♠2/0", "♠4/0", "♣5/0"],
+   "moves": [
+    {"kind": "single", "rank": "2", "size": 1},
+    {"kind": "single", "rank": "4", "size": 1},
+    {"kind": "single", "rank": "5", "size": 1},
+    {"kind": "single", "rank": "6", "size": 1, "wilds": [{"card": "♥6/0", "as": "♥6"}]},
+    {"kind": "pair", "rank": "2", "size": 2, "wilds": [{"card": "♥6/0", "as": "♠2"}]},
+    {"kind": "pair", "rank": "4", "size": 2, "wilds": [{"card": "♥6/0", "as": "♠4"}]},
+    {"kind": "pair", "rank": "5", "size": 2, "wilds": [{"card": "♥6/0", "as": "♠5"}]},
+    {"kind": "pair", "rank": "6", "size": 2, "wilds": [{"card": "♥6/0", "as": "♥6"}, {"card": "♥6/1", "as": "♥6"}]},
+    {"kind": "triple", "rank": "2", "size": 3, "wilds": [{"card": "♥6/0", "as": "♠2"}, {"card": "♥6/1", "as": "♠2"}]},
+    {"kind": "triple", "rank": "4", "size": 3, "wilds": [{"card": "♥6/0", "as": "♠4"}, {"card": "♥6/1", "as": "♠4"}]},
+    {"kind": "triple", "rank": "5", "size": 3, "wilds": [{"card": "♥6/0", "as": "♠5"}, {"card": "♥6/1", "as": "♠5"}]},
+    {"kind": "straight", "rank": "5", "size": 5, "wilds": [{"card": "♥6/0", "as": "♠3"}, {"card": "♥6/1", "as": "♠A"}]},
+    {"kind": "straight", "rank": "6", "size": 5, "wilds": [{"card": "♥6/0", "as": "♠3"}, {"card": "♥6/1", "as": "♠6"}]}
+   ]
+  },
+  {
+   "name": "领出：实牌只有一个点数时，三带对靠两张逢人配凑副对",
+   "rule": ["第三条 1", "第三条 2", "第三条 3", "第三条 4", "第三条 8", "第二条 14"],
+   "level": "4",
+   "hand": ["♥4/0", "♥4/1", "♣7/0", "♦7/0", "♦7/1"],
+   "moves": [
+    {"kind": "single", "rank": "4", "size": 1, "wilds": [{"card": "♥4/0", "as": "♥4"}]},
+    {"kind": "single", "rank": "7", "size": 1},
+    {"kind": "pair", "rank": "4", "size": 2, "wilds": [{"card": "♥4/0", "as": "♥4"}, {"card": "♥4/1", "as": "♥4"}]},
+    {"kind": "pair", "rank": "7", "size": 2},
+    {"kind": "pair", "rank": "7", "size": 2, "wilds": [{"card": "♥4/0", "as": "♠7"}]},
+    {"kind": "triple", "rank": "7", "size": 3},
+    {"kind": "triple", "rank": "7", "size": 3, "wilds": [{"card": "♥4/0", "as": "♠7"}]},
+    {"kind": "triple", "rank": "7", "size": 3, "wilds": [{"card": "♥4/0", "as": "♠7"}, {"card": "♥4/1", "as": "♠7"}]},
+    {"kind": "triple-pair", "rank": "7", "size": 5, "wilds": [{"card": "♥4/0", "as": "♠2"}, {"card": "♥4/1", "as": "♠2"}]},
+    {"kind": "bomb", "rank": "7", "size": 4, "wilds": [{"card": "♥4/0", "as": "♠7"}]},
+    {"kind": "bomb", "rank": "7", "size": 4, "wilds": [{"card": "♥4/0", "as": "♠7"}, {"card": "♥4/1", "as": "♠7"}]},
+    {"kind": "bomb", "rank": "7", "size": 5, "wilds": [{"card": "♥4/0", "as": "♠7"}, {"card": "♥4/1", "as": "♠7"}]}
+   ]
   }
  ]
 }

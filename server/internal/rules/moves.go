@@ -28,6 +28,16 @@ import (
 //
 // 「要不起就过」不在这个集合里：跟牌时过牌永远合法，由调用方自己加。
 func Moves(hand []Card, level Rank, lead *Combo) ([]Combo, error) {
+	return movesWith(hand, level, lead, combosOf)
+}
+
+// movesWith 是 Moves 的本体，把「怎么把一个候选认成解读」抽成一个参数。
+//
+// 为什么要有这个参数：**优化前后的行为一致性要有一条永久护栏**（#241）。老实现是每个候选
+// 都交给 Recognize 枚举一遍顶法（慢，但对），新实现是照候选自带的顶法直接认（快）。
+// 测试把老那条路当参照实现传进来（moves_old_test.go），同一批局面上逐字段比 ——
+// 以后谁再动 Moves，这条会先红，不用等人肉对拍。
+func movesWith(hand []Card, level Rank, lead *Combo, read func(candidate, Rank) ([]Combo, error)) ([]Combo, error) {
 	if len(hand) == 0 {
 		return nil, fmt.Errorf("求合法出法：手里没有牌")
 	}
@@ -53,7 +63,7 @@ func Moves(hand []Card, level Rank, lead *Combo) ([]Combo, error) {
 	// 每个（牌型、牌面、顶法）只留牌 ID 最小的那一套。
 	best := map[string]Combo{}
 	for _, cand := range candidateSets(solids, wilds, want) {
-		combos, err := combosOf(cand, level)
+		combos, err := read(cand, level)
 		if err != nil {
 			return nil, fmt.Errorf("求合法出法：候选 %s：%w", cardsText(cand.cards), err)
 		}
