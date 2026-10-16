@@ -3,7 +3,11 @@
 //   1. 会改数据的请求一律带 Content-Type: application/json，没有请求体也带；
 //   2. 每次「提交」一个新的 Idempotency-Key；
 //   3. 修改牌局带 If-Match: <version>，409 时响应体里有最新数据。
+//
+// #253 P5 起，类型和 ApiError 从 app/shared/src/api.ts 拿（不再反向 import app/h5），
+// 这一份只剩传输：前缀、Bearer 凭证、401 通知、503 重试。
 
+import { ApiError } from "../../../shared/src/api";
 import type {
   ClaimTicket,
   CreateGameInput,
@@ -16,48 +20,14 @@ import type {
   InviteResult,
   MeResponse,
   UserRef,
-} from "../../../h5/src/api";
+} from "../../../shared/src/api";
 import type { RoundFact, Score } from "./scoring";
 
-export type {
-  ClaimTicket,
-  CreateGameInput,
-  Device,
-  Friend,
-  GameDetail,
-  GamePatch,
-  GameSummary,
-  GroupInfo,
-  InviteResult,
-  MeResponse,
-  Seat,
-  UserRef,
-  WaitEntry,
-} from "../../../h5/src/api";
+// 类型、ApiError 和邀请的两个纯文案函数住 app/shared（#253 P5）；这里只做转出，
+// 小游戏各处的 import 路径不用动。传输仍是这一份 wx.request（前缀、Bearer、401 都在这边）。
+export * from "../../../shared/src/api";
 
 export const API_BASE = __API_BASE__;
-
-export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-    readonly body: any = null,
-  ) {
-    super(message);
-    this.name = "ApiError";
-  }
-  get isVersionConflict(): boolean {
-    return this.status === 409 && this.code === "version_conflict";
-  }
-  get isClosed(): boolean {
-    return this.status === 409 && this.code === "game_closed";
-  }
-  get field(): string {
-    const f = this.body?.error?.field;
-    return typeof f === "string" ? f : "";
-  }
-}
 
 // ── 凭证：device_token 存在本地存储里，只在请求头里出现 ──
 
@@ -317,22 +287,6 @@ export async function getGroupInfo(): Promise<GroupInfo> {
 export async function inviteFriends(code: string, userIDs: string[]): Promise<InviteResult> {
   const body = await request<Partial<InviteResult>>("POST", `/api/games/${enc(code)}/invites`, { body: { user_ids: userIDs } });
   return { invited: body?.invited ?? [], skipped: body?.skipped ?? [] };
-}
-
-export function inviteSummary(r: InviteResult): string {
-  if (r.invited.length === 0) return "他们都已经在局里或邀请过了";
-  const base = `已邀请 ${r.invited.length} 位牌友，他们会收到通知`;
-  return r.skipped.length > 0 ? `${base}（${r.skipped.length} 位已在局里或邀请过）` : base;
-}
-
-export function inviteError(err: unknown): string {
-  if (err instanceof ApiError) {
-    if (err.code === "quota_exceeded") return "今天邀请太多了，明天再试";
-    if (err.code === "not_friend") return "有人不在你的牌友里了，刷新一下再选";
-    if (err.code === "game_closed") return "这一局已经结束或取消了";
-    if (err.code === "not_host") return "只有局头能邀请";
-  }
-  return "邀请没发出去，稍后再试";
 }
 
 // ── 页面链接（分享话术、日历、海报都指向 H5 站点）──
