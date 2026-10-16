@@ -14,11 +14,16 @@ import (
 )
 
 // 牌例在仓库根的 testdata/rules/（#204 第 1 步）：Go 和客户端 TS 版（#87）读同一批文件，
-// 格式见那里的 README.md。
+// 格式见那里的 README.md（那份文档是两端的接口说明）。
 //
-// 改输入之后跑 `go test ./server/internal/rules/ -update` 重新生成写死的期望值
-// （deck.json 的 order、deal.json 的 hands），再逐条核对 git diff —— 生成器只会照着现在的
-// 实现写，看不出规则错。
+// 改输入之后跑 `go test ./server/internal/rules/ -update` 重新生成 deal.json 的 hands，
+// 再逐条核对改了什么 —— 生成器只会照着现在的实现写，看不出规则错。
+//
+// **deck.json 的 order 不由 -update 生成**：它是两端的约定，不是期望值（#213 复审）。
+// 要是让它跟着实现走，改一次 NewDeck 的顺序、跑一次 -update，约定就被悄悄改掉了。
+//
+// 每条用例都要有 rule 字段（条款号数组，写法见 README）：这里会检查它非空，
+// 免得「依据」只写在 name 的文字里、TS 端没法校验。
 var update = flag.Bool("update", false, "按现在的实现重新生成 testdata/rules 里的期望值")
 
 const fixturesDir = "../../../testdata/rules"
@@ -54,6 +59,7 @@ func saveFixture(t *testing.T, name string, v any) {
 // 整副牌的顺序：两端必须一样，否则同一串牌例在两边指的不是同一张牌。
 type deckFixture struct {
 	Comment []string `json:"_comment"`
+	Rule    []string `json:"rule"`
 	Order   []string `json:"order"`
 }
 
@@ -71,10 +77,8 @@ func TestDeckFixture(t *testing.T) {
 	deck := NewDeck()
 	want := deckKeys(deck)
 
-	if *update {
-		f.Order = want
-		saveFixture(t, "deck.json", f)
-		return
+	if len(f.Rule) == 0 {
+		t.Fatal("deck.json 没写 rule（条款号）")
 	}
 	if len(f.Order) != len(want) {
 		t.Fatalf("牌例写了 %d 张，整副牌有 %d 张", len(f.Order), len(want))
@@ -96,9 +100,10 @@ func TestDeckFixture(t *testing.T) {
 	}
 }
 
-// 牌点大小（第四条一）：一条用例一个级数，order 是从大到小的 15 个牌点。
+// 牌点大小（第四条 一）：一条用例一个级数，order 是从大到小的 15 个牌点。
 type powerVector struct {
 	Name  string   `json:"name"`
+	Rule  []string `json:"rule"`
 	Level string   `json:"level"`
 	Order []string `json:"order"`
 }
@@ -115,6 +120,9 @@ func TestPowerFixture(t *testing.T) {
 		t.Fatal("没有用例")
 	}
 	for _, v := range f.Vectors {
+		if len(v.Rule) == 0 {
+			t.Fatalf("%s：没写 rule（条款号）", v.Name)
+		}
 		level, err := ParseRank(v.Level)
 		if err != nil {
 			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
@@ -137,15 +145,16 @@ func TestPowerFixture(t *testing.T) {
 			}
 			prev, _ := ParseRank(v.Order[i-1])
 			if prev.Power(level) <= r.Power(level) {
-				t.Fatalf("%s：打 %s 时 %s 应比 %s 大（第四条一）", v.Name, v.Level, v.Order[i-1], name)
+				t.Fatalf("%s：打 %s 时 %s 应比 %s 大（第四条 一）", v.Name, v.Level, v.Order[i-1], name)
 			}
 		}
 	}
 }
 
-// 发牌（第七条一）：shuffle 是出牌顺序，hands 是按座位发的四手牌。
+// 发牌（第七条 一、5）：shuffle 是发牌顺序，hands 是从首抓者起逆时针的四手牌。
 type dealVector struct {
 	Name    string     `json:"name"`
+	Rule    []string   `json:"rule"`
 	Shuffle []int      `json:"shuffle"`
 	Hands   [][]string `json:"hands"`
 }
@@ -163,6 +172,9 @@ func TestDealFixture(t *testing.T) {
 	}
 	for i := range f.Vectors {
 		v := &f.Vectors[i]
+		if len(v.Rule) == 0 {
+			t.Fatalf("%s：没写 rule（条款号）", v.Name)
+		}
 		hands, err := Deal(PermShuffler(v.Shuffle))
 		if err != nil {
 			t.Fatalf("%s：%v", v.Name, err)
@@ -173,7 +185,7 @@ func TestDealFixture(t *testing.T) {
 		all := map[int]bool{}
 		for seat, hand := range hands {
 			if len(hand) != 27 {
-				t.Fatalf("%s：%d 号座发了 %d 张，应该 27 张", v.Name, seat+1, len(hand))
+				t.Fatalf("%s：从首抓者起第 %d 家发了 %d 张，应该 27 张", v.Name, seat+1, len(hand))
 			}
 			for _, c := range hand {
 				if all[c.ID] {

@@ -17,7 +17,7 @@ import (
 
 // Rank 是牌点。2–10 就是数字，J=11、Q=12、K=13、A=14；大小王排在 A 之后（15、16）。
 //
-// A 在搭配成三连对、三同连张、顺子、同花顺时可视作 1（第四条一），那是牌型识别里的事，
+// A 在搭配成三连对、三同连张、顺子、同花顺时可视作 1（第四条 一、2），那是牌型识别里的事，
 // 不是这里的数值。
 type Rank int
 
@@ -112,6 +112,7 @@ func (s Suit) SuitName() string {
 }
 
 // ParseSuit 认花色符号（"♠"、"♥"、"♣"、"♦"；空串表示没有花色，也就是王）。
+// 符号后面不许跟变体选择符 U+FE0F（有些编辑器会把 ♥ 存成 ♥️），见 ParseKey。
 func ParseSuit(s string) (Suit, error) {
 	switch s {
 	case "♠":
@@ -145,8 +146,12 @@ func (c Card) Key() string {
 
 func (c Card) String() string { return c.Key() }
 
-// ParseKey 读回 Key 写出来的那张牌，带上它在整副牌里的 ID（新牌按 NewDeck 的顺序找）。
+// ParseKey 读回 Key 写出来的那张牌，带上它在整副牌里的 ID（按 NewDeck 的顺序查）。
 // 「哪一张牌」在 Key 里就定死了（花色 + 牌面 + 副号），所以 ID 是查得出来的。
+//
+// **只认规范写法**（#213 复审）：读出来再写回去必须还是原来那串（`ParseKey(s).Key() == s`）。
+// 也就是说 `♠j/0`、`♠07/0`、`♥️7/0`（多一个变体选择符 U+FE0F）这些都拒绝 ——
+// 牌例是两端逐字符串比对的，Go 端这里松一点，到了严格比对的 TS 端就会挂。
 func ParseKey(s string) (Card, error) {
 	c, err := parseKeyBody(s)
 	if err != nil {
@@ -199,7 +204,12 @@ func parseKeyBody(s string) (Card, error) {
 	if rank.IsJoker() != (suit == NoSuit) {
 		return Card{}, fmt.Errorf("认不出牌 %q：王没有花色，别的牌要有花色", s)
 	}
-	return Card{Rank: rank, Suit: suit, Deck: deck}, nil
+	c := Card{Rank: rank, Suit: suit, Deck: deck}
+	// 只认规范写法：牌面大写、副号不补零、花色不带变体选择符（见函数注释）。
+	if got := c.Key(); got != s {
+		return Card{}, fmt.Errorf("认不出牌 %q：要写成 %s", s, got)
+	}
+	return c, nil
 }
 
 // NewDeck 造出两副牌共 108 张，顺序固定：先第 0 副、再第 1 副；每副里花色按 ♠♥♣♦，
