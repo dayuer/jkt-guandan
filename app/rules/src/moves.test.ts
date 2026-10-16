@@ -58,6 +58,20 @@ describe("列合法出法：领出", () => {
     expect(pairs.map((c) => c.wilds.length).sort()).toEqual([0, 1]);
   });
 
+  // 顺子类的窗口要含「A 当 1」那一圈（第四条 一、2）。这条是变异测试逼出来的：
+  // 把 `rankWindows` 里那个 A 开头的窗口删掉，280 条测试**一条都不红** —— 随机手牌太小，
+  // 抽不到 A2345 这种组合。所以这里点名补上，别让它再漏。
+  it("顺子类的窗口含「A 当 1」：A2345、AA2233、AAA222 都要能列出来", () => {
+    expect(listed(moves(handOf(["♠A/0", "♥2/0", "♣3/0", "♦4/0", "♠5/0"]), SEVEN))).toContain("straight 5");
+    expect(listed(moves(handOf(["♠A/0", "♥A/0", "♠2/0", "♥2/0", "♠3/0", "♥3/0"]), SEVEN))).toContain("tube 3");
+    expect(listed(moves(handOf(["♠A/0", "♦A/0", "♣A/0", "♠2/0", "♦2/0", "♣2/0"]), SEVEN))).toContain("plate 2");
+  });
+
+  it("逢人配能补进「A 当 1」那个窗口", () => {
+    // ♠A ♣3 ♦4 ♠5 + ♥7 当 ♥2 → A2345
+    expect(listed(moves(handOf(["♠A/0", "♣3/0", "♦4/0", "♠5/0", "♥7/0"]), SEVEN))).toContain("straight 5");
+  });
+
   // #204 第 4 步踩过的坑：去重键漏了张数，手里七个 3 就只剩「4 张炸弹」，跟 5 张炸弹时报「无牌可跟」。
   it("炸弹 4、5、6、7 张是四种打法，不能被当成同一条", () => {
     const seven = ["♠3/0", "♥3/0", "♣3/0", "♦3/0", "♠3/1", "♥3/1", "♣3/1"];
@@ -150,10 +164,21 @@ function bruteMoves(hand: readonly Card[], level: Rank, against?: Combo): Combo[
   return out;
 }
 
-/** ≤ 8 张才好穷举子集（256 个）；手牌从固定种子里取，红了能复现。 */
-const SMALL = sampleHands(400, 20261017)
-  .filter((s) => s.cards.length <= 8)
-  .slice(0, 40);
+/**
+ * 对拍用的手牌：**点名几手「A 当 1」的**（随机手牌太小，抽不到 A2345 这种组合 ——
+ * 变异测试验过：把那个窗口删掉，光靠随机手牌一条都不红），再加一批固定种子的随机手牌。
+ * 都 ≤ 8 张，才好穷举子集（256 个）。
+ */
+const SMALL: { cards: Card[]; level: Rank }[] = [
+  { cards: handOf(["♠A/0", "♥2/0", "♣3/0", "♦4/0", "♠5/0"]), level: SEVEN }, // A2345
+  { cards: handOf(["♠A/0", "♥A/0", "♠2/0", "♥2/0", "♠3/0", "♥3/0"]), level: SEVEN }, // AA2233
+  { cards: handOf(["♠A/0", "♦A/0", "♣A/0", "♠2/0", "♦2/0", "♣2/0"]), level: SEVEN }, // AAA222
+  { cards: handOf(["♠A/0", "♣3/0", "♦4/0", "♠5/0", "♥7/0"]), level: SEVEN }, // 逢人配补出 A2345
+  // 随机那批保留各自的级数（级数决定谁是逢人配、也比大小用）
+  ...sampleHands(400, 20261017)
+    .filter((s) => s.cards.length <= 8)
+    .slice(0, 36),
+];
 
 describe("性质：列合法出法", () => {
   const corpus = sampleHands(300, 20261018).map(({ cards, level }) => ({ cards, level, moves: moves(cards, level) }));
