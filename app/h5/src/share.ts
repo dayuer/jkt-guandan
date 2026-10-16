@@ -1,101 +1,59 @@
-import type { GameDetail } from "./api";
-import { dayShort, timeHM } from "./format";
-
 /**
- * 分享的四个出口（docs/h5-pwa-plan.md §5、设计稿 04 的 C1）。
+ * H5 的分享出口（docs/h5-pwa-plan.md §5、设计稿 04 的 C1）。
  *
- * 微信里的 H5 链接渲染不出牌桌卡片，所以拆成四条路：海报（服务端渲染，见下）、
- * 复制话术、WhatsApp（靠 OG 标签出原生卡片）、系统分享。
+ * 微信里的 H5 链接渲染不出牌桌卡片，所以拆成四条路：海报（服务端渲染）、复制话术、
+ * WhatsApp（靠 OG 标签出原生卡片）、系统分享。
  *
- * 这里只有纯逻辑：文案怎么拼、URL 怎么带参数、`navigator.share` 的结果怎么归一。
+ * #253 之后**纯逻辑（话术怎么拼、URL 怎么带参数）搬去了 `app/shared/src/share.ts`**，
+ * 好处是小游戏不用再反向 import H5。这个文件留两样东西：
+ *
+ *   1. 平台相关的：`navigator.share` 的系统分享、复制到剪贴板的兜底（H5 专有）；
+ *   2. 一层薄封装：把共享层的 `shareText`/`systemShareText` 按 **H5 的时间写法**绑好再导出 ——
+ *      时间怎么显示是各端自己的事（H5 用 `./format`，小游戏用 `src/lib/fmt.ts`，因为安卓微信
+ *      不一定有 `Intl`），共享层只接收拼好的 `when` 字符串。这样 H5 这边的调用点一行都不用动。
+ *
  * 面板本身在 components/ShareSheet.tsx。
  */
 
-/** 站内地址。测试里传 origin，别去读真 window。 */
-function origin(override?: string): string {
-  if (override) return override;
-  if (typeof window !== "undefined" && window.location?.origin) return window.location.origin;
-  return "";
+import { dayShort, timeHM } from "./format";
+import {
+  shareText as sharedShareText,
+  systemShareText as sharedSystemShareText,
+  type ShareLike,
+} from "../../shared/src/share";
+
+export {
+  posterURL,
+  shareURL,
+  whatsappURL,
+  type ShareLike,
+} from "../../shared/src/share";
+
+/** H5 这边话术还要用开始时间（共享层只要拼好的文本，不认时间字段）。 */
+export interface H5ShareInput extends ShareLike {
+  game: { short_code: string; venue: string; status: string; starts_at: number };
 }
 
-/** 牌局链接：`https://<站点>/g/<短码>`。 */
-export function shareURL(code: string, overrideOrigin?: string): string {
-  return `${origin(overrideOrigin)}/g/${code}`;
+/** 把这一局的开始时间按 H5 的写法拼成「今天 19:30」。 */
+function whenText(detail: H5ShareInput, now: number): string {
+  return `${dayShort(detail.game.starts_at, now)} ${timeHM(detail.game.starts_at)}`;
 }
 
-/**
- * 海报地址（服务端渲染的 1080×1440 竖版图）。
- *
- * 带上版本号是为了满足「海报内容和座位状态实时一致」：座位一变牌局 version 就 +1，
- * URL 跟着变，中转缓存和微信的图片缓存不会把上一版端出来。
- */
-export function posterURL(code: string, version: number, overrideOrigin?: string): string {
-  return `${origin(overrideOrigin)}/g/${code}/poster.png?v=${version}`;
-}
-
-/**
- * 一句话话术。缺人时是「差 N 人」，满了是「已经满了，可以排候补」——
- * 完成标志里「话术随缺几人变化」就是这一条。
- */
+/** 一句话话术（H5 的时间写法）。 */
 export function shareText(
-  detail: GameDetail,
+  detail: H5ShareInput,
   now: number = Math.floor(Date.now() / 1000),
   overrideOrigin?: string,
 ): string {
-  return compose(detail, now, overrideOrigin, true);
+  return sharedShareText(detail, whenText(detail, now), overrideOrigin);
 }
 
-/**
- * 系统分享用的正文：**不带链接**。
- *
- * `navigator.share` 会把 `url` 和 `text` 一起交给目标 App，正文里再写一遍链接，
- * 对方那边就会看到两遍（iOS 尤其明显）。链接交给 `url` 字段。
- */
+/** 系统分享用的正文：**不带链接**（链接交给 `url` 字段，不然对方那边会看到两遍）。 */
 export function systemShareText(
-  detail: GameDetail,
+  detail: H5ShareInput,
   now: number = Math.floor(Date.now() / 1000),
 ): string {
-  return compose(detail, now, undefined, false);
-}
-
-/** 话术的骨架：先写这一局是什么情况，再决定要不要缀上链接。 */
-function compose(detail: GameDetail, now: number, overrideOrigin: string | undefined, withLink: boolean): string {
-  const { game } = detail;
-  const when = `${dayShort(game.starts_at, now)} ${timeHM(game.starts_at)}`;
-  const where = game.venue;
-  const link = shareURL(game.short_code, overrideOrigin);
-
-  let base: string;
-  let linkSuffix: string;
-  switch (game.status) {
-    case "cancelled":
-      base = `${when} ${where} 这一局取消了，下次再约`;
-      linkSuffix = ` 👉 ${link}`;
-      break;
-    case "done":
-      base = `${when} ${where} 这一局打完了`;
-      linkSuffix = ` 👉 ${link}`;
-      break;
-    case "full":
-      base = `${when} ${where} 已经满了，想打可以排候补`;
-      linkSuffix = `，点这里 👉 ${link}`;
-      break;
-    default:
-      base = `${when} ${where} ${missingWords(detail.missing)}`;
-      linkSuffix = `，来的点 👉 ${link}`;
-      break;
-  }
-  return withLink ? base + linkSuffix : base;
-}
-
-function missingWords(missing: number): string {
-  if (missing <= 0) return "就等开打了";
-  return `差 ${missing} 人`;
-}
-
-/** WhatsApp 的分享入口。`wa.me/?text=` 不带号码时让用户自己选群或人。 */
-export function whatsappURL(text: string): string {
-  return `https://wa.me/?text=${encodeURIComponent(text)}`;
+  return sharedSystemShareText(detail, whenText(detail, now));
 }
 
 export type SystemShareResult = "shared" | "cancelled" | "unsupported" | "failed";

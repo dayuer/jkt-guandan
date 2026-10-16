@@ -7,7 +7,7 @@ import { ApiError, API_BASE, clearWaPhone, deleteMe, getMe, hideFromHistory, iss
 import { cardDay, dayLabel, kindLabel, lastSeenLabel, timeHM, weekday } from "../lib/fmt";
 import { afterHide, historyStatus, roleBadge, scoreLine, upcomingStatus, type Badge, type Tone } from "../lib/mygames";
 import { currentUser, signOutHere, updateNickname } from "../lib/session";
-import { maskWaPhone, normalizeWaPhone } from "../../../h5/src/wa";
+import { maskWaPhone, normalizeWaPhone } from "../../../shared/src/wa";
 import { TAB_H } from "./home";
 import type { Nav } from "./nav";
 import { linkSheet, requireIdentity } from "./sheets";

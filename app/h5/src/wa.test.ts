@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { maskWaPhone, normalizeWaPhone } from "./wa";
+import { maskWaPhone, normalizeWaPhone } from "../../shared/src/wa";
 
 describe("normalizeWaPhone", () => {
   it.each([
