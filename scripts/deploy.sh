@@ -96,25 +96,37 @@ COPYFILE_DISABLE=1 tar $tar_flags -C "$work/dist" -czf - . | ssh "$SSH_HOST" "se
 # 其余原样保留；空值的行跳过。值只经 ssh 的标准输入传过去，不打印、不进命令行。
 LOCAL_ENV=${LOCAL_ENV:-deploy/guandan.env}
 if [ -f "$LOCAL_ENV" ]; then
-  merged=$(grep -E '^[A-Z][A-Z0-9_]*=.+' "$LOCAL_ENV" || true)
+  # 去掉 CRLF 的 \r 和行尾空白（docker --env-file 只去行首空白，行尾空白会原样进值里）；
+  # 值为空或只有空白的行跳过，不会把服务器上的值清掉。
+  merged=$(tr -d '\r' <"$LOCAL_ENV" | sed 's/[[:space:]]*$//' | grep -E '^[A-Z][A-Z0-9_]*=[^[:space:]]' || true)
   if [ -n "$merged" ]; then
-    secret=$(printf '%s\n' "$merged" | sed -n 's/^GUANDAN_WX_SECRET=//p' | tr -d '[:space:]')
-    case "$secret" in
-      wx*) log "$LOCAL_ENV 里的 GUANDAN_WX_SECRET 以 wx 开头，像是填成了 AppID"; exit 1 ;;
-    esac
-    if [ -n "$secret" ] && [ "${#secret}" -ne 32 ]; then
-      log "$LOCAL_ENV 里的 GUANDAN_WX_SECRET 是 ${#secret} 位，AppSecret 应为 32 位"; exit 1
+    secret=$(printf '%s\n' "$merged" | sed -n 's/^GUANDAN_WX_SECRET=//p')
+    if [ -n "$secret" ] && ! printf '%s' "$secret" | grep -Eq '^[A-Za-z0-9]{32}$'; then
+      case "$secret" in
+        wx*) log "$LOCAL_ENV 里的 GUANDAN_WX_SECRET 以 wx 开头，像是填成了 AppID" ;;
+        *) log "$LOCAL_ENV 里的 GUANDAN_WX_SECRET 不是 32 位字母数字（现在 ${#secret} 位）" ;;
+      esac
+      exit 1
     fi
-    log "合并 $LOCAL_ENV 到服务器：$(printf '%s\n' "$merged" | cut -d= -f1 | tr '\n' ' ')"
+    keys=$(printf '%s\n' "$merged" | cut -d= -f1 | paste -sd'|' -)
+    count=$(printf '%s\n' "$merged" | wc -l | tr -d ' ')
+    log "合并 $LOCAL_ENV 到服务器：$(printf '%s' "$keys" | tr '|' ' ')"
+    # 远端：先把标准输入收进同目录的临时文件，行数对得上才合并；合并结果写进另一个临时文件再 mv，
+    # 中途断开不会留下半个 env 文件，也不会在 /tmp 留下含密钥的文件。
     printf '%s\n' "$merged" | ssh "$SSH_HOST" "set -eu
       f=\${ENV_FILE:-${ENV_FILE:-/etc/guandan/guandan.env}}
-      mkdir -p \"\$(dirname \"\$f\")\" && chmod 700 \"\$(dirname \"\$f\")\"
+      d=\$(dirname \"\$f\")
+      mkdir -p \"\$d\" && chmod 700 \"\$d\"
       touch \"\$f\" && chmod 600 \"\$f\"
-      keys='$(printf '%s\n' "$merged" | cut -d= -f1 | paste -sd'|' -)'
-      new=\$(mktemp)
-      { grep -v -E \"^(\$keys)=\" \"\$f\" || true; cat; } >\"\$new\"
-      cat \"\$new\" >\"\$f\"
-      rm -f \"\$new\""
+      in=\$(mktemp \"\$f.in.XXXXXX\"); out=\$(mktemp \"\$f.new.XXXXXX\")
+      trap 'rm -f \"\$in\" \"\$out\"' EXIT
+      cat >\"\$in\"
+      [ \"\$(wc -l <\"\$in\" | tr -d ' ')\" = '$count' ] || { echo '[deploy] env 内容没传完整，服务器上的文件没动' >&2; exit 1; }
+      rc=0; grep -v -E \"^($keys)=\" \"\$f\" >\"\$out\" || rc=\$?
+      [ \"\$rc\" -le 1 ] || { echo '[deploy] 读不了服务器上的 env 文件，没动' >&2; exit 1; }
+      cat \"\$in\" >>\"\$out\"
+      chmod 600 \"\$out\"
+      mv \"\$out\" \"\$f\""
   fi
 fi
 
