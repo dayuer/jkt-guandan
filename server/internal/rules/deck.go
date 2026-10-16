@@ -152,13 +152,35 @@ func (c Card) Key() string {
 
 func (c Card) String() string { return c.Key() }
 
-// ParseKey 读回 Key 写出来的那张牌。ID 不在里面：ID 由整副牌的顺序定（NewDeck），
-// 调用方拿 ParseKey 的结果去索引即可。
+// ParseKey 读回 Key 写出来的那张牌，带上它在整副牌里的 ID（按 NewDeck 的顺序查）。
+// 「哪一张牌」在 Key 里就定死了（花色 + 牌面 + 副号），所以 ID 是查得出来的。
 //
 // **只认规范写法**（#213 复审）：读出来再写回去必须还是原来那串（`ParseKey(s).Key() == s`）。
 // 也就是说 `♠j/0`、`♠07/0`、`♥️7/0`（多一个变体选择符 U+FE0F）这些都拒绝 ——
 // 牌例是两端逐字符串比对的，Go 端这里松一点，到了严格比对的 TS 端就会挂。
 func ParseKey(s string) (Card, error) {
+	c, err := parseKeyBody(s)
+	if err != nil {
+		return Card{}, err
+	}
+	id, ok := canonicalIndex[c.Key()]
+	if !ok {
+		return Card{}, fmt.Errorf("认不出牌 %q：整副牌里没有这一张", s)
+	}
+	c.ID = id
+	return c, nil
+}
+
+// canonicalIndex 是 Key → ID 的表，按 NewDeck 的顺序建一次（108 张，不用加锁）。
+var canonicalIndex = func() map[string]int {
+	index := make(map[string]int, 108)
+	for _, c := range NewDeck() {
+		index[c.Key()] = c.ID
+	}
+	return index
+}()
+
+func parseKeyBody(s string) (Card, error) {
 	i := strings.LastIndex(s, "/")
 	if i < 0 {
 		return Card{}, fmt.Errorf("认不出牌 %q：要写成「花色+牌面/副号」，比如 ♠7/0、大王/1", s)
