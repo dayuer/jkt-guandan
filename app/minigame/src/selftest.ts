@@ -11,6 +11,7 @@ function send(kind: string, data: unknown) {
 }
 import { runAccept165 } from "./accept165";
 import { runAccept210 } from "./accept210";
+import { runAccept211 } from "./accept211";
 
 const g: any = typeof GameGlobal !== "undefined" ? GameGlobal : globalThis;
 
@@ -49,7 +50,7 @@ export function installSelftest() {
 declare const __SELFTEST_SCENARIO__: string;
 
 export function runSelftest() {
-  // 走查场景：`SELFTEST_SCENARIO=165`（#165 验收 S1–S12）、`=210`（#210 改称呼）构建时编进来，
+  // 走查场景：`SELFTEST_SCENARIO=165`（#165 验收 S1–S12）、`=210`（#210 改称呼）、`=211`（#211 我的牌局）构建时编进来，
   // 否则跑原来的切 Tab 自检。截图都从游戏自己导，文件名带场景号，两个场景可以共用同一个接收端。
   if (typeof __SELFTEST_SCENARIO__ !== "undefined" && __SELFTEST_SCENARIO__ !== "") {
     const scene = __SELFTEST_SCENARIO__;
@@ -61,6 +62,7 @@ export function runSelftest() {
     };
     if (scene === "165") { runAccept165({ send, shot: shotOf, sink: SINK }); return }
     if (scene === "210") { runAccept210({ send, shot: shotOf }); return }
+    if (scene === "211") { runAccept211({ send, shot: shotOf }); return }
     send("scenario-unknown", { scene });
     return;
   }
