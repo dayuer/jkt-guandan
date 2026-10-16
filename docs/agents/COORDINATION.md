@@ -156,6 +156,26 @@ coord 每次合并或分诊后跑一次 `scripts/agents/board.sh` 刷新自动�
 - **coord** 把远程提出的事项转给本机 agent 时，要注明 issue 编号；本机 agent 的结论由 coord 回写到对应 issue。
 - 不做高频轮询。每个角色在开始一轮工作时读一次 GitHub 就够了。看板由 coord 在合并、分诊后用 `board.sh` 刷新。
 
+### 6.1 coord 是会话之间的桥：遇到问题不要傻等
+
+impl、auditor、design 会话之间不直接互相派活，也不互相干等。A 需要 C 做什么（复审、改 base、先合某个 PR、解释一条意见、交出某个分支的状态），就找 coord。coord 转给 C，盯到 C 回复，再把结论带回 A。
+
+**遇到下面任一情况，当场问 coord，不要停在原地等**：
+
+- 依赖的 PR 还没合、要改 base、要等别的会话的提交；
+- 复审意见看不懂，和另一份意见冲突，或者认为不该改；
+- 本地 CI 红了，但看起来和本改动无关（环境、网络、别人的测试）；
+- 权限被拦、需求不清楚、需要仓库所有者决定；
+- worktree、分支或端口被别的会话占着；
+- 大约 15 分钟没有进展。
+
+**怎么问**：本机会话用 SendMessage 发给 coord 会话（名字见派活消息和看板）；远程会话在对应 issue 或 PR 下评论 `BLOCKED: <原因>`。都要写清楚：哪个 issue / PR、卡在哪、已经试过什么、需要谁做什么。
+
+- 问完可以先做手上不受影响的部分。不要因为怕打扰就不问，也不要绕过去替别的角色做：作者自审、自己合并、改别人的分支都不行。
+- **coord 收到后尽快处理**：能直接答的当场答；要别的会话动手的，转过去并说明先后；要仓库所有者决定的，汇总给他。处理结果回写到对应 issue / PR，并回复提问的会话。
+- **coord 派活时**，消息里必须写明「遇到问题不要等，直接 SendMessage 问 coord（会话名 <名字>）」。
+- coord 自己起的子代理（比如 auditor）也一样：拿不准的地方在回报里写明，不要猜。
+
 ## 7. 评论关键字一览
 
 | 关键字 | 谁写 | 含义 |
@@ -166,7 +186,7 @@ coord 每次合并或分诊后跑一次 `scripts/agents/board.sh` 刷新自动�
 | `REVIEW: approve sha=<SHA>` / `REVIEW: changes sha=<SHA>` | 复审方 | PR 复审结论 |
 | `PUSHED sha=<SHA>` | PR 作者 | 复审后又推送了新提交 |
 | `VERIFIED sha=<SHA>` / `REOPEN` | auditor（任务则由非作者角色） | 验证结论 |
-| `BLOCKED: <原因>` | 任何角色 | 被阻塞，同时把状态改为 `status:blocked` |
+| `BLOCKED: <原因>` | 任何角色 | 被阻塞，同时把状态改为 `status:blocked`；本机会话还要当场 SendMessage 告诉 coord（§6.1） |
 
 ## 8. 同步体系
 
