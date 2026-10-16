@@ -272,7 +272,12 @@ export class ScoreScene implements Scene {
 
   /** S3：两张级牌立在牌桌上 */
   private drawBoard(ctx: Ctx, s: StartedScore, y: number): number {
-    const a = this.app, x = PAD, w = a.W - PAD * 2, h = 284, st = this.board;
+    const a = this.app, x = PAD, w = a.W - PAD * 2, st = this.board;
+    // 本队到 A 之后多一行金色「打 A · 第 1 次」，设计稿 7.2 把它排在成员下面，
+    // 但牌桌固定 284 放不下：inset 16 的内虚线落在 268，字会压在上面、下半截出框（#208 截图）。
+    // 所以只在这一行真的出现时把牌桌放高 20 —— 平时保持设计稿的 284，不动其他行。
+    const atA = (["red", "black"] as const).some((t) => !!aTip(st[t]));
+    const h = atA ? 304 : 284;
     felt(ctx, x, y, w, h);
     text(ctx, boardTitle(s.rounds.length + 1, st, s.settings.kind), a.W / 2, y + 32, font(13, "700"), CREAM(0.85), "center");
     (["red", "black"] as const).forEach((t) => {
@@ -575,7 +580,7 @@ function recordSheet(sc: ScoreScene, editing: ScoreRound | null) {
         pv = previewText(settings, pre, f, names);
         if (editing && pv.kind === "normal" && editing.winner === pv.team) pv = { ...pv, sub: `原来 → ${levelName(editing.level_after)}` };
       }
-      drawPreview(ctx, 20, cy, pw, ph, pv);
+      drawPreview(ctx, 20, cy, pw, ph, pv, noLevel);
       cy += ph + 14;
 
       // S10：改一局的连带变化（本地按规则重算的预览，提交后以服务端为准）
@@ -609,10 +614,11 @@ function impactLine(now: ScoreState, after: ScoreState): string {
   return `现在 ${team("red")} · ${team("black")} · ${tail}`;
 }
 
-function drawPreview(ctx: Ctx, x: number, y: number, w: number, h: number, p: Preview | null) {
+function drawPreview(ctx: Ctx, x: number, y: number, w: number, h: number, p: Preview | null, noLevel = false) {
   if (!p) {
     strokeRR(ctx, x + 0.5, y + 0.5, w - 1, h - 1, 14, C.line2, 1, [4, 4]);
-    text(ctx, "选完两步，这里显示升几级", x + w / 2, y + h / 2, font(13), C.ink4, "center");
+    // 不升级局只看头游、没有级数变化，占位文案跟着换（#208 二）
+    text(ctx, noLevel ? "点头游，这里显示这一局谁赢" : "选完两步，这里显示升几级", x + w / 2, y + h / 2, font(13), C.ink4, "center");
     return;
   }
   if (p.kind === "pass") {
