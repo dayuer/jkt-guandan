@@ -2,6 +2,7 @@ package rules
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"reflect"
@@ -210,7 +211,10 @@ func TestDoubleWinEndsGame(t *testing.T) {
 	if !g.Over() {
 		t.Fatal("1、3 号座是一方，上游、二游都拿了，这一副应该结束")
 	}
-	res, ok := g.Result()
+	res, ok, err := g.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !ok {
 		t.Fatal("结束了应该有结果")
 	}
@@ -234,7 +238,10 @@ func TestThreeFinishedEndsGame(t *testing.T) {
 	if !g.Over() {
 		t.Fatal("三人出完，这一副应该结束")
 	}
-	res, _ := g.Result()
+	res, _, err := g.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := Result{Order: []int{1, 2, 4, 3}, HeadSeat: 1, PartnerPlace: 4} // 1 号座的搭档 3 号座是下游
 	if !reflect.DeepEqual(res, want) {
 		t.Fatalf("结果 %+v，应该是 %+v", res, want)
@@ -243,8 +250,119 @@ func TestThreeFinishedEndsGame(t *testing.T) {
 
 func TestResultBeforeOver(t *testing.T) {
 	g := newTestGame(t, Two, 1, "♠K/0", "♠A/0", "♠5/0", "♠7/0")
-	if _, ok := g.Result(); ok {
-		t.Fatal("还没结束不该有结果")
+	if _, ok, err := g.Result(); err != nil || ok {
+		t.Fatalf("还没结束不该有结果：ok=%v err=%v", ok, err)
+	}
+}
+
+// #239 复审 B1：Play 原来只核 Card.ID，拿手里一张牌的 ID、把 Rank 或 Suit 改掉就能当成别的牌
+// 打出去，引擎照收 —— 而且存出来的档自己都读不回（写的是 ♠A/0，手里其实没有）。
+// 现在牌的**每个字段**都得和手里那张一模一样。
+func TestPlayRejectsTamperedCard(t *testing.T) {
+	// 手里那张原样的牌照常能出 —— 别把好的也拦了。
+	good := newTestGame(t, Two, 1, "♠3/0 ♠4/0", "♠5/0", "♠6/0", "♠7/0")
+	mustPlay(t, good, 1, TypeSingle, Three, "♠3/0")
+
+	cases := []struct {
+		name   string
+		mutate func(c *Card)
+		rank   Rank
+	}{
+		{"改点数", func(c *Card) { c.Rank = Ace }, Ace},
+		{"改花色", func(c *Card) { c.Suit = Heart }, Three},
+		{"改副号", func(c *Card) { c.Deck = 1 }, Three},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newTestGame(t, Two, 1, "♠3/0 ♠4/0", "♠5/0", "♠6/0", "♠7/0")
+			before, _ := json.Marshal(g)
+
+			c := mustCards(t, "♠3/0")[0] // ID 是手里那张 ♠3/0 的
+			tc.mutate(&c)
+			err := g.Play(1, []Card{c}, TypeSingle, tc.rank)
+			if !errors.Is(err, ErrCardsNotInHand) {
+				t.Fatalf("改了牌的字段照样出了：err = %v", err)
+			}
+			if after, _ := json.Marshal(g); string(before) != string(after) {
+				t.Fatal("被拒之后局面变了")
+			}
+		})
+	}
+}
+
+// NewGame 也拦住「ID 和牌的字段对不上」的手牌：不拦的话 Play 按 ID 认牌就会认错。
+func TestNewGameRejectsMismatchedCard(t *testing.T) {
+	bad := mustCards(t, "♠3/0")[0]
+	bad.Rank = Ace // ID 还是 ♠3/0 那张
+	hands := [Seats][]Card{{bad}, mustCards(t, "♠4/0"), mustCards(t, "♠5/0"), mustCards(t, "♠6/0")}
+	if _, err := NewGame(Two, hands, 1); err == nil {
+		t.Fatal("ID 和字段对不上的手牌该被拒")
+	}
+}
+
+// 拒绝的原因是**可判别的封闭取值**：调用方拿哨兵做 errors.Is，不用把句子拿去比字符串。
+// 取值和 testdata/rules/play.json 里写的那些字面量一一对应。
+func TestRejectReasons(t *testing.T) {
+	// 字面量对得上牌例里写的那些（改这里就是改两端的格式，要一起改）
+	for _, c := range []struct {
+		reason RejectReason
+		want   string
+	}{
+		{ReasonGameOver, "game-over"},
+		{ReasonNotYourTurn, "not-your-turn"},
+		{ReasonLeadingCannotPass, "leading-cannot-pass"},
+		{ReasonNoCards, "no-cards"},
+		{ReasonCardsNotInHand, "cards-not-in-hand"},
+		{ReasonBadCombo, "bad-combo"},
+		{ReasonDoesNotBeat, "does-not-beat"},
+	} {
+		if string(c.reason) != c.want {
+			t.Fatalf("原因码 %q 应该是 %q", c.reason, c.want)
+		}
+	}
+
+	g := newTestGame(t, Two, 1, "♠9/0 ♠3/0", "♠4/0", "♠5/0", "♠6/0")
+	for _, tc := range []struct {
+		name string
+		want *RuleError
+		do   func() error
+	}{
+		{"领出不能过牌", ErrLeadingCannotPass, func() error { return g.Pass(1) }},
+		{"没轮到", ErrNotYourTurn, func() error { return g.Play(2, mustCards(t, "♠4/0"), TypeSingle, Four) }},
+		{"没给牌", ErrNoCards, func() error { return g.Play(1, nil, TypeSingle, 0) }},
+		{"手里没有", ErrCardsNotInHand, func() error { return g.Play(1, mustCards(t, "♠4/0"), TypeSingle, Four) }},
+		{"声明不成立", ErrBadCombo, func() error { return g.Play(1, mustCards(t, "♠9/0", "♠3/0"), TypePair, 0) }},
+	} {
+		if err := tc.do(); !errors.Is(err, tc.want) {
+			t.Fatalf("%s：应该能 errors.Is 判出 %q，实际 %v", tc.name, tc.want.Reason, err)
+		}
+	}
+
+	// 压不住上家
+	mustPlay(t, g, 1, TypeSingle, Nine, "♠9/0")
+	if err := g.Play(2, mustCards(t, "♠4/0"), TypeSingle, Four); !errors.Is(err, ErrDoesNotBeat) {
+		t.Fatalf("压不住：%v", err)
+	}
+
+	// 这一副已经结束
+	over := newTestGame(t, Two, 1, "♠K/0", "♠3/0 ♠4/0", "♠A/0", "♠7/0 ♠8/0")
+	mustPlay(t, over, 1, TypeSingle, King, "♠K/0")
+	mustPass(t, over, 2)
+	mustPlay(t, over, 3, TypeSingle, Ace, "♠A/0")
+	if err := over.Play(4, mustCards(t, "♠7/0"), TypeSingle, Seven); !errors.Is(err, ErrGameOver) {
+		t.Fatalf("结束了还在动：%v", err)
+	}
+}
+
+// Result 在「结束了却没有出完记录」的矛盾状态返回错误，不 panic —— 服务端一次 panic 会带下一整局。
+func TestResultRejectsContradictoryState(t *testing.T) {
+	g := newTestGame(t, Two, 1, "♠K/0", "♠A/0", "♠5/0", "♠7/0")
+	g.turn = 0 // 造出矛盾状态：Over() 为真、finished 却是空的
+	if !g.Over() {
+		t.Fatal("摆出来的应该就是「结束了」的样子")
+	}
+	if _, _, err := g.Result(); err == nil {
+		t.Fatal("矛盾状态该返回错误，不能 panic")
 	}
 }
 
@@ -456,7 +574,10 @@ func TestRandomGamesInvariants(t *testing.T) {
 				}
 			}
 		}
-		res, ok := g.Result()
+		res, ok, err := g.Result()
+		if err != nil {
+			t.Fatalf("第 %d 局结果报错：%v", game, err)
+		}
 		if !ok || len(res.Order) != Seats || res.PartnerPlace < 2 || res.PartnerPlace > 4 {
 			t.Fatalf("第 %d 局结果不对：%+v", game, res)
 		}

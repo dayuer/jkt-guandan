@@ -35,6 +35,60 @@ func PartnerSeat(seat int) int { return (seat+1)%Seats + 1 }
 
 func validSeat(seat int) bool { return seat >= 1 && seat <= Seats }
 
+// RejectReason 是「这一手不合规则」的原因，**封闭取值** —— 和 testdata/rules/play.json 里写的
+// 那些字面量一一对应（两端共用，牌例只比这个取值，不比给人看的句子：句子会随措辞变）。
+//
+// 为什么不是「能不能出」的布尔值：布尔值分不出「不是你的回合」和「压不住」，而客户端恰恰靠
+// 这个区别显示不同的提示（和 Order 分 Incomparable / Equal 是同一条理由，#216 复审）。
+//
+// 座位号不是 1–4 这类**调用方的错**不在这里 —— 那是普通 error，不是「这一手不合规则」。
+type RejectReason string
+
+const (
+	ReasonGameOver          RejectReason = "game-over"           // 这一副已经结束了还在动
+	ReasonNotYourTurn       RejectReason = "not-your-turn"       // 没轮到这一家（第八条 一、1）
+	ReasonLeadingCannotPass RejectReason = "leading-cannot-pass" // 领出时不能过牌（第八条 一、1）
+	ReasonNoCards           RejectReason = "no-cards"            // 出牌时一张牌都没给
+	ReasonCardsNotInHand    RejectReason = "cards-not-in-hand"   // 打了手里没有的牌
+	ReasonBadCombo          RejectReason = "bad-combo"           // 声明的那一种解读不成立
+	ReasonDoesNotBeat       RejectReason = "does-not-beat"       // 压不住上一手（第八条 一、1）
+)
+
+// RuleError 是「这一手不合规则」。Error() 是给人看的句子，Reason 是上面的封闭取值。
+//
+// 判别用 errors.Is，不用拿句子做字符串比对：
+//
+//	if errors.Is(err, rules.ErrNotYourTurn) { ... }
+type RuleError struct {
+	Reason  RejectReason
+	Message string
+}
+
+func (e *RuleError) Error() string { return e.Message }
+
+// Is 让 errors.Is 按 **Reason** 判：调用方拿 Reason 的哨兵去问，不关心句子的措辞。
+func (e *RuleError) Is(target error) bool {
+	t, ok := target.(*RuleError)
+	return ok && t.Reason == e.Reason
+}
+
+// 每个原因一个哨兵。errors.Is(err, ErrNotYourTurn) 即可判别；哨兵本身没有句子，
+// 只是拿来比 Reason 的。
+var (
+	ErrGameOver          = &RuleError{Reason: ReasonGameOver}
+	ErrNotYourTurn       = &RuleError{Reason: ReasonNotYourTurn}
+	ErrLeadingCannotPass = &RuleError{Reason: ReasonLeadingCannotPass}
+	ErrNoCards           = &RuleError{Reason: ReasonNoCards}
+	ErrCardsNotInHand    = &RuleError{Reason: ReasonCardsNotInHand}
+	ErrBadCombo          = &RuleError{Reason: ReasonBadCombo}
+	ErrDoesNotBeat       = &RuleError{Reason: ReasonDoesNotBeat}
+)
+
+// ruleErr 造一个带原因码的规则错误。句子还是自由写的，牌例不比对它。
+func ruleErr(sentinel *RuleError, format string, args ...any) error {
+	return &RuleError{Reason: sentinel.Reason, Message: fmt.Sprintf(format, args...)}
+}
+
 // Move 是一个动作：出一手牌，或者过牌。复盘就是从初始局面把 Moves 重放一遍。
 type Move struct {
 	Seat int
@@ -91,6 +145,12 @@ func NewGame(level Rank, hands [Seats][]Card, leader int) (*Game, error) {
 			return nil, fmt.Errorf("开局：%d 号座没有牌", seat)
 		}
 		for _, c := range h {
+			// 牌的 ID 是它在整副牌里的位置，得和 Rank/Suit/Deck 对得上（Deal 和 ParseKey 出来的
+			// 都对得上；手工造的牌可能对不上）。不核的话，Play 按 ID 认牌就会认错 —— 那正是
+			// #239 复审 B1 的另一面。
+			if want, ok := canonicalIndex[c.Key()]; !ok || want != c.ID {
+				return nil, fmt.Errorf("开局：%s 的 ID（%d）和它的字段对不上，不是整副牌里的那一张", c.Key(), c.ID)
+			}
 			if other, ok := seen[c.ID]; ok {
 				return nil, fmt.Errorf("开局：%s 同时在 %d 号座和 %d 号座手里", c.Key(), other, seat)
 			}
@@ -145,30 +205,36 @@ func (g *Game) Play(seat int, cards []Card, t ComboType, rank Rank) error {
 		return err
 	}
 	if len(cards) == 0 {
-		return fmt.Errorf("出牌：没有牌（不出请过牌）")
+		return ruleErr(ErrNoCards, "出牌：没有牌（不出请过牌）")
 	}
-	held := map[int]bool{}
+	// ⚠️ 手里按 **ID → 那张牌** 存，不是「这个 ID 在不在」：只核 ID 的话，拿手里一张牌的 ID、
+	// 把 Rank 或 Suit 改掉就能当成别的牌打出去，引擎照收 —— 而且存出来的档自己都读不回
+	// （#239 复审 B1）。所以牌的**每个字段**都得和手里那张一模一样。
+	held := map[int]Card{}
 	for _, c := range g.hands[seat] {
-		held[c.ID] = true
+		held[c.ID] = c
 	}
 	for _, c := range cards {
-		if !held[c.ID] {
-			return fmt.Errorf("出牌：%d 号座手里没有 %s", seat, c.Key())
+		got, inHand := held[c.ID]
+		if !inHand || got != c {
+			return ruleErr(ErrCardsNotInHand, "出牌：%d 号座手里没有 %s", seat, c.Key())
 		}
 	}
 	combos, err := Recognize(cards, g.level)
 	if err != nil {
+		// 这批牌本身有问题（同一张牌写了两次之类），是**调用方的错**、不是「这一手不合规则」，
+		// 所以不给原因码 —— 和 TS 端一致（那边也是普通 Error）。
 		return fmt.Errorf("出牌：%w", err)
 	}
 	combo, ok := Pick(combos, t, rank)
 	if !ok {
 		if rank == 0 {
-			return fmt.Errorf("出牌：这手牌当不成%s，或者有几种%s要说明牌面（能当成：%s）", t.label(), t.label(), ComboSummary(combos))
+			return ruleErr(ErrBadCombo, "出牌：这手牌当不成%s，或者有几种%s要说明牌面（能当成：%s）", t.label(), t.label(), ComboSummary(combos))
 		}
-		return fmt.Errorf("出牌：这手牌当不成%s %s（能当成：%s）", t.label(), rank.RankName(), ComboSummary(combos))
+		return ruleErr(ErrBadCombo, "出牌：这手牌当不成%s %s（能当成：%s）", t.label(), rank.RankName(), ComboSummary(combos))
 	}
 	if g.lastSeat != 0 && !combo.Beats(g.lastCombo) {
-		return fmt.Errorf("出牌：%s 压不住 %d 号座的 %s（第八条 一、1）", combo, g.lastSeat, g.lastCombo)
+		return ruleErr(ErrDoesNotBeat, "出牌：%s 压不住 %d 号座的 %s（第八条 一、1）", combo, g.lastSeat, g.lastCombo)
 	}
 
 	// 从手里拿掉。
@@ -203,7 +269,7 @@ func (g *Game) Pass(seat int) error {
 		return err
 	}
 	if g.lastSeat == 0 {
-		return fmt.Errorf("过牌：%d 号座是领出，不能过牌（第八条 一、1）", seat)
+		return ruleErr(ErrLeadingCannotPass, "过牌：%d 号座是领出，不能过牌（第八条 一、1）", seat)
 	}
 	g.moves = append(g.moves, Move{Seat: seat, Pass: true})
 	g.passes++
@@ -233,13 +299,14 @@ func (g *Game) Pass(seat int) error {
 
 func (g *Game) checkTurn(seat int) error {
 	if g.turn == 0 {
-		return fmt.Errorf("这一副已经结束")
+		return ruleErr(ErrGameOver, "这一副已经结束")
 	}
 	if !validSeat(seat) {
+		// 座位号不是 1–4 是调用方的错，不是「这一手不合规则」——不给原因码。
 		return fmt.Errorf("座位 %d 不是 1–4", seat)
 	}
 	if seat != g.turn {
-		return fmt.Errorf("没轮到 %d 号座，现在轮到 %d 号座（第八条 一、1：逆时针按序出牌）", seat, g.turn)
+		return ruleErr(ErrNotYourTurn, "没轮到 %d 号座，现在轮到 %d 号座（第八条 一、1：逆时针按序出牌）", seat, g.turn)
 	}
 	return nil
 }
@@ -276,9 +343,16 @@ func (g *Game) gameOver() bool {
 }
 
 // Result 是这一副的结果；还没结束时 ok 为 false。
-func (g *Game) Result() (Result, bool) {
+//
+// `Over()` 为真却**没有出完的记录**是内部状态矛盾（正常走不到：结束只有「三人出完」和
+// 「同一方上游二游」两条路，两条都至少有两条记录）。这种情况返回错误而不是 panic ——
+// 引擎跑在服务端，一次 panic 会把整局带下去（#239 复审）。
+func (g *Game) Result() (Result, bool, error) {
 	if !g.Over() {
-		return Result{}, false
+		return Result{}, false, nil
+	}
+	if len(g.finished) == 0 {
+		return Result{}, false, fmt.Errorf("结果：这一副已经结束，却没有出完的记录（内部状态矛盾）")
 	}
 	order := append([]int{}, g.finished...)
 	var rest []int
@@ -296,7 +370,7 @@ func (g *Game) Result() (Result, bool) {
 			place = i + 1
 		}
 	}
-	return Result{Order: order, HeadSeat: head, PartnerPlace: place}, true
+	return Result{Order: order, HeadSeat: head, PartnerPlace: place}, true, nil
 }
 
 // ---------------------------------------------------------------------------
