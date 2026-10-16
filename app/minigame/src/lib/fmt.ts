@@ -42,7 +42,7 @@ export function monthDay(unixSeconds: number): string {
 }
 
 // 不碰时间，两端一样，#253 起住在 app/shared；这里转出去，fmt 的使用方不用动。
-export { kindLabel } from "../../../shared/src/labels";
+export { kindLabel, missingLabel } from "../../../shared/src/labels";
 
 /** 详情页顶部：「今天 10/13 周二」 */
 export function dayLabel(unixSeconds: number, now: number = nowSec()): string {
@@ -67,10 +67,6 @@ export function cardDay(unixSeconds: number, now: number = nowSec()): string {
   if (target === dayKey(now)) return "今天";
   if (target === dayKey(now + 86400)) return "明天";
   return slashDate(unixSeconds);
-}
-
-export function missingLabel(missing: number): string {
-  return missing > 0 ? `差 ${missing} 人` : "已满";
 }
 
 /** 雅加达某天某时的 Unix 秒。dayOffset 相对今天（WIB）。 */

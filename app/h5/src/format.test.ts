@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dayLabel, missingLabel, timeHM } from "./format";
+import { dayLabel, kindLabel, missingLabel, timeHM } from "./format";
 
 // 雅加达是 UTC+7，没有夏令时，所以 UTC 时间加 7 小时就是 WIB。
 const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
@@ -27,5 +27,14 @@ describe("format", () => {
   it("差几个人", () => {
     expect(missingLabel(2)).toBe("差 2 人");
     expect(missingLabel(0)).toBe("已满");
+  });
+
+  // #253：这两个文案的实体在 app/shared/src/labels.ts，两端共用一份。
+  it("玩法名字", () => {
+    expect(kindLabel("classic")).toBe("经典掼蛋");
+    expect(kindLabel("no-level")).toBe("不升级");
+    expect(kindLabel("teaching")).toBe("带新手");
+    // 服务端以后加了新玩法，这里原样透出，不要变成空白。
+    expect(kindLabel("whatever")).toBe("whatever");
   });
 });
