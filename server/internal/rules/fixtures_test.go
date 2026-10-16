@@ -253,6 +253,14 @@ func compact(t *testing.T, v any) string {
 type interpretation struct {
 	Kind string `json:"kind"`
 	Rank string `json:"rank"`
+	// Wilds 是可选的：这几种解读里，哪张逢人配顶成了什么（`as` 不带副号，见 README）。
+	// 写了就要求引擎选的正是这一种。
+	Wilds []wildDecl `json:"wilds,omitempty"`
+}
+
+type wildDecl struct {
+	Card string `json:"card"`
+	As   string `json:"as"`
 }
 
 type comboVector struct {
@@ -261,6 +269,40 @@ type comboVector struct {
 	Level  string           `json:"level"`
 	Cards  []string         `json:"cards"`
 	Combos []interpretation `json:"combos"`
+}
+
+// checkWildDecls 查牌例里声明的「哪张逢人配顶成了什么」：写了就要求引擎选的正是这一种
+// （两端必须给出同一个答案，不能一边挑点数最小的、一边随便挑）。
+func checkWildDecls(t *testing.T, v comboVector, combos []Combo) {
+	t.Helper()
+	for _, want := range v.Combos {
+		if len(want.Wilds) == 0 {
+			continue // 这条解读没声明顶法，不查（大多数用例顶法是唯一的，没必要每条都写）
+		}
+		var found *Combo
+		for i := range combos {
+			if combos[i].Type.String() == want.Kind && combos[i].Rank.RankName() == want.Rank {
+				found = &combos[i]
+				break
+			}
+		}
+		if found == nil {
+			continue // 牌型/牌面对不上由主断言报，这里只管顶法
+		}
+		got := make([]string, len(found.Wilds))
+		for i, w := range found.Wilds {
+			got[i] = w.Card.Key() + " 当 " + asKey(w.As)
+		}
+		sort.Strings(got)
+		decl := make([]string, len(want.Wilds))
+		for i, w := range want.Wilds {
+			decl[i] = w.Card + " 当 " + w.As
+		}
+		sort.Strings(decl)
+		if !reflect.DeepEqual(got, decl) {
+			t.Fatalf("%s：%s %s 的顶法不一样\n算出 %v\n牌例 %v", v.Name, want.Kind, want.Rank, got, decl)
+		}
+	}
 }
 
 type comboFixture struct {
@@ -333,8 +375,14 @@ func TestCombosFixture(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s：%v", v.Name, err)
 		}
+		checkWildDecls(t, v, combos)
 		got := interpretations(combos)
+		// 主断言只比牌型和牌面：`wilds`（哪张顶成了什么）是可选的，由 checkWildDecls 单独查 ——
+		// 大多数用例的顶法是唯一的，没必要每条都写一遍。
 		want := append([]interpretation{}, v.Combos...)
+		for i := range want {
+			want[i].Wilds = nil
+		}
 		sortInterpretations(want)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s（%v，打 %s）：\n算出 %s\n牌例 %s", v.Name, v.Cards, v.Level, interpretText(got), interpretText(want))
@@ -342,10 +390,12 @@ func TestCombosFixture(t *testing.T) {
 	}
 }
 
-// 比较（第四条二）：两边都写完整的一手牌 + 声明的牌型。
+// 比较（第四条二）：两边都写完整的一手牌 + 声明的牌型（带逢人配时要连牌面一起声明）。
 type compareSide struct {
 	Kind  string   `json:"kind"`
 	Cards []string `json:"cards"`
+	// Rank 是声明的牌面，只有带逢人配、同一种牌型有好几种点数时才要写。
+	Rank string `json:"rank"`
 }
 
 type compareVector struct {
@@ -364,19 +414,27 @@ type compareFixture struct {
 	Vectors []compareVector `json:"vectors"`
 }
 
-// sideCombo 按声明的牌型认这手牌：认不出来就是牌例自己写错了。
+// sideCombo 按声明的解读认这手牌：牌型一定对得上，牌面写了就一起比。认不出来就是牌例自己写错了。
 func sideCombo(t *testing.T, v compareVector, which string, side compareSide, level Rank) Combo {
 	t.Helper()
 	kind, err := ParseComboType(side.Kind)
 	if err != nil {
 		t.Fatalf("%s：%s：%v", v.Name, which, err)
 	}
-	c, ok, err := FindCombo(cardsOf(t, side.Cards), level, kind)
+	rank := Rank(0)
+	if side.Rank != "" {
+		if rank, err = ParseRank(side.Rank); err != nil {
+			t.Fatalf("%s：%s：%v", v.Name, which, err)
+		}
+	}
+	combos, err := Recognize(cardsOf(t, side.Cards), level)
 	if err != nil {
 		t.Fatalf("%s：%s：%v", v.Name, which, err)
 	}
+	c, ok := Pick(combos, kind, rank)
 	if !ok {
-		t.Fatalf("%s：%s 这手牌打不出声明的 %s（%v）", v.Name, which, side.Kind, side.Cards)
+		t.Fatalf("%s：%s 这手牌声明的解读认不出来（%s%s，%v）—— 实际有 %s", v.Name, which,
+			side.Kind, side.Rank, side.Cards, ComboSummary(combos))
 	}
 	return c
 }
@@ -402,8 +460,8 @@ func TestCompareFixture(t *testing.T) {
 		if got := a.Compare(b); got != want {
 			t.Fatalf("%s：a=%s b=%s，算出 %s，牌例是 %s", v.Name, a, b, got, want)
 		}
-		// 反方向也要对：a 大 就 b 小，一样大就还是一样大，没得比就还是没得比。
-		// 这样「压不了」的三种情况各自都有两边的用例，不会只测一个方向。
+		// 反方向也要对：a 大就 b 小，一样大就还是一样大，没得比就还是没得比。
+		// 这样「压不了」的三种情况各自都有两个方向的用例，不会只测一个方向。
 		if got := b.Compare(a); got != reverseOrder(want) {
 			t.Fatalf("%s（反方向）：b=%s a=%s，算出 %s，应当是 %s", v.Name, b, a, got, reverseOrder(want))
 		}

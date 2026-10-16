@@ -25,7 +25,7 @@ const (
 	TypeJokerBomb                       // 四大天王：大小王各两张（第三条 10）
 )
 
-// String 是牌型的名字，牌例里也用它（combos.json 的 kind、compare.json 的说明）。
+// String 是牌型的名字，牌例里也用它（combos.json 的 kind、compare.json 的 kind）。
 func (t ComboType) String() string {
 	switch t {
 	case TypeSingle:
@@ -62,7 +62,7 @@ func ParseComboType(s string) (ComboType, error) {
 	return 0, fmt.Errorf("认不出牌型 %q", s)
 }
 
-// 牌型的中文名，报错和日志里用。
+// label 是牌型的中文名，报错和日志里用。
 func (t ComboType) label() string {
 	switch t {
 	case TypeSingle:
@@ -89,14 +89,30 @@ func (t ComboType) label() string {
 	return t.String()
 }
 
-// Combo 是一手牌的一种解读：这手牌能当成什么牌型打出去。
+// Wildcard 是逢人配顶替的那张牌：手里的红桃级牌当成了什么用（「♥7 当 ♠A」）。
+// 给界面显示和复盘看；比大小不看它，看 Combo.Rank / Value。
+type Wildcard struct {
+	Card Card // 手里的那张红桃级牌
+	As   Card // 它顶的那张牌（不含大小王）
+}
+
+// asKey 是「顶成的那张牌」在显示里的写法：只要花色 + 牌面，**不带副号**。
 //
-// 同一手牌可能有多种解读：同花色的 34567 既能当顺子跟牌，也能当同花顺压炸弹。所以出牌动作
-// 要带上**声明的牌型**（#204、#87 的口径），引擎只校验声明成不成立，不替出牌的人挑一种。
+// 副号是「两副牌里的第几副」，只用来区分手里到底是哪一张；顶出来的牌并不是手里那张
+// （比如 ♥7 顶成 ♠7 时，手里那张 ♠7 可能还在）。带上副号会让人以为手里真有那一张（#217 复审）。
+func asKey(c Card) string { return c.Suit.SuitName() + c.Rank.RankName() }
+
+// Combo 是一手牌的一种解读：这手牌能当成什么牌型、什么牌面打出去。
+//
+// 同一手牌可能有多种解读：同花色的 34567 既能当顺子跟牌，也能当同花顺压炸弹；带逢人配时
+// 解读更多（单张红桃级牌能当 2 到 A 任何一张）。所以出牌动作要带上**声明的解读**，引擎只校验
+// 声明成不成立，不替出牌的人挑一种（#204、#87 的口径）。
 type Combo struct {
 	Type ComboType
-	// Cards 是这手牌，按牌点从小到大排好（王在最后）。
+	// Cards 是打出去的牌，按牌点从小到大排好（王在最后）。
 	Cards []Card
+	// Wilds 是这批牌里的逢人配各顶了什么（没有逢人配时是空的）。
+	Wilds []Wildcard
 	// Rank 是这手牌的牌面：单张、对子、三同张是那个点数；三带对是三同张的点数
 	// （第四条 二、（一）2：不比较所带对子）；顺子类是顶张（A2345 的顶张是 5）；
 	// 炸弹是点数；四大天王没有点数（0）。
@@ -107,15 +123,27 @@ type Combo struct {
 	//   - 单张、对子、三同张、三带对、炸弹：按牌点在当前级数下的大小（第四条 一），
 	//     所以打 7 的时候，单张 7 压单张 A；
 	//   - 顺子类（三连对、三同连张、顺子、同花顺）：按牌面原位置算顶张（第五条 1），
-	//     打 7 的时候 34567 的顶张还是 7，不会变成最大的一张。
+	//     打 7 的时候 34567 的顶张还是 7。
 	Value int
 }
 
 func (c Combo) String() string {
-	if c.Type == TypeJokerBomb {
-		return fmt.Sprintf("%s（%d 张）", c.Type.label(), len(c.Cards))
+	s := fmt.Sprintf("%s（%d 张）", c.Type.label(), len(c.Cards))
+	if c.Type != TypeJokerBomb {
+		s = fmt.Sprintf("%s %s（%d 张）", c.Type.label(), c.Rank.RankName(), len(c.Cards))
 	}
-	return fmt.Sprintf("%s %s（%d 张）", c.Type.label(), c.Rank.RankName(), len(c.Cards))
+	if len(c.Wilds) > 0 {
+		parts := make([]string, len(c.Wilds))
+		for i, w := range c.Wilds {
+			if w.As.Suit == w.Card.Suit && w.As.Rank == w.Card.Rank {
+				parts[i] = w.Card.Key() // 顶成它自己：就是手里这张级牌
+				continue
+			}
+			parts[i] = fmt.Sprintf("%s 当 %s", w.Card.Key(), asKey(w.As))
+		}
+		s += "（" + strings.Join(parts, "、") + "）"
+	}
+	return s
 }
 
 // IsBomb 判断这手牌算不算炸弹：炸弹、同花顺、四大天王都能压普通牌型（第四条 二、（二））。
@@ -230,15 +258,27 @@ func isSeqType(t ComboType) bool {
 	return false
 }
 
-// Recognize 列出这手牌全部合法的解读。level 是当前级数（打几）。
+// comboValue 是比大小用的数值（见 Combo.Value 的说明）。
+func comboValue(t ComboType, rank Rank, level Rank) int {
+	if isSeqType(t) {
+		return int(rank)
+	}
+	return rank.Power(level)
+}
+
+// Recognize 列出这手牌全部合法的解读，按牌型、牌面排好（两端比对时顺序一致）。
 //
-// 一手牌可能有好几种打法，比如同花色的 34567 既是顺子又是同花顺；返回的顺序固定
-// （先按牌型，再按牌点），两端（Go、TS）比对时不会因为顺序不同而不一致。
+// 一手牌可能有好几种打法：
+//   - 同花色的 34567 既是顺子又是同花顺：当顺子能跟牌，当同花顺能压炸弹；
+//   - 带逢人配时更多：单张红桃级牌能当 2 到 A 里的任何一张，五张牌里有一张逢人配时顺子和
+//     同花顺可能各有两种顶张。
+//
+// 逢人配（红桃级牌）除了大小王什么都能顶（第二条 14）：这里把每张逢人配顶成什么枚举一遍
+// （一张 52 种、两张还是很小），顶法不同但牌型牌面一样的算同一种解读，留下顶法「最小」的那一种 ——
+// 界面上要显示「♥7 当 ♠A」，两端要给出同一个答案。
 //
 // 这手牌什么牌型都不是时返回空切片，不是错误 —— 调用方按「这手牌打不出去」处理。
-// 空手牌或者同一张牌写了两次是调用方的错，返回错误。
-//
-// 逢人配（红桃级牌）的枚举是下一步的事：这一步只认实打实的牌。
+// 空手牌、同一张牌写了两次、级数不对是调用方的错，返回错误。
 func Recognize(cards []Card, level Rank) ([]Combo, error) {
 	if len(cards) == 0 {
 		return nil, fmt.Errorf("认牌型：没有牌")
@@ -249,98 +289,251 @@ func Recognize(cards []Card, level Rank) ([]Combo, error) {
 	if err := checkDistinctCards(cards); err != nil {
 		return nil, err
 	}
-	sorted := sortCards(cards)
-	counts := rankCounts(sorted) // 点数 → 张数
+	played := sortCards(cards)
+
+	var wilds, solids []Card
+	for _, c := range played {
+		if c.IsWild(level) {
+			wilds = append(wilds, c)
+			continue
+		}
+		solids = append(solids, c)
+	}
+
+	// 没有逢人配：直接认。
+	if len(wilds) == 0 {
+		out := make([]Combo, 0, 4)
+		for _, sh := range recognizeCards(solids) {
+			out = append(out, Combo{
+				Type: sh.typ, Cards: played, Rank: sh.rank,
+				Value: comboValue(sh.typ, sh.rank, level),
+			})
+		}
+		return sortCombos(out), nil
+	}
+
+	// 手里**全是**逢人配：只按它本来的点数认（就是级牌），不枚举顶法。
+	//
+	// 一张单出、两张一起出，都只算「单张级牌」「一对级牌」这唯一一种解读：
+	// 第二条 14 说的是「替代任意牌张……参与不同牌型的**组合**」，第五条 2 说的是
+	// 「红桃级牌**搭配**牌型时」—— 单出、两张自己凑一对都不算组合（#217 定的口径）。
+	// 而且别的解读都比级牌小，没有任何场合用得上；枚举出来只会让「随手扔一张 ♥7」
+	// 变成要声明 13 种里的哪一种。
+	if len(solids) == 0 {
+		out := make([]Combo, 0, 2)
+		self := make([]Wildcard, len(wilds))
+		for i, w := range wilds {
+			self[i] = Wildcard{Card: w, As: w} // 顶成它自己：手里这张级牌就是它本来的点数
+		}
+		for _, sh := range recognizeCards(wilds) {
+			out = append(out, Combo{
+				Type: sh.typ, Cards: played, Wilds: self, Rank: sh.rank,
+				Value: comboValue(sh.typ, sh.rank, level),
+			})
+		}
+		return sortCombos(out), nil
+	}
+
+	// 实打实的牌已经有 6 个以上点数：怎么顶都凑不成任何一种牌型（顺子类最多 5 个点数，
+	// 其余最多 3 个），先剪掉，省得白枚举 13^逢人配数次。
+	if len(rankCounts(solids)) > 5 {
+		return nil, nil
+	}
+
+	// 有逢人配：把每张顶成什么枚举一遍，牌型牌面同样的解读只留顶法最小的那一种。
+	best := map[shape]Combo{}
+	eachSubstitution(len(wilds), func(as []Card) bool {
+		subs := make([]Wildcard, len(wilds))
+		trial := make([]Card, 0, len(played))
+		trial = append(trial, solids...)
+		for i := range wilds {
+			subs[i] = Wildcard{Card: wilds[i], As: as[i]}
+			trial = append(trial, Card{Rank: as[i].Rank, Suit: as[i].Suit, Deck: wilds[i].Deck, ID: wilds[i].ID})
+		}
+		for _, sh := range recognizeCards(trial) {
+			c := Combo{
+				Type: sh.typ, Cards: played, Wilds: subs, Rank: sh.rank,
+				Value: comboValue(sh.typ, sh.rank, level),
+			}
+			if old, ok := best[sh]; !ok || lessWilds(c.Wilds, old.Wilds) {
+				best[sh] = c
+			}
+		}
+		return false
+	})
+
+	out := make([]Combo, 0, len(best))
+	for _, c := range best {
+		out = append(out, c)
+	}
+	return sortCombos(out), nil
+}
+
+// FindCombo 按声明的牌型找解读：这一手牌里这个牌型**只有一种**时返回它。有几种
+// （逢人配顶法不同、点数也不同，或者同花色的顺子当顺子还是当同花顺）时不猜，返回 ok=false，
+// 让调用方去问出牌的人 —— 出牌的动作里要带完整的声明（见 Pick）。
+func FindCombo(cards []Card, level Rank, t ComboType) (Combo, bool, error) {
+	combos, err := Recognize(cards, level)
+	if err != nil {
+		return Combo{}, false, err
+	}
+	c, ok := Pick(combos, t, 0)
+	return c, ok, nil
+}
+
+// Pick 从解读里挑出声明的这一种：牌型 + 牌面。rank 写 0 表示「只看牌型，而且只有一种」。
+func Pick(combos []Combo, t ComboType, rank Rank) (Combo, bool) {
+	var found []Combo
+	for _, c := range combos {
+		if c.Type == t && (rank == 0 || c.Rank == rank) {
+			found = append(found, c)
+		}
+	}
+	if len(found) != 1 {
+		return Combo{}, false
+	}
+	return found[0], true
+}
+
+// ---------------------------------------------------------------------------
+// 认牌型的内核（不看牌的身份，只看点数和花色）
+// ---------------------------------------------------------------------------
+
+// shape 是一种解读的形状：牌型 + 牌面（顺子类是顶张，四大天王是 0）。
+type shape struct {
+	typ  ComboType
+	rank Rank
+}
+
+// recognizeCards 是第三、四条那套判断：这手牌（可以带逢人配顶替出来的牌）能当成什么打。
+// 只看点数、花色和张数；牌的身份、级数都不看（级数只影响顺子类顶张的算法，见 comboValue）。
+func recognizeCards(cards []Card) []shape {
+	counts := rankCounts(cards)
 	distinct := make([]Rank, 0, len(counts))
 	for r := range counts {
 		distinct = append(distinct, r)
 	}
 	sort.Slice(distinct, func(i, j int) bool { return distinct[i] < distinct[j] })
 
-	var out []Combo
-	add := func(t ComboType, rank Rank) {
-		value := rank.Power(level)
-		if isSeqType(t) {
-			value = int(rank) // 顺子类按牌面原位置算（第五条 1）
-		}
-		out = append(out, Combo{Type: t, Cards: sorted, Rank: rank, Value: value})
-	}
+	n := len(cards)
+	var out []shape
 
 	// 同点数的：单张、对子、三同张、炸弹（第三条 1、2、4、8）。
 	if len(distinct) == 1 {
-		switch n := len(sorted); {
+		switch {
 		case n == 1:
-			add(TypeSingle, distinct[0])
+			out = append(out, shape{TypeSingle, distinct[0]})
 		case n == 2:
-			add(TypePair, distinct[0])
+			out = append(out, shape{TypePair, distinct[0]})
 		case n == 3:
-			add(TypeTriple, distinct[0])
+			out = append(out, shape{TypeTriple, distinct[0]})
 		case n >= 4 && n <= 10:
-			add(TypeBomb, distinct[0])
+			out = append(out, shape{TypeBomb, distinct[0]})
 		}
 	}
 
-	// 四大天王：大小王各两张（第三条 10）。它不是同点数的炸弹，单独认；没有点数可标。
-	if len(sorted) == 4 && counts[BigJoker] == 2 && counts[SmallJoker] == 2 {
-		add(TypeJokerBomb, 0)
+	// 四大天王：大小王各两张（第三条 10）。它不是同点数的炸弹，单独认。
+	if n == 4 && counts[BigJoker] == 2 && counts[SmallJoker] == 2 {
+		out = append(out, shape{TypeJokerBomb, 0})
 	}
 
 	// 三带对：一个三同张带一个对子（第三条 6）。
-	if len(sorted) == 5 && len(distinct) == 2 {
+	if n == 5 && len(distinct) == 2 {
 		for _, r := range distinct {
 			if counts[r] == 3 {
-				add(TypeTripleWithPair, r)
+				out = append(out, shape{TypeTripleWithPair, r})
 			}
 		}
 	}
 
 	// 三连对：三个牌点相邻的对子（第三条 3）。
-	if len(sorted) == 6 && len(distinct) == 3 && allCounts(counts, 2) {
+	if n == 6 && len(distinct) == 3 && allCounts(counts, 2) {
 		if top, ok := seqTop(distinct, 3); ok {
-			add(TypeTube, top)
+			out = append(out, shape{TypeTube, top})
 		}
 	}
 
 	// 三同连张：两个牌点相邻的三同张（第三条 5）。
-	if len(sorted) == 6 && len(distinct) == 2 && allCounts(counts, 3) {
+	if n == 6 && len(distinct) == 2 && allCounts(counts, 3) {
 		if top, ok := seqTop(distinct, 2); ok {
-			add(TypePlate, top)
+			out = append(out, shape{TypePlate, top})
 		}
 	}
 
 	// 顺子：五个牌点相邻的单张，花色不限（第三条 7）。王不参与。
-	if len(sorted) == 5 && len(distinct) == 5 && allCounts(counts, 1) {
+	if n == 5 && len(distinct) == 5 && allCounts(counts, 1) {
 		if top, ok := seqTop(distinct, 5); ok {
-			add(TypeStraight, top)
-			// 同一个顺子还是同一个花色时，它也是同花顺（第三条 9）：两种解读都给出来，
-			// 出牌的人自己声明打哪一种 —— 当顺子能跟牌，当同花顺能压炸弹。
-			if sameSuit(sorted) {
-				add(TypeStraightFlush, top)
+			out = append(out, shape{TypeStraight, top})
+			// 同一个顺子还是同一个花色时，它也是同花顺（第三条 9）：两种解读都给出来。
+			if sameSuit(cards) {
+				out = append(out, shape{TypeStraightFlush, top})
 			}
 		}
 	}
 
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Type != out[j].Type {
-			return out[i].Type < out[j].Type
-		}
-		return out[i].Rank < out[j].Rank
-	})
-	return out, nil
+	return out
 }
 
-// FindCombo 在这手牌的全部解读里找声明的那一种：找到了返回它，没有就是这手牌打不出这个牌型。
-func FindCombo(cards []Card, level Rank, t ComboType) (Combo, bool, error) {
-	combos, err := Recognize(cards, level)
-	if err != nil {
-		return Combo{}, false, err
-	}
-	for _, c := range combos {
-		if c.Type == t {
-			return c, true, nil
+// ---------------------------------------------------------------------------
+// 逢人配的枚举
+// ---------------------------------------------------------------------------
+
+// wildCards 是逢人配能顶替的牌：每个点数的四个花色，共 52 张（第二条 14：不含大、小王）。
+var wildCards = func() []Card {
+	out := make([]Card, 0, 52)
+	for _, s := range []Suit{Spade, Heart, Club, Diamond} {
+		for r := Two; r <= Ace; r++ {
+			out = append(out, Card{Rank: r, Suit: s})
 		}
 	}
-	return Combo{}, false, nil
+	return out
+}()
+
+// eachSubstitution 枚举 n 张逢人配各顶成什么（不排序、不看名额：顶替出来的牌不占真牌的位置，
+// 所以五张 8 加两张逢人配能凑出十张炸）。顶法按点数、花色从小到大枚举，同一组顶法只走一遍。
+// visit 返回 true 时提前停下。
+func eachSubstitution(n int, visit func(as []Card) bool) {
+	chosen := make([]Card, 0, n)
+	var walk func(start int) bool
+	walk = func(start int) bool {
+		if len(chosen) == n {
+			return visit(chosen)
+		}
+		for i := start; i < len(wildCards); i++ {
+			chosen = append(chosen, wildCards[i])
+			stop := walk(i)
+			chosen = chosen[:len(chosen)-1]
+			if stop {
+				return true
+			}
+		}
+		return false
+	}
+	walk(0)
+}
+
+// lessWilds 比两串顶法：点数、花色小的算小。同一种解读有多种顶法时留下小的那一种，
+// 两端（Go、TS）才会给出同一个答案。
+func lessWilds(a, b []Wildcard) bool {
+	for i := range a {
+		if a[i].As.Rank != b[i].As.Rank {
+			return a[i].As.Rank < b[i].As.Rank
+		}
+		if a[i].As.Suit != b[i].As.Suit {
+			return a[i].As.Suit < b[i].As.Suit
+		}
+	}
+	return false
+}
+
+func sortCombos(combos []Combo) []Combo {
+	sort.SliceStable(combos, func(i, j int) bool {
+		if combos[i].Type != combos[j].Type {
+			return combos[i].Type < combos[j].Type
+		}
+		return combos[i].Rank < combos[j].Rank
+	})
+	return combos
 }
 
 // ---------------------------------------------------------------------------
@@ -401,7 +594,8 @@ func sameSuit(cards []Card) bool {
 // seqTop 判断这组点数能不能排成 count 个连着的牌点，返回顶张的牌面。
 //
 // A 在顺子类牌型里可以当最小的 1 用（A2345、AA2233），也可以当最大的 14 用（10JQKA、
-// QQKKAA），但不能两头都接（第四条二（二）2）。王不参与顺子类牌型。
+// QQKKAA），但不能两头都接（第四条 一、2 说的是「A 可以当 1」，一张 A 不能同时当两头）。
+// 王不参与顺子类牌型。
 func seqTop(ranks []Rank, count int) (Rank, bool) {
 	if len(ranks) != count {
 		return 0, false
@@ -411,7 +605,7 @@ func seqTop(ranks []Rank, count int) (Rank, bool) {
 			return 0, false
 		}
 	}
-	// 两种读法：A 当 14，或者 A 当 1。王已经排除了，剩下的都是 2–14。
+	// 两种读法：A 当 14，或者 A 当 1。剩下的都是 2–14。
 	for _, aceLow := range []bool{false, true} {
 		values := make([]int, 0, len(ranks))
 		hasAce := false

@@ -2,6 +2,7 @@ package rules
 
 import (
 	"encoding/json"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,6 +116,76 @@ func TestBeatsAntiSymmetric(t *testing.T) {
 	}
 }
 
+// 逢人配：同一手牌有好几种解读，顶法统一取点数、花色最小的那一种，两端才会给出同一个答案
+// （界面要显示「♥7 当 ♠A」）。
+func TestRecognizeWildsSubstitution(t *testing.T) {
+	level := Seven
+	cards := cardsOf(t, []string{"♠3/0", "♠4/0", "♠5/0", "♠6/0", "♥7/0"})
+	combos, err := Recognize(cards, level)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 顺子 23456：逢人配当 2，花色随便（不是同花顺），取最小的黑桃 2。
+	straight6, ok := Pick(combos, TypeStraight, Six)
+	if !ok {
+		t.Fatalf("应当能当 23456 的顺子打：%s", ComboSummary(combos))
+	}
+	if len(straight6.Wilds) != 1 || straight6.Wilds[0].Card.Key() != "♥7/0" || straight6.Wilds[0].As.Key() != "♠2/0" {
+		t.Fatalf("顶法应当是 ♥7 当 ♠2：%+v", straight6.Wilds)
+	}
+	// 同花顺 23456：顶成 ♠2 才凑得成同花，花色是定死的。
+	flush6, ok := Pick(combos, TypeStraightFlush, Six)
+	if !ok || flush6.Wilds[0].As.Key() != "♠2/0" {
+		t.Fatalf("同花顺 23456 要顶成 ♠2：%+v %v", flush6.Wilds, ok)
+	}
+	// 不是逢人配的牌不会出现在 Wilds 里。
+	for _, c := range combos {
+		if c.Type == TypeStraight && c.Rank == Seven && len(c.Wilds) != 1 {
+			t.Fatalf("34567 只有一张逢人配：%+v", c.Wilds)
+		}
+	}
+	// 打别的级数时 ♥7 就是一张普通的 7：只有一种解读，也没有顶法。
+	plain, err := Recognize(cards, Five)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain) != 1 || len(plain[0].Wilds) != 0 || plain[0].Type != TypeStraight {
+		t.Fatalf("打 5 时这手牌就是一条顺子：%s", ComboSummary(plain))
+	}
+}
+
+// 三带对带的是王对：牌例里有，这里再确认一次王对是合法的对子（第三条 2、6）。
+func TestTripleWithJokerPair(t *testing.T) {
+	cards := cardsOf(t, []string{"♠9/0", "♥9/0", "♦9/1", "大王/0", "大王/1"})
+	c, ok, err := FindCombo(cards, Seven, TypeTripleWithPair)
+	if err != nil || !ok || c.Rank != Nine || c.Value != Nine.Power(Seven) {
+		t.Fatalf("999 带一对大王：%+v %v %v", c, ok, err)
+	}
+}
+
+// 两张逢人配：枚举 52×53/2 种顶法也要很快（跟牌生成会反复用到）。
+func BenchmarkRecognizeTwoWilds(b *testing.B) {
+	cards := cardsOf2(b, []string{"♠3/0", "♠4/0", "♠5/0", "♠6/0", "♥7/0", "♥7/1"})
+	for i := 0; i < b.N; i++ {
+		if _, err := Recognize(cards, Seven); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func cardsOf2(b *testing.B, keys []string) []Card {
+	b.Helper()
+	out := make([]Card, len(keys))
+	for i, k := range keys {
+		c, err := ParseKey(k)
+		if err != nil {
+			b.Fatalf("牌 %q：%v", k, err)
+		}
+		out[i] = c
+	}
+	return out
+}
+
 // 牌型名要能一来一回：牌例里写的就是这些名字。
 func TestComboTypeNames(t *testing.T) {
 	want := map[ComboType]string{
@@ -137,5 +208,139 @@ func TestComboTypeNames(t *testing.T) {
 	}
 	if !strings.Contains(ComboSummary(nil), "打不出去") {
 		t.Error("空解读的说明不对")
+	}
+}
+
+// 逢人配枚举的性质测试（#217 复审建议）：随机手牌上，每一条解读都要能「还原」——
+// 把逢人配按它声明的顶法换成顶成的那张牌，得到的牌型必须真的是那个牌型、那个牌面。
+//
+// 这是独立于 Recognize 的第二条路：Recognize 是「枚举顶法 → 认牌型」，
+// 这里反过来「按声明还原 → 单独认一次」，两边对不上就说明枚举或挑选的规矩有问题。
+// 随机数用固定种子：跑起来确定，不会今天绿明天红。
+func TestWildReadingsRestore(t *testing.T) {
+	deck := NewDeck()
+	rnd := rand.New(rand.NewSource(20261016))
+	levels := []Rank{Two, Five, Seven, Ten, Ace}
+
+	hands := 0
+	readings := 0
+	for i := 0; i < 20000; i++ {
+		level := levels[rnd.Intn(len(levels))]
+		n := 1 + rnd.Intn(10)
+		hand := make([]Card, 0, n)
+		seen := map[int]bool{}
+		for len(hand) < n {
+			c := deck[rnd.Intn(len(deck))]
+			if seen[c.ID] {
+				continue
+			}
+			// 偏向「点数离两头远一点」的牌：不然随机到连着的顺子太少，测不到顺子类的顶法。
+			if rnd.Intn(3) != 0 && !c.IsWild(level) {
+				if c.Rank < Two+2 || c.Rank > Ace-2 {
+					continue
+				}
+			}
+			seen[c.ID] = true
+			hand = append(hand, c)
+		}
+
+		combos, err := Recognize(hand, level)
+		if err != nil {
+			t.Fatalf("认牌型：%v", err)
+		}
+		hands++
+		seenReading := map[string]bool{}
+		for _, c := range combos {
+			readings++
+
+			// ① 没有重复解读。
+			key := c.Type.String() + "/" + c.Rank.RankName() + "/" + wildText(c.Wilds)
+			if seenReading[key] {
+				t.Fatalf("手牌 %s 打 %s：解读 %s 出现了两次", handText(hand), level.RankName(), key)
+			}
+			seenReading[key] = true
+
+			// ② 逢人配的条数和手里的一样，而且顶的都不是王。
+			want := 0
+			for _, h := range hand {
+				if h.IsWild(level) {
+					want++
+				}
+			}
+			if len(c.Wilds) != want {
+				t.Fatalf("手牌 %s 打 %s：解读 %s 只写了 %d 张逢人配，手里有 %d 张",
+					handText(hand), level.RankName(), key, len(c.Wilds), want)
+			}
+
+			// ③ 按声明还原之后，牌型牌面要对得上。
+			trial := make([]Card, 0, len(c.Cards))
+			byID := map[int]Card{}
+			for _, w := range c.Wilds {
+				if w.As.Rank.IsJoker() {
+					t.Fatalf("手牌 %s 打 %s：逢人配顶成了王 %s", handText(hand), level.RankName(), asKey(w.As))
+				}
+				byID[w.Card.ID] = w.As
+			}
+			for _, card := range c.Cards {
+				if as, ok := byID[card.ID]; ok {
+					trial = append(trial, Card{Rank: as.Rank, Suit: as.Suit, Deck: card.Deck, ID: card.ID})
+					continue
+				}
+				trial = append(trial, card)
+			}
+			hit := false
+			for _, sh := range recognizeCards(sortCards(trial)) {
+				if sh.typ == c.Type && sh.rank == c.Rank {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				t.Fatalf("手牌 %s 打 %s：解读 %s 还原成 %s 之后认不出来",
+					handText(hand), level.RankName(), key, handText(trial))
+			}
+		}
+	}
+	if hands == 0 || readings == 0 {
+		t.Fatalf("没跑出东西：%d 手牌、%d 条解读", hands, readings)
+	}
+	t.Logf("跑了 %d 手牌、%d 条解读", hands, readings)
+}
+
+func wildText(ws []Wildcard) string {
+	parts := make([]string, len(ws))
+	for i, w := range ws {
+		parts[i] = w.Card.Key() + "→" + asKey(w.As)
+	}
+	return strings.Join(parts, ",")
+}
+
+func handText(cards []Card) string {
+	parts := make([]string, len(cards))
+	for i, c := range cards {
+		parts[i] = c.Key()
+	}
+	return strings.Join(parts, " ")
+}
+
+// 单出逢人配（复审建议）：一手只有一张 ♥7 时只有一种解读 —— 单张级牌。
+// 所以 FindCombo 不靠牌面也找得到（原来会给出 13 种，只能靠声明牌面才挑得出）。
+func TestFindComboLoneWild(t *testing.T) {
+	cards := cardsOf(t, []string{"♥7/0"})
+	c, ok, err := FindCombo(cards, Seven, TypeSingle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || c.Rank != Seven {
+		t.Fatalf("单张 ♥7 应当就是单张 7，得到 ok=%v rank=%s", ok, c.Rank.RankName())
+	}
+	// 别的牌型认不出来。
+	if _, ok, _ := FindCombo(cards, Seven, TypePair); ok {
+		t.Error("一张牌不该认成对子")
+	}
+	// 两张逢人配：就是一对级牌，也只有一种解读。
+	pair := cardsOf(t, []string{"♥7/0", "♥7/1"})
+	if c, ok, err := FindCombo(pair, Seven, TypePair); err != nil || !ok || c.Rank != Seven {
+		t.Fatalf("两张 ♥7 应当就是一对 7，得到 ok=%v err=%v", ok, err)
 	}
 }
