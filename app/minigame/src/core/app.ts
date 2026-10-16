@@ -48,6 +48,8 @@ export interface Sheet {
 }
 
 /** 弹层的运行时状态：内容超出可视高度时内部滚动（App 管）。 */
+import { KeyboardSession, type EditOptions } from "./keyboard";
+
 type OpenSheet = Sheet & { t0: number; h: number; top: number; scroll: Scroller; focusFor: string };
 
 export interface Touch0 {
@@ -56,17 +58,6 @@ export interface Touch0 {
   scr: { s: Scroller; axis: "x" | "y" } | null;
   moved: boolean;
   t0: number;
-}
-
-export interface EditOptions {
-  key: string;
-  value: string;
-  maxLength?: number;
-  multiple?: boolean;
-  confirmType?: "done" | "next" | "search" | "go" | "send";
-  onInput: (v: string) => void;
-  onConfirm?: (v: string) => void;
-  onDone?: (v: string) => void;
 }
 
 interface Anim { t0: number; dur: number; onFrame: (p: number) => void; done?: () => void }
@@ -91,8 +82,17 @@ export class App {
   pressed: string | null = null;
   private touch: Touch0 | null = null;
   private dirty = true;
-  kbHeight = 0;
-  editing: EditOptions | null = null;
+  /** 键盘那摊事全在会话里（core/keyboard.ts）：事件顺序、收起再拉、超时兜底都在那儿测。 */
+  private keys: KeyboardSession = new KeyboardSession(wx, {
+    redraw: () => this.redraw(),
+    toast: (m) => this.toast(m),
+    setTimeout: (fn, ms) => setTimeout(fn, ms) as unknown,
+    clearTimeout: (id) => clearTimeout(id as any),
+  });
+  /** 正在编辑的字段（会话持有）。留个只读口给外面：create.ts 要拿它算「滚到哪」。 */
+  get editing(): EditOptions | null { return this.keys.editing }
+  /** 键盘高度（会话持有，`onKeyboardHeightChange` 给的）。visibleBottom / 焦点框都靠它。 */
+  get kbHeight(): number { return this.keys.kbHeight }
   /** 当帧画出来的激活字段（屏幕坐标），由 widgets.field 填；用来把它滚进可视区 */
   focusRect: { y: number; h: number } | null = null;
   /** 底部 Tab 栏由外面画（main.ts），这里只存回调 */
@@ -118,7 +118,6 @@ export class App {
     this.ctx = this.canvas.getContext("2d");
 
     this.bindTouches();
-    this.bindKeyboard();
     const loop = () => { this.frame(); requestAnimationFrame(loop); };
     requestAnimationFrame(loop);
   }
@@ -183,7 +182,7 @@ export class App {
   closeSheet(sheet?: Sheet) {
     const s = sheet ? this.sheets.find((x) => x === sheet) : this.sheets[this.sheets.length - 1];
     if (!s) return;
-    if (this.editing) wx.hideKeyboard({});
+    if (this.editing) this.blurKeyboard();
     this.sheets = this.sheets.filter((x) => x !== s);
     s.onClose?.();
     this.redraw();
@@ -198,37 +197,14 @@ export class App {
   }
   isPressed(id: string) { return this.pressed === id; }
 
-  // ── 键盘：拉起微信原生输入条，文字从回调里拿 ──
-  edit(opts: EditOptions) {
-    this.editing = opts;
-    wx.showKeyboard({
-      defaultValue: opts.value || "",
-      maxLength: opts.maxLength || 40,
-      multiple: !!opts.multiple,
-      confirmHold: false,
-      confirmType: opts.confirmType || "done",
-      fail: (e: any) => this.toast("键盘没拉起来：" + (e && e.errMsg)),
-    });
-    this.redraw();
-  }
-  isEditing(key: string) { return !!this.editing && this.editing.key === key; }
+  // ── 键盘：都在 core/keyboard.ts 的 KeyboardSession 里 ──
+  // 这里只留薄薄一层，供场景调用。事件顺序、收起再拉、超时兜底都在那边（带假 wx 的单测）。
+  edit(opts: EditOptions) { this.keys.focus(opts); }
 
-  private bindKeyboard() {
-    wx.onKeyboardInput((res: any) => { if (this.editing) { this.editing.onInput(res.value); this.redraw(); } });
-    wx.onKeyboardConfirm((res: any) => {
-      const ed = this.editing;
-      if (ed) { ed.onInput(res.value); ed.onConfirm?.(res.value); }
-      if (this.editing === ed) wx.hideKeyboard({});
-    });
-    wx.onKeyboardComplete((res: any) => {
-      const ed = this.editing;
-      this.editing = null;
-      this.kbHeight = 0;
-      if (ed) { ed.onInput(res.value); ed.onDone?.(res.value); }
-      this.redraw();
-    });
-    if (wx.onKeyboardHeightChange) wx.onKeyboardHeightChange((res: any) => { this.kbHeight = res.height || 0; this.redraw(); });
-  }
+  isEditing(key: string) { return this.keys.isEditing(key); }
+
+  /** 收起键盘并作废会话状态（离开页面、关弹层）。**别直接调 wx.hideKeyboard** —— 那样会话不知道。 */
+  blurKeyboard() { this.keys.blur(); }
 
   private pick(x: number, y: number): Hit | null {
     for (let i = this.hits.length - 1; i >= 0; i--) {
