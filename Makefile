@@ -41,12 +41,16 @@ vuln:
 web-test: web-install
 	cd app/h5 && $(NPM) test
 
-# 两端共用的那层（app/shared）单独 typecheck（#253 P8）：它有自己的 tsconfig，而且
-# **不带 DOM lib** —— 共享层里一旦冒出 window / document / localStorage 这类浏览器 API，
-# 这里当场编译不过，不用靠人记得。默认值（窗口地址、本地存储）都归各端的壳。
-# tsc 装在 app/h5 的 node_modules 里，所以从那儿跑，--no-install 免得悄悄去下载。
+# 两端共用的那层（app/shared）的两道门（#253）：规矩与理由见 app/shared/README.md。
+#   1) 单独 typecheck —— 它有自己的 tsconfig，而且**不带 DOM lib**：共享层里一旦冒出
+#      window / document / localStorage 这类浏览器 API，这里当场编译不过，不用靠人记得；
+#      tsc 装在 app/h5 的 node_modules 里，所以从那儿跑，--no-install 免得悄悄去下载。
+#   2) 文件之间只许 `import type`（值 import 会让两端在运行期互相牵连，tsc 拦不住），
+#      由 scripts/check-shared-imports.mjs 按语句扫。
+# 默认值（窗口地址、本地存储、时间写法）都归各端的壳。
 shared-check: web-install
 	cd app/h5 && npx --no-install tsc -p ../shared --noEmit
+	node scripts/check-shared-imports.mjs
 
 # 先构建前端再跑后端测试，这样 httpapi 的用例能真正验证内嵌进去的页面。
 test: vet web-build race-test web-test shared-check
