@@ -303,10 +303,12 @@ func TestCombosFixture(t *testing.T) {
 	}
 }
 
-// 比较（第四条二）：两边都写完整的一手牌 + 声明的牌型。
+// 比较（第四条二）：两边都写完整的一手牌 + 声明的牌型（带逢人配时要连牌面一起声明）。
 type compareSide struct {
 	Kind  string   `json:"kind"`
 	Cards []string `json:"cards"`
+	// Rank 是声明的牌面，只有带逢人配、同一种牌型有好几种点数时才要写。
+	Rank string `json:"rank"`
 }
 
 type compareVector struct {
@@ -322,19 +324,27 @@ type compareFixture struct {
 	Vectors []compareVector `json:"vectors"`
 }
 
-// sideCombo 按声明的牌型认这手牌：认不出来就是牌例自己写错了。
+// sideCombo 按声明的解读认这手牌：牌型一定对得上，牌面写了就一起比。认不出来就是牌例自己写错了。
 func sideCombo(t *testing.T, v compareVector, which string, side compareSide, level Rank) Combo {
 	t.Helper()
 	kind, err := ParseComboType(side.Kind)
 	if err != nil {
 		t.Fatalf("%s：%s：%v", v.Name, which, err)
 	}
-	c, ok, err := FindCombo(cardsOf(t, side.Cards), level, kind)
+	rank := Rank(0)
+	if side.Rank != "" {
+		if rank, err = ParseRank(side.Rank); err != nil {
+			t.Fatalf("%s：%s：%v", v.Name, which, err)
+		}
+	}
+	combos, err := Recognize(cardsOf(t, side.Cards), level)
 	if err != nil {
 		t.Fatalf("%s：%s：%v", v.Name, which, err)
 	}
+	c, ok := Pick(combos, kind, rank)
 	if !ok {
-		t.Fatalf("%s：%s 这手牌打不出声明的 %s（%v）", v.Name, which, side.Kind, side.Cards)
+		t.Fatalf("%s：%s 这手牌声明的解读认不出来（%s%s，%v）—— 实际有 %s", v.Name, which,
+			side.Kind, side.Rank, side.Cards, ComboSummary(combos))
 	}
 	return c
 }

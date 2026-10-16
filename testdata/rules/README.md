@@ -14,13 +14,13 @@ TS 版（`app/rules`，#87）读同一批文件，任何一边改规则都要先
 | `deck.json` | 两副牌 108 张的固定顺序（下标即牌的 ID） | 两端构造牌堆时按它校对 |
 | `power.json` | 每个级数下牌点由大到小的顺序（第四条一） | `Rank.Power` / TS 的同一函数 |
 | `deal.json` | 给定出牌顺序（随机源）→ 四手牌（第七条一） | `Deal` / TS 的 `deal` |
+| `combos.json` | 一手牌 + 级数 → 全部合法解读（含逢人配） | `Recognize` / TS 的同一函数 |
+| `compare.json` | 两手牌 + 声明的解读 + 级数 → 谁大 | `Combo.Beats` / TS 的同一函数 |
 
-后面的步骤（牌型识别、比较、合法出法、出牌流程、进贡）会往这个目录加文件：
+后面的步骤（合法出法、出牌流程、进贡）会往这个目录加文件：
 
 | 计划中的文件 | 内容 | 对应 #204 的第几步 |
 |---|---|---|
-| `combos.json` | 一手牌 + 级数 → 全部合法解读（含逢人配） | 第 2、3 步 |
-| `compare.json` | 两手牌 + 级数 → 谁大 | 第 2 步 |
 | `plays.json` | 局面 → 领出 / 跟牌的合法出法集合 | 第 4 步 |
 
 ## 牌的写法
@@ -37,8 +37,12 @@ TS 版（`app/rules`，#87）读同一批文件，任何一边改规则都要先
 
 ## 怎么改
 
-1. 先改输入（`power.json` 的 `order`、`deal.json` 的 `shuffle`）；
-2. 跑 `go test ./server/internal/rules/ -update` 重新生成写死的期望值（`deck.json` 的 `order`、
-   `deal.json` 的 `hands`）；
+`power.json`、`combos.json`、`compare.json` 的期望值是**手写**的：它们本身就是规则，改规则就是改
+它们，实现跟着改。只有 `deck.json` 的 `order` 和 `deal.json` 的 `hands` 是从实现生成的：
+
+1. 改输入（`power.json` 的 `order`、`deal.json` 的 `shuffle`，或者手写 `combos.json` /
+   `compare.json` 的用例）；
+2. 改了牌堆顺序或发牌顺序的话，跑 `go test ./server/internal/rules/ -update` 重新生成写死的
+   期望值（`deck.json` 的 `order`、`deal.json` 的 `hands`）；
 3. 逐条核对 `git diff`——生成器只会照着现在的实现写，看不出规则错；
 4. 再跑两端的测试：`go test ./server/internal/rules/` 和 `app/rules` 下的 vitest。

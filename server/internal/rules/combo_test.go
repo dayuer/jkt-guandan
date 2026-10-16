@@ -115,6 +115,76 @@ func TestBeatsAntiSymmetric(t *testing.T) {
 	}
 }
 
+// 逢人配：同一手牌有好几种解读，顶法统一取点数、花色最小的那一种，两端才会给出同一个答案
+// （界面要显示「♥7 当 ♠A」）。
+func TestRecognizeWildsSubstitution(t *testing.T) {
+	level := Seven
+	cards := cardsOf(t, []string{"♠3/0", "♠4/0", "♠5/0", "♠6/0", "♥7/0"})
+	combos, err := Recognize(cards, level)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 顺子 23456：逢人配当 2，花色随便（不是同花顺），取最小的黑桃 2。
+	straight6, ok := Pick(combos, TypeStraight, Six)
+	if !ok {
+		t.Fatalf("应当能当 23456 的顺子打：%s", ComboSummary(combos))
+	}
+	if len(straight6.Wilds) != 1 || straight6.Wilds[0].Card.Key() != "♥7/0" || straight6.Wilds[0].As.Key() != "♠2/0" {
+		t.Fatalf("顶法应当是 ♥7 当 ♠2：%+v", straight6.Wilds)
+	}
+	// 同花顺 23456：顶成 ♠2 才凑得成同花，花色是定死的。
+	flush6, ok := Pick(combos, TypeStraightFlush, Six)
+	if !ok || flush6.Wilds[0].As.Key() != "♠2/0" {
+		t.Fatalf("同花顺 23456 要顶成 ♠2：%+v %v", flush6.Wilds, ok)
+	}
+	// 不是逢人配的牌不会出现在 Wilds 里。
+	for _, c := range combos {
+		if c.Type == TypeStraight && c.Rank == Seven && len(c.Wilds) != 1 {
+			t.Fatalf("34567 只有一张逢人配：%+v", c.Wilds)
+		}
+	}
+	// 打别的级数时 ♥7 就是一张普通的 7：只有一种解读，也没有顶法。
+	plain, err := Recognize(cards, Five)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain) != 1 || len(plain[0].Wilds) != 0 || plain[0].Type != TypeStraight {
+		t.Fatalf("打 5 时这手牌就是一条顺子：%s", ComboSummary(plain))
+	}
+}
+
+// 三带对带的是王对：牌例里有，这里再确认一次王对是合法的对子（第三条 2、6）。
+func TestTripleWithJokerPair(t *testing.T) {
+	cards := cardsOf(t, []string{"♠9/0", "♥9/0", "♦9/1", "大王/0", "大王/1"})
+	c, ok, err := FindCombo(cards, Seven, TypeTripleWithPair)
+	if err != nil || !ok || c.Rank != Nine || c.Value != Nine.Power(Seven) {
+		t.Fatalf("999 带一对大王：%+v %v %v", c, ok, err)
+	}
+}
+
+// 两张逢人配：枚举 52×53/2 种顶法也要很快（跟牌生成会反复用到）。
+func BenchmarkRecognizeTwoWilds(b *testing.B) {
+	cards := cardsOf2(b, []string{"♠3/0", "♠4/0", "♠5/0", "♠6/0", "♥7/0", "♥7/1"})
+	for i := 0; i < b.N; i++ {
+		if _, err := Recognize(cards, Seven); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func cardsOf2(b *testing.B, keys []string) []Card {
+	b.Helper()
+	out := make([]Card, len(keys))
+	for i, k := range keys {
+		c, err := ParseKey(k)
+		if err != nil {
+			b.Fatalf("牌 %q：%v", k, err)
+		}
+		out[i] = c
+	}
+	return out
+}
+
 // 牌型名要能一来一回：牌例里写的就是这些名字。
 func TestComboTypeNames(t *testing.T) {
 	want := map[ComboType]string{
