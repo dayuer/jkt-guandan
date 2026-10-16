@@ -62,9 +62,13 @@ func (r Rank) RankName() string {
 	return strconv.Itoa(int(r))
 }
 
-// ParseRank 认牌面：2–10、J、Q、K、A、小王、大王（大小写都认）。
+// ParseRank 认牌面：2–10、J、Q、K、A、小王、大王。
+//
+// **只认规范写法**（#213 复审）：字母大写（`J` 不认成 `j`）、数字不带前导零或正号
+// （`5` 认，`05`、`+5` 不认）。牌例是两端逐字符串比对的，Go 端这里松一点，
+// 严格比对的 TS 端就会挂 —— 和 ParseKey 一个口径。
 func ParseRank(s string) (Rank, error) {
-	switch strings.ToUpper(s) {
+	switch s {
 	case "J":
 		return Jack, nil
 	case "Q":
@@ -73,16 +77,18 @@ func ParseRank(s string) (Rank, error) {
 		return King, nil
 	case "A":
 		return Ace, nil
+	case "10":
+		return Ten, nil
 	case "小王":
 		return SmallJoker, nil
 	case "大王":
 		return BigJoker, nil
 	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n < int(Two) || n > int(Ten) {
-		return 0, fmt.Errorf("认不出牌点 %q", s)
+	// 2–9 就一个字节，别顺手把 "05"、"+5" 这种也放进来。
+	if len(s) == 1 && s[0] >= '2' && s[0] <= '9' {
+		return Rank(s[0] - '0'), nil
 	}
-	return Rank(n), nil
+	return 0, fmt.Errorf("认不出牌点 %q：只认 2–10、J、Q、K、A、小王、大王（大写，数字不带前导零）", s)
 }
 
 // Suit 是花色。
