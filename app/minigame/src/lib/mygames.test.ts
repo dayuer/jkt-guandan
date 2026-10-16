@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GameSummary, HistoryGame } from "./api";
-import { historyStatus, roleBadge, scoreLine, upcomingStatus } from "./mygames";
+import { afterHide, historyStatus, roleBadge, scoreLine, upcomingStatus } from "./mygames";
 
 const game = (o: Partial<GameSummary> = {}): GameSummary => ({
   short_code: "ABC123", starts_at: 0, area: "SCBD", venue: "Pacific Place", kind: "classic",
@@ -56,5 +56,18 @@ describe("scoreLine", () => {
   });
   it("不升级局说各赢几局", () => {
     expect(scoreLine(h({ ...brief, kind: "no-level" }))).toBe("红 4 : 黑 2 · 6 局");
+  });
+});
+
+describe("afterHide", () => {
+  const h = (code: string): HistoryGame => ({ ...game({ short_code: code }) });
+  it("拿掉删的那一条，别的不动", () => {
+    expect(afterHide([h("A"), h("B")], "A", true)).toEqual({ list: [h("B")], loadMore: false });
+  });
+  it("删光了、还有更早的：接着读下一页", () => {
+    expect(afterHide([h("A")], "A", true)).toEqual({ list: [], loadMore: true });
+  });
+  it("删光了、没有更早的：不用读", () => {
+    expect(afterHide([h("A")], "A", false)).toEqual({ list: [], loadMore: false });
   });
 });
