@@ -53,15 +53,18 @@ func TestCardKeyRoundTrip(t *testing.T) {
 	}
 }
 
+// 认不出来的写法。最后一档是**非规范但读得出**的：小写牌面、补零的副号、花色带变体选择符
+// U+FE0F —— 这些也一律拒绝（#213 复审：Go 端松一点，严格比对的 TS 端就会挂）。
 func TestParseKeyErrors(t *testing.T) {
-	for _, bad := range []string{"", "♠7", "♠7/2", "♠7/x", "7/0", "♠X/0", "大王♠/0", "A/1"} {
+	for _, bad := range []string{"", "♠7", "♠7/2", "♠7/x", "7/0", "♠X/0", "大王♠/0", "A/1",
+		"♠j/0", "♠07/0", "♠7/00", "♥\ufe0f7/0", "小王\u2660/0"} {
 		if got, err := ParseKey(bad); err == nil {
 			t.Errorf("%q 应当认不出来，得到了 %s", bad, got.Key())
 		}
 	}
 }
 
-// 同一个牌点、不同花色/副号的牌牌点相同；大小不受花色影响（第四条二（一）4：均不比较花色）。
+// 同一个牌点、不同花色/副号的牌牌点相同；大小不受花色影响（第四条 二、（一）4：均不比较花色）。
 func TestPowerIgnoresSuit(t *testing.T) {
 	deck := NewDeck()
 	for r := Two; r <= Ace; r++ {
@@ -85,7 +88,7 @@ func TestPowerIgnoresSuit(t *testing.T) {
 	}
 }
 
-// 级牌提到 A 之上、小王之下：打 7 时四张 7 的牌点一样，而且都比 A 大（第四条一）。
+// 级牌提到 A 之上、小王之下：打 7 时四张 7 的牌点一样，而且都比 A 大（第四条 一）。
 func TestPowerLevelRankAboveAce(t *testing.T) {
 	deck := NewDeck()
 	ace := Ace.Power(Seven)

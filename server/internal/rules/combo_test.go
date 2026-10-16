@@ -2,6 +2,7 @@ package rules
 
 import (
 	"encoding/json"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,4 +209,116 @@ func TestComboTypeNames(t *testing.T) {
 	if !strings.Contains(ComboSummary(nil), "打不出去") {
 		t.Error("空解读的说明不对")
 	}
+}
+
+// 逢人配枚举的性质测试（#217 复审建议）：随机手牌上，每一条解读都要能「还原」——
+// 把逢人配按它声明的顶法换成顶成的那张牌，得到的牌型必须真的是那个牌型、那个牌面。
+//
+// 这是独立于 Recognize 的第二条路：Recognize 是「枚举顶法 → 认牌型」，
+// 这里反过来「按声明还原 → 单独认一次」，两边对不上就说明枚举或挑选的规矩有问题。
+// 随机数用固定种子：跑起来确定，不会今天绿明天红。
+func TestWildReadingsRestore(t *testing.T) {
+	deck := NewDeck()
+	rnd := rand.New(rand.NewSource(20261016))
+	levels := []Rank{Two, Five, Seven, Ten, Ace}
+
+	hands := 0
+	readings := 0
+	for i := 0; i < 20000; i++ {
+		level := levels[rnd.Intn(len(levels))]
+		n := 1 + rnd.Intn(10)
+		hand := make([]Card, 0, n)
+		seen := map[int]bool{}
+		for len(hand) < n {
+			c := deck[rnd.Intn(len(deck))]
+			if seen[c.ID] {
+				continue
+			}
+			// 偏向「点数离两头远一点」的牌：不然随机到连着的顺子太少，测不到顺子类的顶法。
+			if rnd.Intn(3) != 0 && !c.IsWild(level) {
+				if c.Rank < Two+2 || c.Rank > Ace-2 {
+					continue
+				}
+			}
+			seen[c.ID] = true
+			hand = append(hand, c)
+		}
+
+		combos, err := Recognize(hand, level)
+		if err != nil {
+			t.Fatalf("认牌型：%v", err)
+		}
+		hands++
+		seenReading := map[string]bool{}
+		for _, c := range combos {
+			readings++
+
+			// ① 没有重复解读。
+			key := c.Type.String() + "/" + c.Rank.RankName() + "/" + wildText(c.Wilds)
+			if seenReading[key] {
+				t.Fatalf("手牌 %s 打 %s：解读 %s 出现了两次", handText(hand), level.RankName(), key)
+			}
+			seenReading[key] = true
+
+			// ② 逢人配的条数和手里的一样，而且顶的都不是王。
+			want := 0
+			for _, h := range hand {
+				if h.IsWild(level) {
+					want++
+				}
+			}
+			if len(c.Wilds) != want {
+				t.Fatalf("手牌 %s 打 %s：解读 %s 只写了 %d 张逢人配，手里有 %d 张",
+					handText(hand), level.RankName(), key, len(c.Wilds), want)
+			}
+
+			// ③ 按声明还原之后，牌型牌面要对得上。
+			trial := make([]Card, 0, len(c.Cards))
+			byID := map[int]Card{}
+			for _, w := range c.Wilds {
+				if w.As.Rank.IsJoker() {
+					t.Fatalf("手牌 %s 打 %s：逢人配顶成了王 %s", handText(hand), level.RankName(), asKey(w.As))
+				}
+				byID[w.Card.ID] = w.As
+			}
+			for _, card := range c.Cards {
+				if as, ok := byID[card.ID]; ok {
+					trial = append(trial, Card{Rank: as.Rank, Suit: as.Suit, Deck: card.Deck, ID: card.ID})
+					continue
+				}
+				trial = append(trial, card)
+			}
+			hit := false
+			for _, sh := range recognizeCards(sortCards(trial)) {
+				if sh.typ == c.Type && sh.rank == c.Rank {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				t.Fatalf("手牌 %s 打 %s：解读 %s 还原成 %s 之后认不出来",
+					handText(hand), level.RankName(), key, handText(trial))
+			}
+		}
+	}
+	if hands == 0 || readings == 0 {
+		t.Fatalf("没跑出东西：%d 手牌、%d 条解读", hands, readings)
+	}
+	t.Logf("跑了 %d 手牌、%d 条解读", hands, readings)
+}
+
+func wildText(ws []Wildcard) string {
+	parts := make([]string, len(ws))
+	for i, w := range ws {
+		parts[i] = w.Card.Key() + "→" + asKey(w.As)
+	}
+	return strings.Join(parts, ",")
+}
+
+func handText(cards []Card) string {
+	parts := make([]string, len(cards))
+	for i, c := range cards {
+		parts[i] = c.Key()
+	}
+	return strings.Join(parts, " ")
 }

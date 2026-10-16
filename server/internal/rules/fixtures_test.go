@@ -16,9 +16,14 @@ import (
 // 牌例在仓库根的 testdata/rules/（#204 第 1 步）：Go 和客户端 TS 版（#87）读同一批文件，
 // 格式见那里的 README.md。
 //
-// 改输入之后跑 `go test ./server/internal/rules/ -update` 重新生成写死的期望值
-// （deck.json 的 order、deal.json 的 hands），再逐条核对 git diff —— 生成器只会照着现在的
-// 实现写，看不出规则错。
+// 改输入之后跑 `go test ./server/internal/rules/ -update` 重新生成 deal.json 的 hands，
+// 再逐条核对改了什么 —— 生成器只会照着现在的实现写，看不出规则错。
+//
+// **deck.json 的 order 不由 -update 生成**：它是两端的约定，不是期望值（#213 复审）。
+// 要是让它跟着实现走，改一次 NewDeck 的顺序、跑一次 -update，约定就被悄悄改掉了。
+//
+// 每条用例都要有 rule 字段（条款号数组，写法见 README）：这里会检查它非空，
+// 免得「依据」只写在 name 的文字里、TS 端没法校验。
 var update = flag.Bool("update", false, "按现在的实现重新生成 testdata/rules 里的期望值")
 
 const fixturesDir = "../../../testdata/rules"
@@ -54,6 +59,7 @@ func saveFixture(t *testing.T, name string, v any) {
 // 整副牌的顺序：两端必须一样，否则同一串牌例在两边指的不是同一张牌。
 type deckFixture struct {
 	Comment []string `json:"_comment"`
+	Rule    []string `json:"rule"`
 	Order   []string `json:"order"`
 }
 
@@ -71,10 +77,8 @@ func TestDeckFixture(t *testing.T) {
 	deck := NewDeck()
 	want := deckKeys(deck)
 
-	if *update {
-		f.Order = want
-		saveFixture(t, "deck.json", f)
-		return
+	if len(f.Rule) == 0 {
+		t.Fatal("deck.json 没写 rule（条款号）")
 	}
 	if len(f.Order) != len(want) {
 		t.Fatalf("牌例写了 %d 张，整副牌有 %d 张", len(f.Order), len(want))
@@ -99,6 +103,7 @@ func TestDeckFixture(t *testing.T) {
 // 牌点大小（第四条一）：一条用例一个级数，order 是从大到小的 15 个牌点。
 type powerVector struct {
 	Name  string   `json:"name"`
+	Rule  []string `json:"rule"`
 	Level string   `json:"level"`
 	Order []string `json:"order"`
 }
@@ -115,6 +120,9 @@ func TestPowerFixture(t *testing.T) {
 		t.Fatal("没有用例")
 	}
 	for _, v := range f.Vectors {
+		if len(v.Rule) == 0 {
+			t.Fatalf("%s：没写 rule（条款号）", v.Name)
+		}
 		level, err := ParseRank(v.Level)
 		if err != nil {
 			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
@@ -146,6 +154,7 @@ func TestPowerFixture(t *testing.T) {
 // 发牌（第七条一）：shuffle 是出牌顺序，hands 是按座位发的四手牌。
 type dealVector struct {
 	Name    string     `json:"name"`
+	Rule    []string   `json:"rule"`
 	Shuffle []int      `json:"shuffle"`
 	Hands   [][]string `json:"hands"`
 }
@@ -163,6 +172,9 @@ func TestDealFixture(t *testing.T) {
 	}
 	for i := range f.Vectors {
 		v := &f.Vectors[i]
+		if len(v.Rule) == 0 {
+			t.Fatalf("%s：没写 rule（条款号）", v.Name)
+		}
 		hands, err := Deal(PermShuffler(v.Shuffle))
 		if err != nil {
 			t.Fatalf("%s：%v", v.Name, err)
@@ -216,13 +228,56 @@ func compact(t *testing.T, v any) string {
 type interpretation struct {
 	Kind string `json:"kind"`
 	Rank string `json:"rank"`
+	// Wilds 是可选的：这几种解读里，哪张逢人配顶成了什么（`as` 不带副号，见 README）。
+	// 写了就要求引擎选的正是这一种。
+	Wilds []wildDecl `json:"wilds,omitempty"`
+}
+
+type wildDecl struct {
+	Card string `json:"card"`
+	As   string `json:"as"`
 }
 
 type comboVector struct {
 	Name   string           `json:"name"`
+	Rule   []string         `json:"rule"`
 	Level  string           `json:"level"`
 	Cards  []string         `json:"cards"`
 	Combos []interpretation `json:"combos"`
+}
+
+// checkWildDecls 查牌例里声明的「哪张逢人配顶成了什么」：写了就要求引擎选的正是这一种
+// （两端必须给出同一个答案，不能一边挑点数最小的、一边随便挑）。
+func checkWildDecls(t *testing.T, v comboVector, combos []Combo) {
+	t.Helper()
+	for _, want := range v.Combos {
+		if len(want.Wilds) == 0 {
+			continue // 这条解读没声明顶法，不查（大多数用例顶法是唯一的，没必要每条都写）
+		}
+		var found *Combo
+		for i := range combos {
+			if combos[i].Type.String() == want.Kind && combos[i].Rank.RankName() == want.Rank {
+				found = &combos[i]
+				break
+			}
+		}
+		if found == nil {
+			continue // 牌型/牌面对不上由主断言报，这里只管顶法
+		}
+		got := make([]string, len(found.Wilds))
+		for i, w := range found.Wilds {
+			got[i] = w.Card.Key() + " 当 " + asKey(w.As)
+		}
+		sort.Strings(got)
+		decl := make([]string, len(want.Wilds))
+		for i, w := range want.Wilds {
+			decl[i] = w.Card + " 当 " + w.As
+		}
+		sort.Strings(decl)
+		if !reflect.DeepEqual(got, decl) {
+			t.Fatalf("%s：%s %s 的顶法不一样\n算出 %v\n牌例 %v", v.Name, want.Kind, want.Rank, got, decl)
+		}
+	}
 }
 
 type comboFixture struct {
@@ -286,6 +341,9 @@ func TestCombosFixture(t *testing.T) {
 		t.Fatal("没有用例")
 	}
 	for _, v := range f.Vectors {
+		if len(v.Rule) == 0 {
+			t.Fatalf("%s：没写 rule（条款号）", v.Name)
+		}
 		level, err := ParseRank(v.Level)
 		if err != nil {
 			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
@@ -294,8 +352,14 @@ func TestCombosFixture(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s：%v", v.Name, err)
 		}
+		checkWildDecls(t, v, combos)
 		got := interpretations(combos)
+		// 主断言只比牌型和牌面：`wilds`（哪张顶成了什么）是可选的，由 checkWildDecls 单独查 ——
+		// 大多数用例的顶法是唯一的，没必要每条都写一遍。
 		want := append([]interpretation{}, v.Combos...)
+		for i := range want {
+			want[i].Wilds = nil
+		}
 		sortInterpretations(want)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s（%v，打 %s）：\n算出 %s\n牌例 %s", v.Name, v.Cards, v.Level, interpretText(got), interpretText(want))
@@ -313,10 +377,13 @@ type compareSide struct {
 
 type compareVector struct {
 	Name  string      `json:"name"`
+	Rule  []string    `json:"rule"`
 	Level string      `json:"level"`
 	A     compareSide `json:"a"`
 	B     compareSide `json:"b"`
-	Beats bool        `json:"beats"`
+	// Result 是 a 和 b 的关系：a / b / equal / incomparable（#216 复审：布尔值分不出
+	// 「一样大」和「牌型不同没得比」）。两个方向都要成立，下面两个断言各测一遍。
+	Result string `json:"result"`
 }
 
 type compareFixture struct {
@@ -356,14 +423,51 @@ func TestCompareFixture(t *testing.T) {
 		t.Fatal("没有用例")
 	}
 	for _, v := range f.Vectors {
+		if len(v.Rule) == 0 {
+			t.Fatalf("%s：没写 rule（条款号）", v.Name)
+		}
 		level, err := ParseRank(v.Level)
 		if err != nil {
 			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
 		}
+		want, err := parseOrder(v.Result)
+		if err != nil {
+			t.Fatalf("%s：%v", v.Name, err)
+		}
 		a := sideCombo(t, v, "a", v.A, level)
 		b := sideCombo(t, v, "b", v.B, level)
-		if got := a.Beats(b); got != v.Beats {
-			t.Fatalf("%s：a=%s b=%s，算出 %v，牌例是 %v", v.Name, a, b, got, v.Beats)
+		if got := a.Compare(b); got != want {
+			t.Fatalf("%s：a=%s b=%s，算出 %s，牌例是 %s", v.Name, a, b, got, want)
+		}
+		// 反方向也要对：a 大就 b 小，一样大就还是一样大，没得比就还是没得比。
+		// 这样「压不了」的三种情况各自都有两个方向的用例，不会只测一个方向。
+		if got := b.Compare(a); got != reverseOrder(want) {
+			t.Fatalf("%s（反方向）：b=%s a=%s，算出 %s，应当是 %s", v.Name, b, a, got, reverseOrder(want))
 		}
 	}
+}
+
+// parseOrder 读牌例里的 result。
+func parseOrder(s string) (Order, error) {
+	switch s {
+	case "a":
+		return Greater, nil
+	case "b":
+		return Less, nil
+	case "equal":
+		return Equal, nil
+	case "incomparable":
+		return Incomparable, nil
+	}
+	return Incomparable, fmt.Errorf("result 只能是 a / b / equal / incomparable，写的是 %q", s)
+}
+
+func reverseOrder(o Order) Order {
+	switch o {
+	case Greater:
+		return Less
+	case Less:
+		return Greater
+	}
+	return o
 }

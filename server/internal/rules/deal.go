@@ -8,7 +8,8 @@ import "fmt"
 // 「随机源注入」）。生产上用一个真随机源，牌例和回归测试用一个写死的排列。
 type Shuffler func(n int) []int
 
-// PermShuffler 把一个现成的顺序当成随机源：第 i 张发出去的是 deck[perm[i]]。
+// PermShuffler 把一个现成的顺序当成随机源：**第 i 张发出去的是 deck[perm[i]]**。
+// 也就是 perm[i] 是「第 i 张发出的牌的 ID」，不是「ID 为 i 的牌排在第几个发」。
 func PermShuffler(perm []int) Shuffler {
 	return func(n int) []int {
 		if len(perm) != n {
@@ -23,11 +24,14 @@ func PermShuffler(perm []int) Shuffler {
 // handsEach 是每人几张：两副牌 108 张，四个人平分（第二条 6：每名运动员 27 张）。
 const handsEach = 27
 
-// Deal 洗牌、发牌：用 shuffle 排出 108 张的出牌顺序，按顺序给 1–4 号座每人 27 张。
+// Deal 洗牌、发牌：用 shuffle 排出 108 张的发牌顺序，从首抓者起逆时针轮流发给四家。
 //
-// 返回值下标 0–3 对应 1–4 号座；手里的牌按发到的先后排，不排序（排序是界面的事，
-// 引擎按 ID 认牌）。随机源不合法（长度为 0、不是排列、有重复或越界）时返回错误，
-// 而不是悄悄发一副坏牌 —— 复盘时对不上要立刻知道。
+// 返回值的下标是**从首抓者起、逆时针数第几家**（0–3），不是座位号 —— 首抓者坐哪个座位由局面
+// 决定（掷骰、抽牌之类），调用方拿到之后自己按首抓者的座位旋转（testdata/rules/README.md
+// 「发牌」一节）。手里的牌按发到的先后排，不排序（排序是界面的事，引擎按 ID 认牌）。
+//
+// 随机源不合法（长度为 0、不是排列、有重复或越界）时返回错误，而不是悄悄发一副坏牌 ——
+// 复盘时对不上要立刻知道。
 func Deal(shuffle Shuffler) ([4][]Card, error) {
 	if shuffle == nil {
 		return [4][]Card{}, fmt.Errorf("发牌：没有随机源")
@@ -42,7 +46,7 @@ func Deal(shuffle Shuffler) ([4][]Card, error) {
 	for i := range hands {
 		hands[i] = make([]Card, 0, handsEach)
 	}
-	// 每人每次一张，逆时针轮流抓，发完为止（第七条一，5）。
+	// 每人每次一张，逆时针轮流抓，发完为止（第七条 一、5）。
 	for i, idx := range perm {
 		seat := i % 4
 		hands[seat] = append(hands[seat], deck[idx])
