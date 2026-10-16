@@ -5,7 +5,7 @@ import { C, Ctx, Scroller, card, circle, ellipsize, fillRR, font, initial, measu
 import { PAD, avatar, button, copy, disclaimer, emptyState, errorLine, field, list, nav, sheetButtons, sheetHeader, simpleSheet, textLink } from "../core/widgets";
 import { ApiError, API_BASE, clearWaPhone, deleteMe, getMe, hideFromHistory, issueClaim, listMyGames, listMyHistory, setNickname, setWaPhone, signOutDevice, signOutOtherDevices, type ClaimTicket, type Device, type GameSummary, type HistoryGame } from "../lib/api";
 import { cardDay, dayLabel, kindLabel, lastSeenLabel, timeHM, weekday } from "../lib/fmt";
-import { historyStatus, roleBadge, scoreLine, upcomingStatus, type Badge, type Tone } from "../lib/mygames";
+import { afterHide, historyStatus, roleBadge, scoreLine, upcomingStatus, type Badge, type Tone } from "../lib/mygames";
 import { currentUser, signOutHere, updateNickname } from "../lib/session";
 import { maskWaPhone, normalizeWaPhone } from "../../../h5/src/wa";
 import { TAB_H } from "./home";
@@ -19,6 +19,8 @@ export class Me implements Scene {
   private upcoming: GameSummary[] | null = null;
   private history: HistoryGame[] | null = null;
   private hasMore = false;
+  /** 已经读到的最后一条，翻下一页的游标。单独存：列表里的都删光了也还能接着往下翻。 */
+  private cursor: HistoryGame | undefined;
   private loadingMore = false;
   private error = "";
   private top = 0;
@@ -28,9 +30,10 @@ export class Me implements Scene {
   onEnter() { this.refresh(); }
   onResume() { this.refresh(); }
   private refresh() {
-    if (!currentUser()) { this.upcoming = []; this.history = []; this.hasMore = false; return; }
+    if (!currentUser()) { this.upcoming = []; this.history = []; this.hasMore = false; this.cursor = undefined; return; }
     Promise.all([listMyGames(), listMyHistory()]).then(([up, h]) => {
       this.upcoming = up; this.history = h.games; this.hasMore = h.has_more; this.error = "";
+      this.cursor = h.games[h.games.length - 1];
     }).catch((err) => {
       if (err instanceof ApiError && err.status === 401) { this.upcoming = []; this.history = []; return; }
       this.error = "读不到我的牌局，稍后再试";
@@ -39,14 +42,15 @@ export class Me implements Scene {
   }
 
   private async more() {
-    const last = this.history?.[this.history.length - 1];
+    const last = this.cursor;
     if (!last || this.loadingMore) return;
     this.loadingMore = true; this.app.redraw();
     try {
       const page = await listMyHistory(last);
-      const seen = new Set(this.history!.map((g) => g.short_code));
-      this.history = [...this.history!, ...page.games.filter((g) => !seen.has(g.short_code))];
+      const seen = new Set((this.history ?? []).map((g) => g.short_code));
+      this.history = [...(this.history ?? []), ...page.games.filter((g) => !seen.has(g.short_code))];
       this.hasMore = page.has_more;
+      if (page.games.length) this.cursor = page.games[page.games.length - 1];
     } catch { this.app.toast("没读到更早的，稍后再试"); }
     finally { this.loadingMore = false; this.app.redraw(); }
   }
@@ -66,8 +70,10 @@ export class Me implements Scene {
   private async hide(g: HistoryGame) {
     try {
       await hideFromHistory(g.short_code);
-      this.history = (this.history ?? []).filter((h) => h.short_code !== g.short_code);
+      const next = afterHide(this.history ?? [], g.short_code, this.hasMore);
+      this.history = next.list;
       this.app.toast("删掉了");
+      if (next.loadMore) void this.more();
     } catch (err) {
       this.app.toast(err instanceof ApiError && err.code === "not_history" ? "这一局还没开始，要退出请去详情页" : "没删掉，稍后再试");
     } finally { this.app.redraw(); }
@@ -138,7 +144,8 @@ export class Me implements Scene {
     }
 
     const hist = this.history;
-    if (hist && hist.length) {
+    // 删光了但还有更早的：标题和「看更早的」留着（more() 正在接着读下一页）
+    if (hist && (hist.length || this.hasMore)) {
       y += 8;
       text(ctx, "历史", PAD, y + 10, font(13, "700"), C.ink3);
       text(ctx, "删除只是你自己看不到", W - PAD, y + 10, font(11), C.ink4, "right");
@@ -494,7 +501,7 @@ const PRIVACY: [string, string][] = [
   ["我们存了什么", "称呼、你绑定的 WhatsApp（可选）、登录的设备、你报过的局；在小游戏里还有微信给的用户标识（openid / unionid），只用来认出同一个人"],
   ["存多久", "设备 180 天没用自动删除；使用统计 1 年后删除；备份 30 天后删除"],
   ["拿来做什么", "只用来让你和牌友互相认出来、把局的提醒发给你。报名时你同意了的话，会用微信订阅消息提醒你成局、有人退出、开局前 1 小时、改时间；每同意一次最多发一条。你填的称呼、地点、备注会发给微信做内容安全检测（微信的要求）。不卖给谁，也没有广告"],
-  ["注销之后会怎样", "称呼、WhatsApp、设备、微信标识、提醒和订阅消息记录都会被删除。已经结束的局里，你的座位会显示成「已注销牌友」，这样那一局当时有几个人还是记得准的"],
+  ["注销之后会怎样", "称呼、WhatsApp、设备、微信标识、提醒和订阅消息记录都会被删除。「我的牌局」历史里你删掉过哪些局的记录也会清掉。已经结束的局里，你的座位会显示成「已注销牌友」，这样那一局当时有几个人还是记得准的"],
 ];
 
 export class Privacy implements Scene {

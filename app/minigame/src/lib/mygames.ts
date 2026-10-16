@@ -42,3 +42,12 @@ export function scoreLine(g: HistoryGame): string {
   if (s.winner) return `${s.winner === "red" ? "红方" : "黑方"}过 A · ${rounds}`;
   return `红 ${levelName(s.red_level)} : 黑 ${levelName(s.black_level)} · ${rounds}`;
 }
+
+/**
+ * 历史里删掉一条之后的列表（auditor-225 第 2 条）。已经读出来的都删光了、服务端还有更早的时，
+ * 要接着读下一页，不然列表看起来是空的，「看更早的」也跟着没了。
+ */
+export function afterHide(list: HistoryGame[], code: string, hasMore: boolean): { list: HistoryGame[]; loadMore: boolean } {
+  const rest = list.filter((g) => g.short_code !== code);
+  return { list: rest, loadMore: rest.length === 0 && hasMore };
+}
