@@ -9,6 +9,7 @@ import { defineConfig } from "@playwright/test";
  * 服务端是本地构建的二进制（先 `make build`），开发模式 + `guandan seed`，数据放在临时目录。
  * 只连本机：测试里把所有非本机请求都拦掉并记下来。
  */
+// 端口由 `make e2e` 每次运行单独分配（scripts/e2e-port.sh，#228）；18673 只是直接跑 `npx playwright test` 时的兜底。
 const PORT = Number(process.env.E2E_PORT ?? 18673);
 
 // 临时数据目录在这里建，由 globalTeardown 删：清理不依赖服务端怎么退出。
