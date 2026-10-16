@@ -329,6 +329,13 @@ interface RefTribute {
   leader: number;
   /** 每个人该贡哪一张（驱动器照着贡；引擎必须接受）。 */
   give: Map<number, Card>;
+  /**
+   * 双贡时两张贡牌**一样大**（第十条 三：一样大就按顺时针方向进贡）。
+   *
+   * 单列出来是为了**钉覆盖面**：这条分支随机发牌很难撞上，主用例以前从没走到过它
+   * （#256 复审发现的缺口）—— 没走到就等于没核，下面的主用例拿它断言 `> 0`。
+   */
+  equal: boolean;
 }
 
 /**
@@ -365,11 +372,13 @@ function refTribute(hands: readonly Card[][], level: Rank, order: readonly numbe
     for (const c of hands[g - 1]!) if (c.rank === BIG_JOKER) bigJokers++;
   }
   if (bigJokers >= 2) {
-    return { kind: "resisted", givers, to: new Map(), leader: head, give };
+    return { kind: "resisted", givers, to: new Map(), leader: head, give, equal: false };
   }
 
   const to = new Map<number, number>();
   let leader = head;
+  /** 两张贡牌是不是一样大（只有双贡才有这回事）。 */
+  let equal = false;
   if (!double) {
     to.set(givers[0]!, head); // 单贡贡给上游
     leader = givers[0]!; // 首圈由下游领出
@@ -384,12 +393,13 @@ function refTribute(hands: readonly Card[][], level: Rank, order: readonly numbe
       to.set(b, head);
       to.set(a, partner);
     } else {
-      to.set(a, refClockwise(a)); // 一样大：按顺时针方向进贡
+      equal = true; // 一样大：按顺时针方向进贡（第十条 三）
+      to.set(a, refClockwise(a));
       to.set(b, refClockwise(b));
     }
     for (const [g, r] of to) if (r === head) leader = g; // 贡给上游的那位领出
   }
-  return { kind: double ? "double" : "single", givers, to, leader, give };
+  return { kind: double ? "double" : "single", givers, to, leader, give, equal };
 }
 
 /**
@@ -532,6 +542,25 @@ interface MatchLog {
   ledger: string[];
   steps: number;
   tributeDeals: number;
+  /**
+   * 走到「双贡**两张一样大** → 按顺时针方向进贡」这条分支的副数。**按上游坐哪儿分成两类**，
+   * 两类都得走到 —— 只数一个、或者只数「走到过」，都会漏掉一种「写反」（#261 复审）。
+   *
+   * 为什么必须分两类：双下方两家排序后是 a < b，正确的读法是「各贡给自己顺时针那家」。
+   * 把它写反有两种写法，而**哪一种看不出来，取决于打平时谁被送去上游**：
+   *
+   *   - 上游坐 **2/3** 号座：正确读法把 **b**（大号座那个）送去上游
+   *     → 「a→上游、b→搭档」这种写反（M2）在这些局面里与正确读法**完全一致**，看不出来；
+   *     这一类局面能抓的是另一种写反（M3：b→上游、a→搭档）。
+   *   - 上游坐 **1/4** 号座：正确读法把 **a** 送去上游 → 上面两种写反对调：
+   *     这一类能抓 M2，抓不到 M3。
+   *
+   * 换句话说：**重不重合看「打平时谁给了上游」，不看座位本身**。两类语料各断言 > 0，
+   * 是因为少了任何一类，都还有一整种写反能活着。
+   */
+  doubleEqualSeat23: number;
+  /** 同上，上游坐 1/4 号座。和 `doubleEqualSeat23` 是一对，两个都要 > 0。 */
+  doubleEqualSeat14: number;
   resistedDeals: number;
   borrowed: number;
   levels: number[];
@@ -542,7 +571,7 @@ interface MatchLog {
  * 一路打到过 A 或者打满上限。
  */
 function playMatch(rng: Rng, maxDeals = MAX_DEALS_PER_MATCH): MatchLog {
-  const log: MatchLog = { over: false, deals: 0, steps: 0, tributeDeals: 0, resistedDeals: 0, borrowed: 0, levels: [], ledger: [] };
+  const log: MatchLog = { over: false, deals: 0, steps: 0, tributeDeals: 0, doubleEqualSeat23: 0, doubleEqualSeat14: 0, resistedDeals: 0, borrowed: 0, levels: [], ledger: [] };
   const ref = newRefMatch();
   const facts: RoundFact[] = [];
   let level: Rank = TWO;
@@ -565,6 +594,11 @@ function playMatch(rng: Rng, maxDeals = MAX_DEALS_PER_MATCH): MatchLog {
       const rt = refTribute(hands, level, prevOrder!);
       const tr = new Tribute(level, hands, prevFromOrder(prevOrder!));
       log.tributeDeals++;
+      // 见 MatchLog.doubleEqualSeat23 / Seat14：两类都要数 —— 它们各能抓一种「写反」。
+      if (rt.kind === "double" && rt.equal) {
+        if (prevOrder![0] === 2 || prevOrder![0] === 3) log.doubleEqualSeat23++;
+        else log.doubleEqualSeat14++;
+      }
       expect(tr.kind(), `第 ${log.deals + 1} 副：单贡还是双贡、抗不抗贡`).toBe(rt.kind);
       expect(tr.givers(), `第 ${log.deals + 1} 副：谁要进贡`).toStrictEqual(rt.givers);
 
@@ -655,11 +689,23 @@ describe("性质：随机对局（完整的一场：发牌 → 进贡 → 出牌
     let deals = 0;
     let steps = 0;
     let tributeDeals = 0;
+    let doubleEqualSeat23 = 0;
+    let doubleEqualSeat14 = 0;
     let resisted = 0;
     let borrowed = 0;
-    // 语料取 4 个种子（~60 副、六七千步）。这只是一条**下界**：真正的覆盖面由下面几条断言钉着，
+    // 语料取 5 个种子（~75 副、八九千步）。这只是一条**下界**：真正的覆盖面由下面几条断言钉着，
     // 而这条测试本来就重（每步都要和独立推的模型对、每副都要整份比计分状态）。
-    const seeds = [1, 2, 3, 4];
+    //
+    // 7 号和 9 号是**特意挑进来的**，一个一类：前 4 个种子一次都撞不上「双贡两张一样大」
+    // （那条分支随机很难遇到，实测 80 个种子里 28 个能撞上、每次大约一副），而且光是撞上还不够
+    // —— 这一类局面**分两种摆法**（上游坐 2/3 号座、上游坐 1/4 号座），少了任何一种，
+    // 都有整整一种「把方向写反」的方式能活着（#261 复审）。实测：能走到「上游坐 2/3」的种子
+    // 80 个里 14 个（9 号是其中一个），能走到「上游坐 1/4」的是**另外 14 个**（7 号）——
+    // 两类互不重叠，所以两个种子都要。
+    //
+    // 这不是挑好看的数字，是挑覆盖面 —— 下面那两条断言的数字就是钉它的：哪天子料/发牌变了、
+    // 哪一类又走不到了，测试会红，而不是悄悄少核一种写反。
+    const seeds = [1, 2, 3, 4, 7, 9];
     for (const seed of seeds) {
       const log = playMatch(seededRandom(seed));
       // 一场总有打完的时候（过 A）：撞上副数上限就说明「打不完」——那正是要抓的。
@@ -667,6 +713,8 @@ describe("性质：随机对局（完整的一场：发牌 → 进贡 → 出牌
       deals += log.deals;
       steps += log.steps;
       tributeDeals += log.tributeDeals;
+      doubleEqualSeat23 += log.doubleEqualSeat23;
+      doubleEqualSeat14 += log.doubleEqualSeat14;
       resisted += log.resistedDeals;
       borrowed += log.borrowed;
     }
@@ -676,6 +724,12 @@ describe("性质：随机对局（完整的一场：发牌 → 进贡 → 出牌
     expect(borrowed, "借风发生过多少次").toBeGreaterThan(0);
     // 抗贡也要真的走到过：这条以前写的是 `>= 0`（恒真）—— 等于没核（#256 复审）。
     expect(resisted, "抗贡过的副数").toBeGreaterThan(0);
+    // 双贡**两张一样大**（第十条 三：按顺时针进贡）这条路要真的走到，而且**两类摆法**都要走到
+    // （上游坐 2/3 与坐 1/4，见 MatchLog.doubleEqualSeat23 的注释）—— 只走一类的话，
+    // 另一种「写反」照样能活着（#261 复审就是这么发现的）。随机发牌很难撞上，以前主用例从没走到，
+    // 等于那条分支没人核（#256 复审的缺口）。数到 0 就说明语料还不够：换种子或加种子，不许删断言。
+    expect(doubleEqualSeat23, "双贡同大、上游坐 2/3 号座的副数").toBeGreaterThan(0);
+    expect(doubleEqualSeat14, "双贡同大、上游坐 1/4 号座的副数").toBeGreaterThan(0);
   });
 
   it("同一个种子跑两遍：逐副结果一模一样（引擎不读时间、不读随机数）", () => {
@@ -723,4 +777,87 @@ describe("性质：随机对局（完整的一场：发牌 → 进贡 → 出牌
     expect(tr.done()).toBe(true);
     expect(tr.start().turn(), "首轮还是 4 号座领出").toBe(4);
   });
+
+  it("双贡同大：两张贡牌一样大时按顺时针方向进贡（第十条 三，期望值手写）", () => {
+    // 上一副出完顺序 2 → 4 → …：2 号座上游、搭档 4 号座**第二个出完** → 双下（搭档名次 2），
+    // 双下方两家（1、3 号座）都要贡。两家手里最大的一张**一样大**：都是 A，一个 ♠、一个 ♥
+    // （打 2 时配牌是 ♥2，♥A 不是配牌）—— 正好落在「两张一样大」那一条上。
+    //
+    // 上游**特意坐 2 号座**：打平时谁该给上游是按座位顺序定的，两种摆法各能抓一种「写反」——
+    // 上游坐 2/3 号座时，正确读法把**大号座那个**贡的人送去上游，所以这种摆法抓得住
+    // 「小号座→上游、大号座→搭档」那一种；另一种写反（大号座→上游、小号座→搭档）在这类摆法下
+    // 与正确读法**一模一样**，得靠下面那条「上游坐 1 号座」的用例（#261 复审）。
+    const hands = [
+      handOf(["♠A/0"]), // 1 号座（要贡）
+      handOf(["♠K/0", "♣5/0"]), // 2 号座（上游）
+      handOf(["♥A/0"]), // 3 号座（要贡）
+      handOf(["♠4/0"]), // 4 号座（上游的搭档）
+    ];
+    const order = [2, 4, 1, 3];
+
+    // 条文（第十条 三）：一样大时每个进贡的人贡给自己**顺时针**方向的那一家。
+    // 座位 1 → 2 → 3 → 4 是逆时针，所以顺时针是 s−1（1 号座的是 4 号座）：
+    // 1 号座 → 4 号座（搭档）、3 号座 → 2 号座（上游）。这两句是照条文手写的，
+    // 不是从 refTribute 抄的 —— 引擎自己那套实现把方向写反，这条用例照样红。
+    const tr = new Tribute(TWO, hands, prevFromOrder(order));
+    const keysOf = (seat: number) => tributeHands(tr)[seat - 1]!.map(cardKey).sort();
+
+    expect(tr.kind(), "搭档第二个出完 → 双下 → 双贡").toBe("double");
+    expect(tr.givers(), "要贡的是对方两家（1、3 号座）").toStrictEqual([1, 3]);
+
+    tr.give(1, hands[0]![0]!); // ♠A/0，1 号座手里最大的一张
+    tr.give(3, hands[2]![0]!); // ♥A/0，3 号座手里最大的一张
+    expect(tr.receiver(1), "一样大：1 号座顺时针贡给 4 号座").toBe(4);
+    expect(tr.receiver(3), "一样大：3 号座顺时针贡给 2 号座").toBe(2);
+
+    // 各自还给贡给自己的人。还的牌都不超过 10（♣5、♠4 在读法 A 和读法 B 下都算），
+    // 所以这条用例不碰「还什么」那个还没拍板的读法。
+    tr.returnCard(4, returnable(tributeHands(tr)[3]!, TWO));
+    tr.returnCard(2, returnable(tributeHands(tr)[1]!, TWO));
+    expect(tr.done()).toBe(true);
+    expect(keysOf(2), "上游：进来 ♥A/0、出去 ♣5/0").toStrictEqual(["♠K/0", "♥A/0"]);
+    expect(keysOf(4), "搭档：进来 ♠A/0、出去 ♠4/0").toStrictEqual(["♠A/0"]);
+    expect(keysOf(1), "1 号座：贡出 ♠A/0、收回 ♠4/0").toStrictEqual(["♠4/0"]);
+    expect(keysOf(3), "3 号座：贡出 ♥A/0、收回 ♣5/0").toStrictEqual(["♣5/0"]);
+    expect(tr.start().turn(), "贡给上游的那位（3 号座）领出").toBe(3);
+  });
+
+  it("双贡同大：上游坐 1 号座（同一件事的另一类摆法，期望值手写）", () => {
+    // 和上面那条是**同一件事**、另一个摆法：上游坐 1 号座时，正确读法把**小号座那个**贡的人
+    // （2 号座）送去上游，所以这一类抓的是「大号座→上游、小号座→搭档」那一种写反 ——
+    // 上面那条抓不到它（反之亦然）。两条一起，两种写反都跑不掉。
+    const hands = [
+      handOf(["♠K/0", "♣5/0"]), // 1 号座（上游）
+      handOf(["♠A/0"]), // 2 号座（要贡）
+      handOf(["♠4/0"]), // 3 号座（上游的搭档）
+      handOf(["♥A/0"]), // 4 号座（要贡）
+    ];
+    const order = [1, 3, 2, 4]; // 搭挡第二个出完 → 双下
+
+    // 一样大 → 各贡给自己顺时针那家（座位 1 → 2 → 3 → 4 是逆时针，所以顺时针是 s−1）：
+    // 2 号座 → 1 号座（上游）、4 号座 → 3 号座（搭档）。由贡给上游的那位（2 号座）领出。
+    const tr = new Tribute(TWO, hands, prevFromOrder(order));
+    const keysOf = (seat: number) => tributeHands(tr)[seat - 1]!.map(cardKey).sort();
+
+    expect(tr.kind(), "搭档第二个出完 → 双下 → 双贡").toBe("double");
+    expect(tr.givers(), "要贡的是对方两家（2、4 号座）").toStrictEqual([2, 4]);
+
+    tr.give(2, hands[1]![0]!); // ♠A/0
+    tr.give(4, hands[3]![0]!); // ♥A/0
+    expect(tr.receiver(2), "一样大：2 号座顺时针贡给 1 号座（上游）").toBe(1);
+    expect(tr.receiver(4), "一样大：4 号座顺时针贡给 3 号座（搭档）").toBe(3);
+
+    tr.returnCard(1, returnable(tributeHands(tr)[0]!, TWO));
+    tr.returnCard(3, returnable(tributeHands(tr)[2]!, TWO));
+    expect(tr.done()).toBe(true);
+    expect(keysOf(1), "上游：进来 ♠A/0、出去 ♣5/0").toStrictEqual(["♠A/0", "♠K/0"]);
+    expect(keysOf(3), "搭档：进来 ♥A/0、出去 ♠4/0").toStrictEqual(["♥A/0"]);
+    expect(keysOf(2), "2 号座：贡出 ♠A/0、收回 ♣5/0").toStrictEqual(["♣5/0"]);
+    expect(keysOf(4), "4 号座：贡出 ♥A/0、收回 ♠4/0").toStrictEqual(["♠4/0"]);
+    expect(tr.start().turn(), "贡给上游的那位（2 号座）领出").toBe(2);
+  });
 });
+
+
+
+
