@@ -74,6 +74,10 @@ func (h *handler) createMe(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrNicknameInvalid):
 		writeError(w, http.StatusBadRequest, "nickname_invalid", "称呼需要 1–12 个字符")
 		return
+	case errors.Is(err, ErrNicknameReserved):
+		// 和改称呼同一个错误码：小游戏那边按 code 显示提示（#221）。
+		writeError(w, http.StatusBadRequest, "nickname_reserved", "这个称呼不能用")
+		return
 	case err != nil:
 		writeServiceError(w, "创建身份失败", err)
 		return
