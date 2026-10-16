@@ -53,13 +53,15 @@ function asStringRows(value: Json, what: string): string[][] {
   return asArray(value, what).map((row, i) => asStringList(row, `${what}[${i}]`));
 }
 
+function asInteger(value: Json, what: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new Error(`${what}：应该是整数`);
+  }
+  return value;
+}
+
 function asIntegerList(value: Json, what: string): number[] {
-  return asArray(value, what).map((item, i) => {
-    if (typeof item !== "number" || !Number.isInteger(item)) {
-      throw new Error(`${what}[${i}]：应该是整数`);
-    }
-    return item;
-  });
+  return asArray(value, what).map((item, i) => asInteger(item, `${what}[${i}]`));
 }
 
 /**
@@ -288,6 +290,9 @@ export interface CompareSide {
   /**
    * 可选：声明的牌面。同一种牌型有好几种牌面时必须写（比如带逢人配的那几张，顶法不同点数不同）；
    * 不写就表示这一手牌在那个牌型下只有一种解读。
+   *
+   * **空串等于没写**（和 Go 端 `if side.Rank != ""` 一个口径）：`"rank": ""` 不当成「声明的牌面
+   * 是空」，不然同一份牌例在两端一头过一头挂。
    */
   rank?: string;
 }
@@ -309,7 +314,10 @@ function readCompareSide(value: Json, what: string): CompareSide {
     kind: asString(required(side, "kind", what), `${what}.kind`),
     cards: asStringList(required(side, "cards", what), `${what}.cards`),
   };
-  if (side.rank !== undefined) out.rank = asString(side.rank, `${what}.rank`);
+  if (side.rank !== undefined) {
+    const rank = asString(side.rank, `${what}.rank`);
+    if (rank !== "") out.rank = rank; // 空串等于没写（和 Go 一个口径）
+  }
   return out;
 }
 
@@ -330,5 +338,63 @@ export function readCompare(raw: Json): CompareVector[] {
       b: readCompareSide(required(vector, "b", at), `${at}.b`),
       result: asString(required(vector, "result", at), `${at}.result`),
     };
+  });
+}
+
+/** 一手出法：牌型 + 牌面 + 张数 + （可选）哪张逢人配顶成了什么。 */
+export interface MoveSpec {
+  kind: string;
+  rank: string;
+  /** 这一手打出去几张。炸弹 4–10 张不固定，其余牌型的 size 是定死的。 */
+  size: number;
+  wilds?: WildSpec[];
+}
+
+export interface MovesVector {
+  name: string;
+  rule: string[];
+  level: string;
+  hand: string[];
+  /** **上一手**，写法同 `compare.json` 的 a／b。不写就是领出。 */
+  lead?: CompareSide;
+  /** 能打出去的全部打法，**排好序**；跟牌时只列能压住 lead 的。空数组表示要不起。 */
+  moves: MoveSpec[];
+}
+
+function readMoveSpec(value: Json, what: string): MoveSpec {
+  const spec = asObject(value, what);
+  rejectUnknownKeys(spec, ["kind", "rank", "size", "wilds"], what);
+  const out: MoveSpec = {
+    kind: asString(required(spec, "kind", what), `${what}.kind`),
+    rank: asString(required(spec, "rank", what), `${what}.rank`),
+    size: asInteger(required(spec, "size", what), `${what}.size`),
+  };
+  if (spec.wilds !== undefined) {
+    const wilds = asArray(spec.wilds, `${what}.wilds`).map((item, i) => readWildSpec(item, `${what}.wilds[${i}]`));
+    if (wilds.length > 0) out.wilds = wilds;
+  }
+  return out;
+}
+
+export function readMoves(raw: Json): MovesVector[] {
+  const what = "moves.json";
+  const obj = asObject(raw, what);
+  rejectUnknownKeys(obj, ["_comment", "vectors"], what);
+  checkComment(obj, what);
+  return requiredVectors(obj, what).map((item, i) => {
+    const at = `${what}.vectors[${i}]`;
+    const vector = asObject(item, at);
+    rejectUnknownKeys(vector, ["name", "rule", "level", "hand", "lead", "moves"], at);
+    const out: MovesVector = {
+      name: asString(required(vector, "name", at), `${at}.name`),
+      rule: requiredRule(vector, at),
+      level: asString(required(vector, "level", at), `${at}.level`),
+      hand: asStringList(required(vector, "hand", at), `${at}.hand`),
+      moves: asArray(required(vector, "moves", at), `${at}.moves`).map((spec, j) =>
+        readMoveSpec(spec, `${at}.moves[${j}]`),
+      ),
+    };
+    if (vector.lead !== undefined) out.lead = readCompareSide(vector.lead, `${at}.lead`);
+    return out;
   });
 }
