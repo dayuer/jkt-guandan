@@ -94,17 +94,26 @@ function requiredVectors(obj: Record<string, Json>, what: string): Json[] {
 }
 
 /**
- * 每条用例都要写依据的条款号（#213 复审定的格式，写法见 README）。
+ * 查一条用例的 `rule` 字段：至少一条、每条非空。写法见 README「条款号的写法」一节。
  *
- * 这里只查「非空」。条款号的具体写法要不要用正则卡死，得和 Go 端一起定 —— 现在两边都只查长度，
- * 单方面加正则的话，同一条牌例会在一端过、另一端挂（#213 开 PR 前审计的 S2）。
+ * 写错一个字的条款号比不写更糟 —— 看着像有依据，翻原文找不到，所以最终要用正则卡死写法。
+ * **但格式校验这里先不加**：#213 第三轮加过一版（`fixtures_test.go` 的 `ruleRe`），
+ * 它和 README 的写法对不上 —— README 的 `第四条 二、（一）4` 过不了，`第四条 二、（一）、4`
+ * 反而能过。jkt 在改，以 README 为准。等 #213 合入、格式定死之后，这里按**最终版的正则和
+ * 它的正反例表**一起加，和 Go 端逐条一致：牌例是两端共用的，一边有一边没有，同一条牌例
+ * 就会在一端过、在另一端挂（#213 开 PR 前审计的 S2 说的就是这个）。
  */
 function requiredRule(obj: Record<string, Json>, what: string): string[] {
-  const rule = asStringList(required(obj, "rule", what), `${what}.rule`);
-  if (rule.length === 0 || rule.some((item) => item.trim() === "")) {
-    throw new Error(`${what}：rule（条款号）不能为空，写法见 ${README}`);
+  const rules = asStringList(required(obj, "rule", what), `${what}.rule`);
+  if (rules.length === 0) {
+    throw new Error(`${what}：没写 rule（条款号），写法见 ${README}`);
   }
-  return rule;
+  for (const rule of rules) {
+    if (rule.trim() === "") {
+      throw new Error(`${what}：rule 里有空字符串 —— 要么写条款号，要么整条不要写`);
+    }
+  }
+  return rules;
 }
 
 export interface DeckFixture {

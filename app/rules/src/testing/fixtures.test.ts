@@ -66,16 +66,20 @@ describe("读取器：缺字段和类型不对要分开报", () => {
   });
 });
 
-describe("读取器：条款号（rule）不能空", () => {
-  it("空数组", () => {
-    expect(() => readDeck({ ...deckOk, rule: [] })).toThrow(/rule（条款号）不能为空/);
-    expect(() => readDeal({ vectors: [{ ...dealOk.vectors[0], rule: [] }] })).toThrow(/rule（条款号）不能为空/);
+describe("读取器：条款号（rule）", () => {
+  it("一条都没写", () => {
+    expect(() => readDeck({ ...deckOk, rule: [] })).toThrow(/没写 rule（条款号）/);
+    expect(() => readDeal({ vectors: [{ ...dealOk.vectors[0], rule: [] }] })).toThrow(/没写 rule（条款号）/);
   });
 
   it("数组里是空串或只有空白", () => {
-    expect(() => readDeck({ ...deckOk, rule: [""] })).toThrow(/rule（条款号）不能为空/);
-    expect(() => readPower({ vectors: [{ ...powerOk.vectors[0], rule: ["  "] }] })).toThrow(/rule（条款号）不能为空/);
+    expect(() => readDeck({ ...deckOk, rule: [""] })).toThrow(/rule 里有空字符串/);
+    expect(() => readPower({ vectors: [{ ...powerOk.vectors[0], rule: ["  "] }] })).toThrow(/rule 里有空字符串/);
   });
+
+  // 写法的格式校验（README 的四种写法 + 常见笔误的正反例表）和 Go 端一起加 ——
+  // #213 第三轮那版正则和 README 对不上（`第四条 二、（一）4` 过不了），正在改，
+  // 以 README 为准。格式没定死之前单方面加，会出现「同一条牌例一端过、另一端挂」。
 });
 
 // README：两端都必须拒绝未知字段 —— 所以加字段是破坏性改动，要先改 README、再两端一起改。
