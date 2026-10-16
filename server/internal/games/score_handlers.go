@@ -2,6 +2,8 @@ package games
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/dayuer/jkt-guandan/server/internal/scoring"
@@ -23,18 +25,14 @@ func (h *handler) startScore(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var body struct {
-		AFailLimit *int `json:"a_fail_limit"` // 3（默认）或 0（不回 2）
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	// 请求体没有参数（#205）。早先客户端带的 `a_fail_limit` 落在未知字段里，忽略不报错；
+	// 只有不是合法 JSON 才拒绝。空请求体也照收（客户端可以什么都不发）。
+	var body struct{}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "bad_request", "请求体不是合法的 JSON")
 		return
 	}
-	limit := scoring.DefaultAFailLimit
-	if body.AFailLimit != nil {
-		limit = *body.AFailLimit
-	}
-	sc, err := h.svc.StartScore(r.Context(), r.PathValue("code"), userID, limit, r.Header.Get("Idempotency-Key"))
+	sc, err := h.svc.StartScore(r.Context(), r.PathValue("code"), userID, r.Header.Get("Idempotency-Key"))
 	if err != nil {
 		writeGameError(w, err)
 		return

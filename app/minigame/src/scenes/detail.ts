@@ -3,7 +3,7 @@
 
 import type { App, Scene, Sheet } from "../core/app";
 import { C, Ctx, Scroller, card, circle, ease, ellipsize, fillRR, font, initial, measure, strokeRR, text, wrap } from "../core/ui";
-import { PAD, ROW_X0, banner, button, chevron, chip, chipRow, chipRowScrollFor, disclaimer, errorLine, field, icon, nav, sheetButtons, sheetHeader, simpleSheet, type BtnStyle } from "../core/widgets";
+import { PAD, ROW_X0, banner, button, chevron, chipRow, chipRowScrollFor, disclaimer, errorLine, field, icon, nav, sheetButtons, sheetHeader, simpleSheet, type BtnStyle } from "../core/widgets";
 import {
   ApiError, cancelGame, getGame, getScore, inviteError, inviteFriends, inviteSummary, joinGame, kickPlayer, leaveGame, newIdempotencyKey, startScore, subscribeRetry, updateGame,
   type GameDetail, type GamePatch, type Seat,
@@ -484,16 +484,16 @@ export class Detail implements Scene {
     return y + 76 + 16;
   }
 
-  /** S2：开始记分。分队由座位决定，只定一个约定：打 A 几次不过回到 2 */
+  /** S2：开始记分。分队由座位决定，没有可选的约定（#205：A 必打，没过一直打 A） */
   private openStartScore() {
     const app = this.app, d = this.detail!;
     const noLevel = d.game.kind === "no-level";
-    const st = { limit: 3, busy: false, err: "", key: newIdempotencyKey() };
+    const st = { busy: false, err: "", key: newIdempotencyKey() };
     const start = async () => {
       if (st.busy) return;
       st.busy = true; st.err = ""; app.redraw();
       try {
-        this.score = await startScore(this.code, st.limit, st.key);
+        this.score = await startScore(this.code, st.key);
         app.closeSheet(sheet);
         this.nav.score(this.code);
       } catch (err) {
@@ -536,12 +536,8 @@ export class Detail implements Scene {
           text(ctx, "不升级：只记每局哪队赢、双上几次", 20, cy + 10, font(14, "700"), C.ink);
           cy += 34;
         } else {
-          text(ctx, "打 A 几次不过，回到 2", 20, cy + 10, font(14, "700"), C.ink);
-          cy += 28;
-          let x = 20;
-          x += chip(app, ctx, "start-limit:3", x, cy, "3 次", st.limit === 3, () => { st.limit = 3; }) + 8;
-          chip(app, ctx, "start-limit:0", x, cy, "不回 2", st.limit === 0, () => { st.limit = 0; });
-          cy += 36 + 16;
+          text(ctx, "竞赛规则：A 必打，没过一直打 A", 20, cy + 10, font(14, "700"), C.ink);
+          cy += 42;
           text(ctx, ellipsize(ctx, "过 A：打本队的 A 时拿头游，搭档不是末游。过了这场结束", w - 40, font(12)), 20, cy, font(12), C.ink3);
           cy += 24;
         }

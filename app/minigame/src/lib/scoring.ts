@@ -13,8 +13,6 @@ export type Side = "red" | "black";
 
 export interface ScoreSettings {
   kind: "classic" | "no-level";
-  /** 打自己的 A 第几次没过回到 2；0 = 不回 2 */
-  a_fail_limit: number;
 }
 
 export interface TeamState {
@@ -54,7 +52,6 @@ export interface RoundResult extends RoundFact {
   passed_a: boolean;
   failed_a?: Team;
   a_fails?: number;
-  reset_to_2?: boolean;
 }
 
 export interface ScoreRound extends RoundResult {
@@ -170,15 +167,12 @@ export function apply(s: ScoreSettings, prev: ScoreState, rd: RoundFact): { roun
   }
   w.level = Math.min(w.level + rr.upgrade, A);
   if (playingOwnA) {
+    // 打自己的 A 没过：A 必打（2022 竞赛规则第二条 13），没过就一直打 A，级数不动，
+    // 只把次数记上去给界面展示。
     const p = st[st.playing as Side];
     p.a_fails++;
     rr.failed_a = st.playing;
     rr.a_fails = p.a_fails;
-    if (s.a_fail_limit > 0 && p.a_fails >= s.a_fail_limit) {
-      p.level = 2;
-      p.a_fails = 0;
-      rr.reset_to_2 = true;
-    }
   }
   rr.level_after = w.level;
   st.playing = winner;
@@ -268,15 +262,15 @@ export function previewText(s: ScoreSettings, st: ScoreState, fact: RoundFact, n
   const nextLv = levelName(next.playing_level);
   if (r.failed_a) {
     const ft = r.failed_a as Side, fn = TEAM_NAME[ft];
-    const count = failCountText(s, r);
+    const count = failCountText(r);
     if (ft === team) {
-      // 本队头游、搭档末游：没过，自己还在 A（或回到 2）
-      return { kind: "fail", team, main: r.reset_to_2 ? `没过 A · ${fn}回到 2` : `没过 A · ${fn}下一局还打 A`, sub: count };
+      // 本队头游、搭档末游：没过，自己还在 A（A 必打，下一局还打）。
+      return { kind: "fail", team, main: `没过 A · ${fn}下一局还打 A`, sub: count };
     }
     return {
       kind: "fail", team,
       main: `${fn}没过 A · ${tn} ${levelName(r.level_before)} → ${levelName(r.level_after)}`,
-      sub: r.reset_to_2 ? `${count} · 下一局打 ${nextLv}` : `${count}`,
+      sub: `${count} · 下一局打 ${nextLv}`,
     };
   }
   const up = r.level_after - r.level_before;
@@ -288,11 +282,9 @@ export function previewText(s: ScoreSettings, st: ScoreState, fact: RoundFact, n
   };
 }
 
-function failCountText(s: ScoreSettings, r: RoundResult): string {
-  const n = r.a_fails ?? 0;
-  if (r.reset_to_2) return `第 ${n} 次没过，按约定回到 2`;
-  if (s.a_fail_limit <= 0) return `已没过 ${n} 次（约定不回 2）`;
-  return `已没过 ${n} 次，第 ${s.a_fail_limit} 次再不过就回到 2`;
+/** 没过 A 的说明：A 必打，没过就一直打 A（2022 竞赛规则第二条 13），只报次数。 */
+function failCountText(r: RoundResult): string {
+  return `已没过 ${r.a_fails ?? 0} 次`;
 }
 
 /** 一局的结果写成一行：「红方 头游＋三游，9 → J」（S11 顶部条、S12 并排）。 */

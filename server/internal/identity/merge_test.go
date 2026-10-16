@@ -172,7 +172,7 @@ func TestMergeUsersMovesScoreRecords(t *testing.T) {
 	exec(`INSERT INTO users (id, nickname, created_at) VALUES ('u-primary', '老王', 100), ('u-other', '老王', 200)`)
 	exec(`INSERT INTO games (id, short_code, host_id, starts_at, area, venue, kind, status, created_at)
 	      VALUES ('g1', 'c1', 'u-primary', 0, 'SCBD', 'Pacific Place', 'classic', 'done', 0)`)
-	exec(`INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at) VALUES ('g1', 'classic', 3, 'u-other', 0)`)
+	exec(`INSERT INTO score_matches (game_id, kind, started_by, started_at) VALUES ('g1', 'classic', 'u-other', 0)`)
 	exec(`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at, edited_by, edited_at,
 	                                seat1_user, seat2_user, seat3_user, seat4_user)
 	      VALUES ('g1', 1, 1, 2, 'u-other', 0, 'u-other', 1, 'u-other', 'u-other', 'u-other', 'u-other')`)
