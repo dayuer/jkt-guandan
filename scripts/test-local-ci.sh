@@ -582,6 +582,180 @@ eq 'approve 对不上 head（复审后又推了）→ stale' 'stale' "$(approve_
 eq '没有任何 approve → none' 'none' "$(approve_vs_head '' 'bbb2222')"
 eq '没拿到 head → nohead（别硬判）' 'nohead' "$(approve_vs_head 'bbb2222' '')"
 
+echo '--- 失败时留下完整日志和现场（#202）---'
+
+# 文件名：sha 前 7 位 + context 短名 + 时间戳。短名是为了 status 描述塞得下
+#（GitHub 只有 140 字，而 macOS 的 $TMPDIR 本身就占 45 个字）。
+eq '日志名：sha 取前 7 位、context 去掉 local-ci/ 前缀' \
+  'ac6c141-docker-20261016-061500-777.log' \
+  "$(log_file_name ac6c14176552e526641a12de1d0ae66f8d6b1eb2 local-ci/docker 20261016-061500 777)"
+eq '日志名：别的 context 也一样' \
+  'ac6c141-test-20261016-061500-777.log' \
+  "$(log_file_name ac6c1417 local-ci/test 20261016-061500 777)"
+eq '日志名：sha 短于 7 位也不炸' 'abc-x-t-777.log' "$(log_file_name abc x t 777)"
+# 同一个 SHA、同一秒、同一个 context 跑两次不能撞名 —— 后跑的那次成功会把先跑那次
+# 失败日志删掉，等于白留。所以文件名末尾带 $$。
+eq '日志名：同一个 sha/秒/context，不同进程也不撞名' '1' \
+  "$([ "$(log_file_name abc1234 local-ci/docker t 111)" != "$(log_file_name abc1234 local-ci/docker t 222)" ] && echo 1 || echo 0)"
+eq '日志名：不传 pid 时默认用 $$' "$(log_file_name abc1234 local-ci/docker t)" "$(log_file_name abc1234 local-ci/docker t $$)"
+
+# 描述上限 140 个**字符**（GitHub 的规格）。中文一个字算一个，砍的是尾巴（路径在后）。
+#
+# ⚠️ 这些断言在 **`LC_ALL=C`** 下也必须过 —— agent / launchd / cron 起的 shell 常常就是
+# 那个环境。**断言自己也别用 `${#…}` 数字符**：那东西同样跟着 locale 走，会把「代码错了」
+# 和「断言错了」搅在一起。统一走 utf8_len。
+eq '描述：不超就不动' 'abc' "$(truncate_desc abc)"
+d140="$(printf 'x%.0s' $(seq 1 140))"
+eq '描述：刚好 140 不动' "$d140" "$(truncate_desc "$d140")"
+
+eq 'utf8_len：ASCII 就是字节数' '3' "$(utf8_len abc)"
+eq 'utf8_len：空串是 0' '0' "$(utf8_len '')"
+cn140="$(printf '环%.0s' $(seq 1 140))"
+eq 'utf8_len：140 个汉字就是 140（不跟 locale 变）' '140' "$(utf8_len "$cn140")"
+eq '描述：140 个汉字**不**被截（按字符算，不是按字节）' "$cn140" "$(truncate_desc "$cn140")"
+
+# 126 个字的一条：按字节算是 378、会被误截，按字符算不该动 —— 这就是 auditor 报的那条。
+d126="$(printf '环%.0s' $(seq 1 126))"
+eq '描述：126 个字不超上限、**不**该被截' "$d126" "$(truncate_desc "$d126")"
+
+cn141="$(printf '环%.0s' $(seq 1 141))"
+t141="$(truncate_desc "$cn141")"
+eq '描述：141 个汉字砍到 140 个字符' '140' "$(utf8_len "$t141")"
+case "$t141" in
+  *…) ok '描述：砍完以「…」结尾' ;;
+  *) bad '描述：砍完以「…」结尾' '以 … 结尾' "$t141" ;;
+esac
+# 关键：绝不能从半个字中间切开 —— 那样不是合法 UTF-8，GitHub 要么拒收要么存成乱码。
+if printf '%s' "$t141" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+  ok '描述：砍完仍是**合法 UTF-8**（没从半个字中间切）'
+else
+  bad '描述：砍完仍是**合法 UTF-8**（没从半个字中间切）' 'iconv 认它是合法 UTF-8' '不是'
+fi
+
+# 函数本身也不该跟着 locale 变：同一件事在 LC_ALL=C 下跑，结果必须一样。
+eq '描述：LC_ALL=C 下结果一样（#178 那一类）' '140' \
+  "$(LC_ALL=C bash -c ". '$ROOT/scripts/local-ci-lib.sh'; utf8_len \"\$(truncate_desc "$cn141")\"" 2>/dev/null)"
+eq '描述：LC_ALL=C 下 140 个汉字也不被截' "$cn140" \
+  "$(LC_ALL=C bash -c ". '$ROOT/scripts/local-ci-lib.sh'; truncate_desc \"$cn140\"" 2>/dev/null)"
+
+
+# macOS 的 $TMPDIR 结尾**自带一个 `/`**，不去掉路径就成 `/var/…/T//local-ci-logs`：
+# 打印难看，而且 status 描述只有 140 字，白占一格。真跑红的那次就是这么发现的。
+# ⚠️ 每条都要先把 LOCAL_CI_LOG_DIR 清空：它优先级更高，不清的话外面跑 CI 时
+# （`LOCAL_CI_LOG_DIR=… scripts/local-ci.sh`）这几条就会拿到那个目录、**在 CI 里红**
+# —— 直接跑本文件时它是空的，所以只在 CI 里露出来。第一版就是这么漏的。
+eq '日志目录：$TMPDIR 结尾的斜杠要去掉' '/x/local-ci-logs' "$(LOCAL_CI_LOG_DIR= TMPDIR=/x/ local_ci_log_dir)"
+eq '日志目录：LOCAL_CI_LOG_DIR 也去尾斜杠' '/y' "$(LOCAL_CI_LOG_DIR=/y/ TMPDIR= local_ci_log_dir)"
+eq '日志目录：正常路径不动' '/z/local-ci-logs' "$(LOCAL_CI_LOG_DIR= TMPDIR=/z local_ci_log_dir)"
+eq '日志目录：不设 TMPDIR 时退回 /tmp' '/tmp/local-ci-logs' "$(LOCAL_CI_LOG_DIR= TMPDIR= local_ci_log_dir)"
+
+# 保留最近 N 份。
+PL=$(mktemp -d)
+for i in 1 2 3 4 5; do printf 'x\n' > "$PL/a-$i.log"; done
+printf 'x\n' > "$PL/a-3.docker.txt"   # 第 3 份的现场，该跟着一起删
+prune_logs "$PL" 2
+eq '只留最近 2 份' '2' "$(ls "$PL"/*.log 2>/dev/null | wc -l | tr -d ' ')"
+eq '留下的确实是最新的两份' 'a-4.log a-5.log' "$(ls "$PL"/*.log 2>/dev/null | xargs -n1 basename | sort | tr '\n' ' ' | sed 's/ $//')"
+eq '被删那份的 .docker.txt 也一起删了' '0' "$(ls "$PL"/a-3.docker.txt 2>/dev/null | wc -l | tr -d ' ')"
+eq '空目录不炸' '0' "$(prune_logs "$PL/nope" 3; echo $?)"
+rm -rf "$PL"
+
+# 真跑一遍 capture_to_log：**成功不留文件、失败留文件**（这就是「用假的失败 context 自测」）。
+CL=$(mktemp -d)
+out=$(capture_to_log local-ci/test "$CL/ok.log" true 2>&1); rc=$?
+eq '跑成功 → 返回 0' '0' "$rc"
+eq '跑成功 → 不留日志文件' '0' "$(ls -A "$CL" | wc -l | tr -d ' ')"
+
+out=$(capture_to_log local-ci/test "$CL/bad.log" sh -c 'echo 出错了; exit 1' 2>&1); rc=$?
+eq '跑失败 → 原样带回退出码' '1' "$rc"
+eq '跑失败 → 留下完整日志' '1' "$(ls "$CL"/bad.log 2>/dev/null | wc -l | tr -d ' ')"
+case "$out" in
+  *"这一项的完整日志：$CL/bad.log"*) ok '跑失败 → 打印日志路径' ;;
+  *) bad '跑失败 → 打印日志路径' "含「这一项的完整日志：$CL/bad.log」" "$out" ;;
+esac
+case "$(cat "$CL/bad.log")" in
+  *"出错了"*) ok '日志里有完整输出' ;;
+  *) bad '日志里有完整输出' '含「出错了」' "$(cat "$CL/bad.log")" ;;
+esac
+eq '非 docker 的项不写现场文件' '0' "$(ls "$CL"/*.docker.txt 2>/dev/null | wc -l | tr -d ' ')"
+
+# docker 那一项失败时另外写一份现场（ps -a / volume ls 的快照 + 最后 200 行）。
+FD=$(mktemp -d)
+cat > "$FD/docker" <<'DK'
+#!/bin/sh
+case "$1 $2" in
+  "ps -a")     printf '  guandan-deploytest-1  Up 2 minutes  127.0.0.1:28480->8080/tcp\n  other-container  Up  1 minute\n' ;;
+  "volume ls") printf '  guandan-deploytest-1-data\n  other-volume\n' ;;
+esac
+DK
+chmod +x "$FD/docker"
+out=$(PATH="$FD:$PATH" capture_to_log local-ci/docker "$CL/d.log" sh -c 'echo 挂了; exit 1' 2>&1); rc=$?
+eq 'docker 失败 → 退出码照旧' '1' "$rc"
+eq 'docker 失败 → 写了现场文件' '1' "$(ls "$CL"/d.docker.txt 2>/dev/null | wc -l | tr -d ' ')"
+scene="$(cat "$CL/d.docker.txt" 2>/dev/null)"
+case "$scene" in
+  *guandan-deploytest-1*) ok '现场里有本次运行的容器' ;;
+  *) bad '现场里有本次运行的容器' '含 guandan-deploytest-1' "$scene" ;;
+esac
+case "$scene" in
+  *other-container*) bad '现场里不该有别人的容器（只列 deploytest/drill/smoke）' '不含 other-container' "$scene" ;;
+  *) ok '现场里不该有别人的容器（只列 deploytest/drill/smoke）' ;;
+esac
+case "$scene" in
+  *"最后 200 行"*) ok '现场里附了日志尾部' ;;
+  *) bad '现场里附了日志尾部' '含「最后 200 行」' "$scene" ;;
+esac
+case "$out" in
+  *"docker 现场：$CL/d.docker.txt"*) ok 'docker 失败 → 也打印现场路径' ;;
+  *) bad 'docker 失败 → 也打印现场路径' "含「docker 现场：$CL/d.docker.txt」" "$out" ;;
+esac
+# ⚠️ **经过 `run_context` 的真调用方式**（#203 复审的阻塞）：`capture_to_log` 在子壳里跑命令，
+# `run_context` 设的 `ENV_REASON` 带不出来，描述会退回成通用的「环境未就绪：<命令>」——
+# 「拉镜像失败（网络或镜像源）」那句白写了。
+# 前面那些 `true` / `sh -c 'exit 1'` 都**不经过 run_context**，所以一条都没抓到。
+# 这又是「测试的调用方式和真实调用方式不一致」。
+FD2=$(mktemp -d)
+cat > "$FD2/docker" <<'DK'
+#!/bin/sh
+case "$1" in
+  info)  exit 0 ;;                                    # 前置检查：守护进程在
+  build) printf 'ERROR: failed to authorize: dial tcp: lookup auth.docker.io: i/o timeout\n' >&2; exit 1 ;;
+  rmi)   exit 0 ;;
+esac
+exit 0
+DK
+chmod +x "$FD2/docker"
+# ⚠️ **不能写成 `out=$(… capture_to_log …)`**：命令替换本身就是子壳，`ENV_REASON`
+# 一样带不出来 —— 那样这条会**假红**（代码是对的）。重定向到文件再看。
+PATH="$FD2:$PATH" DOCKER_BUILD_RETRY_BASE=0 capture_to_log local-ci/docker "$CL/ctx.log" run_context local-ci/docker > "$CL/ctxout.txt" 2>&1
+rc=$?
+out="$(cat "$CL/ctxout.txt")"
+eq '真调用方式：拉镜像网络问题 → 2（环境未就绪）' '2' "$rc"
+eq '真调用方式：原因是「拉镜像失败」（改用文件带出来，不再被丢在子壳里）' \
+  '拉镜像失败（网络或镜像源）' "$ENV_REASON"
+desc="$(env_not_ready_desc "$ENV_REASON" 'docker build + scripts/container-smoke.sh')$(log_note "$CL/ctx.log")"
+case "$desc" in
+  *"拉镜像失败"*) ok '真调用方式：拼出来的描述里有「拉镜像失败」' ;;
+  *) bad '真调用方式：拼出来的描述里有「拉镜像失败」' '含「拉镜像失败」' "$desc" ;;
+esac
+eq '真调用方式：docker 现场也生成了' '1' "$(ls "$CL"/ctx.docker.txt 2>/dev/null | wc -l | tr -d ' ')"
+case "$(cat "$CL/ctx.docker.txt" 2>/dev/null)" in
+  *"自己清理之后"*) ok '现场里注明了快照是清理之后拍的' ;;
+  *) bad '现场里注明了快照是清理之后拍的' '含「自己清理之后」' "$(cat "$CL/ctx.docker.txt" 2>/dev/null)" ;;
+esac
+rm -rf "$FD2"
+
+# 日志文件权限：别人不该读到（Linux 上没 TMPDIR 时默认落在共享的 /tmp）。
+eq '日志文件权限是 600（别人读不到）' 'rw-------' "$(ls -l "$CL/ctx.log" 2>/dev/null | cut -c2-10)"
+
+rm -rf "$CL" "$FD"
+
+# status 描述里那句「日志在 …」：文件在才有，成功时日志已删所以是空串。
+LT=$(mktemp)
+eq '描述：日志还在就写上路径' "；日志 $LT" "$(log_note "$LT")"
+eq '描述：日志不在了就是空串' '' "$(log_note "${LT}.nope")"
+eq '描述：没传也是空串' '' "$(log_note '')"
+rm -f "$LT"
 echo '--- §4.2 docker 拉镜像失败：环境未就绪 vs 代码红（#193）---'
 
 # 判定本身用小函数测：日志是**真的 docker/buildkit 报错原文**。

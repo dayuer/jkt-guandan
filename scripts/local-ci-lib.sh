@@ -399,6 +399,8 @@ docker_build_retrying() {
 run_context() {
   local ctx="${1:-}"
   ENV_REASON='' # 上一次跑留下的原因不能带到这一次（#196 复审意见）
+  # 跑在 capture_to_log 的子壳里时，原因要靠这个文件带出去 —— 先把上一轮的清掉。
+  [ -n "${LOCAL_CI_ENV_REASON_FILE:-}" ] && : > "$LOCAL_CI_ENV_REASON_FILE"
   case "$ctx" in
     local-ci/test|local-ci/vuln|local-ci/h5-audit|local-ci/minigame|local-ci/nginx|local-ci/docker|local-ci/e2e|local-ci/meta)
       context_ready "$ctx" || return 2 ;;
@@ -426,7 +428,7 @@ run_context() {
       rc=$?
       rm -f "$log"
       if [ "$rc" -ne 0 ]; then
-        [ "$rc" -eq 2 ] && ENV_REASON='拉镜像失败（网络或镜像源）'
+        [ "$rc" -eq 2 ] && set_env_reason '拉镜像失败（网络或镜像源）'
         docker rmi "$image" >/dev/null 2>&1
         return "$rc"
       fi
@@ -445,7 +447,7 @@ run_context() {
       scripts/test-deploy.sh "$image" || rc=$?   # `|| rc=$?`：不依赖调用方有没有开 `set -e`
       rc="$(docker_step_rc "$rc")"
       if [ "$rc" -ne 0 ]; then
-        [ "$rc" -eq 2 ] && ENV_REASON='拉镜像失败（网络或镜像源）'
+        [ "$rc" -eq 2 ] && set_env_reason '拉镜像失败（网络或镜像源）'
         docker rmi "$image" >/dev/null 2>&1
         return "$rc"
       fi
@@ -482,6 +484,160 @@ run_context() {
 dirty_tree_action() {
   [ -z "$1" ] && { echo ok; return 0; }
   if [ "${2:-0}" -eq 1 ]; then echo refuse; else echo warn; fi
+}
+
+# ---------------------------------------------------------------------------
+# 失败时把完整日志和现场留下来（#202）
+# ---------------------------------------------------------------------------
+# 目的：偶发红要能**当场查清楚**，而不是只能重跑碰运气。#196 上就出过一次查不出原因的
+# `local-ci/docker` 红（rc=1）—— 当时只看了 tail，完整输出没了；之后单独跑 3 次、
+# 完整 CI 1 次全过，无从下手。
+
+# 日志放哪：默认 `$TMPDIR/local-ci-logs`，跨运行留着（不是用完就删的临时文件）。
+# LOCAL_CI_LOG_DIR 可覆盖（自测里指到临时目录）。
+# ⚠️ 斜杠要收拾：macOS 的 `$TMPDIR` 结尾**自带一个 `/`**，直接拼就成了
+# `/var/…/T//local-ci-logs`。第一版只去了**结尾**的斜杠，没用 —— 双斜杠在**中间**。
+# 现在把连续的斜杠收成一个，再去结尾的（打印好看，status 描述只有 140 字也省一格）。
+local_ci_log_dir() {
+  local d="${LOCAL_CI_LOG_DIR:-${TMPDIR:-/tmp}/local-ci-logs}"
+  printf '%s' "$d" | sed -e 's|//*|/|g' -e 's|/$||'
+}
+
+# 保留最近几份。LOCAL_CI_KEEP_LOGS 可覆盖。
+local_ci_keep_logs() { printf '%s' "${LOCAL_CI_KEEP_LOGS:-20}"; }
+
+# 日志文件名：`<sha 前 7 位>-<context 短名>-<时间戳>.log`。
+# 短名（去掉 `local-ci/` 前缀）是为了 status 描述塞得下 —— GitHub 那边只有 140 字，
+# 而 macOS 的 $TMPDIR 本身就占 45 个字左右。
+# ⚠️ 末尾那个 `$$` 不能省：同一个 SHA、**同一秒**、同一个 context 跑两次（两个会话同时跑
+# 就很容易撞）会生成同名文件 —— 后跑的那次成功、把先跑那次的失败日志删掉，等于白留。
+log_file_name() { # $1 = sha  $2 = context  $3 = 时间戳（如 20261016-061500）  [$4 = pid]
+  local short="${2:-}"
+  printf '%s-%s-%s-%s.log' "$(printf '%s' "${1:-}" | cut -c1-7)" "${short#local-ci/}" "${3:-}" "${4:-$$}"
+}
+
+# 只留最近 N 份（同一次运行的 `.docker.txt` 跟着一起删）。
+prune_logs() { # $1 = 目录  $2 = 保留几份
+  local dir="${1:-}" keep="${2:-20}" f i=0
+  [ -d "$dir" ] || return 0
+  # ls -1t：新的在前。日志名里没有空格，所以不用管分词。
+  for f in $(ls -1t "$dir"/*.log 2>/dev/null); do
+    [ -e "$f" ] || continue
+    i=$((i + 1))
+    [ "$i" -le "$keep" ] && continue
+    rm -f "$f" "${f%.log}.docker.txt"
+  done
+}
+
+# docker 那项失败时的现场：**只列和这次运行有关的**容器和卷（deploytest / drill / smoke），
+# 免得把一整台机器上别人的东西都抄进日志里。
+docker_scene() {
+  printf '===== docker 现场 =====\n'
+  printf '（这份快照是在失败脚本**自己清理之后**拍的，所以本次运行的容器/卷多半已经没了 ——\n'
+  printf ' 这里能看到的主要是**别的会话**的资源，用来判断有没有互相干扰。）\n'
+  printf '$ docker ps -a （只列 deploytest / drill / smoke）\n'
+  docker ps -a --format '  {{.Names}}  {{.Status}}  {{.Ports}}' 2>&1 |
+    grep -E 'deploytest|drill|smoke' || printf '  （没有）\n'
+  printf '$ docker volume ls （同上）\n'
+  docker volume ls --format '  {{.Name}}' 2>&1 |
+    grep -E 'deploytest|drill|smoke' || printf '  （没有）\n'
+}
+
+# 跑一条命令，输出**同时**进终端和日志文件。
+#   $1 = context 名（决定要不要附 docker 现场）  $2 = 日志文件；其余 = 要跑的命令
+# 返回那条命令的退出码。
+# 成功 → **把日志删掉**（不留垃圾）；失败 → 留下日志、打印路径，docker 那项另外写一份现场。
+capture_to_log() {
+  local ctx="$1" log="$2"; shift 2
+  local rc rcf reasonf scene
+  rcf="$(mktemp "${TMPDIR:-/tmp}/local-ci-rc.XXXXXX")"
+  reasonf="$(mktemp "${TMPDIR:-/tmp}/local-ci-reason.XXXXXX")"
+  : > "$reasonf"
+  # 先把日志文件建出来把权限定死（`tee` 沿用**已存在**文件的模式）。Linux 上没设 TMPDIR 时
+  # 默认会落到共享的 `/tmp/local-ci-logs` —— 里面有容器名、端口、路径，别人不该读到。
+  : > "$log" 2>/dev/null && chmod 600 "$log" 2>/dev/null
+  # 输出要实时可见（tee），退出码用「子壳写进文件」拿 —— `PIPESTATUS` 是 bash 专有，
+  # 而这个 lib 也被 `#!/bin/sh` 的 test-deploy.sh source。
+  # 子壳里 `|| rc=$?` 是必须的：调用方开了 `set -e` 时裸的失败命令会让子壳当场退出。
+  #
+  # ⚠️ **`ENV_REASON` 也得这么传**：命令跑在子壳里，`run_context` 那边设的变量带不出来，
+  # 描述就会退回成通用的「环境未就绪：<命令>」，「拉镜像失败（网络或镜像源）」这句白写了。
+  # 用 LOCAL_CI_ENV_REASON_FILE 指个文件给它写（#203 复审）。
+  ( rc=0; LOCAL_CI_ENV_REASON_FILE="$reasonf" "$@" 2>&1 || rc=$?; printf '%s' "$rc" > "$rcf" ) | tee "$log"
+  rc="$(cat "$rcf")"
+  ENV_REASON="$(cat "$reasonf" 2>/dev/null)"
+  rm -f "$rcf" "$reasonf"
+  if [ "$rc" -eq 0 ]; then
+    rm -f "$log"
+    return 0
+  fi
+  if [ "$ctx" = local-ci/docker ]; then
+    scene="${log%.log}.docker.txt"
+    { docker_scene; printf '\n===== 这一项日志的最后 200 行 =====\n'; tail -n 200 "$log"; } >"$scene" 2>&1
+    chmod 600 "$scene" 2>/dev/null || true
+    printf '\ndocker 现场：%s\n' "$scene" >&2
+  fi
+  printf '\n这一项的完整日志：%s\n' "$log" >&2
+  return "$rc"
+}
+
+# `run_context` 里设「环境未就绪的具体原因」。**同时写进文件**：它现在跑在 capture_to_log
+# 的子壳里，光设变量带不出来（#203 复审）。
+set_env_reason() {
+  ENV_REASON="$1"
+  [ -n "${LOCAL_CI_ENV_REASON_FILE:-}" ] && printf '%s' "$1" > "$LOCAL_CI_ENV_REASON_FILE"
+  return 0
+}
+
+# --- UTF-8 安全的长度和截断（**不依赖 locale**）--------------------------------
+# 为什么不能用 bash 的 `${#s}` / `${s:0:n}`、也不能用 `cut -c`：它们都跟着 `LC_CTYPE` 走。
+# agent / launchd / cron 起的 shell 常常是 `LC_CTYPE=C`（auditor 那次 `LANG` 就是空的），
+# 那时它们按**字节**算 —— 三个后果都真出过：
+#   · 140 个汉字被当成 420，白白截断；
+#   · 从第 139 **字节**切开，正好切在一个字中间，切出来**不是合法 UTF-8**，GitHub 要么拒收
+#     要么存成乱码；
+#   · 本来不用截的（126 个字）也被截了。
+# 这和 #178 是同一类毛病：**脚本的行为不该跟着 locale 变**。
+#
+# 做法是按 UTF-8 自己的规则数：后续字节落在 0x80–0xBF，其余字节各是一个字符的开头。
+# `LC_ALL=C` 强制 `od` / `awk` 按字节干活，结果就和环境无关了。
+
+# 回显 $1 有几个 UTF-8 字符。
+utf8_len() {
+  printf '%s' "${1:-}" | LC_ALL=C od -An -tu1 -v |
+    LC_ALL=C awk '{ for (i = 1; i <= NF; i++) if ($i < 128 || $i > 191) n++ } END { print n + 0 }'
+}
+
+# 回显 $1 的前 $2 个 UTF-8 字符。切在**字符边界**上，绝不会把一个字劈成两半。
+utf8_head() {
+  printf '%s' "${1:-}" | LC_ALL=C od -An -tu1 -v |
+    LC_ALL=C awk -v lim="${2:-0}" '
+      { for (i = 1; i <= NF; i++) b[++n] = $i }
+      END {
+        cut = n; kept = 0
+        for (i = 1; i <= n; i++) {
+          if (b[i] < 128 || b[i] > 191) {     # 一个字符的首字节
+            if (kept == lim) { cut = i - 1; break }
+            kept++
+          }
+        }
+        for (i = 1; i <= cut; i++) printf "%c", b[i]
+      }'
+}
+
+# status 描述最长 140 个**字符**（GitHub 的上限是字符数，不是字节数）。
+# 超了就砍尾巴加「…」—— 结论和原因在前、路径在后，所以砍掉的正好是路径那截。
+truncate_desc() {
+  local s="${1:-}"
+  [ "$(utf8_len "$s")" -le 140 ] && { printf '%s' "$s"; return 0; }
+  printf '%s…' "$(utf8_head "$s" 139)"
+}
+
+# status 描述里那句「日志在 <路径>」。文件不在了就是空串（成功时日志会被删掉）。
+log_note() {
+  if [ -n "${1:-}" ] && [ -f "${1:-}" ]; then
+    printf '；日志 %s' "$1"
+  fi
 }
 
 # ---------------------------------------------------------------------------

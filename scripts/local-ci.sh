@@ -208,29 +208,53 @@ fi
 # 但描述写清楚，让人一眼看出「去装依赖」而不是去翻代码。
 # 码 → state 的映射在 status_state_for_rc 里（lib，带自测）：#193 修的「拉镜像失败要发 error
 # 而不是 failure」落地就是这条映射，写在 if 里的话测试碰不到。
+#
+# 失败时把完整日志留下来（#202）：只留失败的，成功就把文件删掉 —— 不然目录很快堆满。
+LOGDIR="$(local_ci_log_dir)"
+# 目录也要收紧：Linux 上没设 TMPDIR 时默认是共享的 `/tmp/local-ci-logs`。
+if (umask 077; mkdir -p "$LOGDIR") 2>/dev/null; then
+  chmod 700 "$LOGDIR" 2>/dev/null || true
+else
+  printf '建不了日志目录 %s，这一轮不留日志。\n' "$LOGDIR" >&2
+  LOGDIR=''
+fi
+FAILLOGS=''
 for ctx in $CONTEXTS; do
   printf '\n=== %s ===\n' "$ctx"
   printf '$ %s\n' "$(context_command "$ctx")"
-  run_context "$ctx"; rc=$?
+  LOGFILE=''
+  [ -n "$LOGDIR" ] && LOGFILE="$LOGDIR/$(log_file_name "$HEAD_SHA" "$ctx" "$(date +%Y%m%d-%H%M%S)")"
+  if [ -n "$LOGFILE" ]; then
+    capture_to_log "$ctx" "$LOGFILE" run_context "$ctx"; rc=$?
+  else
+    run_context "$ctx"; rc=$?
+  fi
   if [ "$rc" -eq 0 ]; then
     printf '%s 通过。\n' "$ctx"
-    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" "$(context_command "$ctx" | cut -c1-135)"
+    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" "$(truncate_desc "$(context_command "$ctx")")"
   elif [ "$rc" -eq 2 ]; then
     printf '%s 环境未就绪（不是代码问题，看上面的说明）。\n' "$ctx"
     # 具体原因优先（比如「拉镜像失败（网络或镜像源）」）—— 比「跑了什么命令」有用得多。
     post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" \
-      "$(env_not_ready_desc "$ENV_REASON" "$(context_command "$ctx")")"
+      "$(truncate_desc "$(env_not_ready_desc "$ENV_REASON" "$(context_command "$ctx")")$(log_note "$LOGFILE")")"
     ENVNOTREADY="$ENVNOTREADY $ctx"
   elif [ "$rc" -eq 3 ]; then
     printf '%s 脚本自身出错（不是环境、也不是代码）。\n' "$ctx"
-    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" '脚本自身出错：未知 context 或与 context_command 漂移'
+    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" \
+      "$(truncate_desc "脚本自身出错：未知 context 或与 context_command 漂移$(log_note "$LOGFILE")")"
     SCRIPTBUG="$SCRIPTBUG $ctx"
   else
     printf '%s 失败。\n' "$ctx"
-    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" '见终端输出'
+    post_status "$HEAD_SHA" "$ctx" "$(status_state_for_rc "$rc")" "$(truncate_desc "见终端输出$(log_note "$LOGFILE")")"
     FAILED="$FAILED $ctx"
   fi
+  # 失败（含环境未就绪、脚本自身出错）的日志才留着，并记下来在汇总里再报一次路径。
+  if [ "$rc" -ne 0 ] && [ -f "${LOGFILE:-}" ]; then
+    FAILLOGS="$FAILLOGS
+  $ctx  $LOGFILE"
+  fi
 done
+[ -n "$LOGDIR" ] && prune_logs "$LOGDIR" "$(local_ci_keep_logs)"
 
 # --- 收尾复核 status（#187）--------------------------------------------------
 # 网络抖动时某条 POST 可能用尽重试还是失败，那个 context 就停在 `pending` 上 —— 而
@@ -259,5 +283,11 @@ else
   [ -n "$FAILED" ]      && printf '红（代码）：%s\n' "$FAILED"
   [ -n "$ENVNOTREADY" ] && printf '环境未就绪：%s\n' "$ENVNOTREADY"
   [ -n "$SCRIPTBUG" ]   && printf '脚本自身出错：%s\n' "$SCRIPTBUG"
+fi
+# 失败项的完整日志在哪儿（#202）。放在最后再报一次，是为了不用往上翻就能找到 ——
+# 上面每一项失败时也各打了一次。docker 那项还会多一份 `.docker.txt` 现场。
+if [ -n "$FAILLOGS" ]; then
+  printf '\n失败的完整日志（另存一份，下次偶发红能直接查）：%s\n' "$FAILLOGS"
+  printf '日志目录：%s（只留最近 %s 份）\n' "$LOGDIR" "$(local_ci_keep_logs)"
 fi
 exit "$CODE"
