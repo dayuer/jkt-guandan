@@ -169,7 +169,16 @@ export class KeyboardSession {
       this.height = r?.height || 0;
       if (!this.height) {
         this.open = false;
-        // 高度归零 = 键盘确实收起了。文字每次输入就已经给过，这里不用再给。
+        // 已经收干净了（complete 先到、close() 跑过：没有字段在编辑、没人排队、也不在收尾中）：
+        // 这条高度归零只是同一件事的另一个通知，什么都别做。
+        //
+        // ⚠️ 以前这里一律进「收尾中」并挂 500ms 计时器 —— 于是正常收起（complete 先到、
+        // 高度后到）之后，用户在 0.5 秒内点下一个字段要多等一个计时器（#209 复审的不阻塞建议）。
+        if (!this.editing && !this.waiting && !this.closing) {
+          host.redraw();
+          return;
+        }
+        // 还有人在等：高度归零 = 键盘确实收起了。文字每次输入就已经给过，这里不用再给。
         // 但它的 complete 可能还在路上：先记成「正在收尾」，这样这之后点别的字段会**排队**
         // 等它（复审的 P1：高度先归零、马上点另一个字段、旧 complete 才到）。
         // 也不清 staleInFlight —— 兜底放走过的话，那个迟到的 complete 还欠着。
