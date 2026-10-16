@@ -15,7 +15,7 @@ import (
 )
 
 // 牌例在仓库根的 testdata/rules/（#204 第 1 步）：Go 和客户端 TS 版（#87）读同一批文件，
-// 格式见那里的 README.md。
+// 格式见那里的 README.md（那份文档是两端的接口说明）。
 //
 // 改输入之后跑 `go test ./server/internal/rules/ -update` 重新生成 deal.json 的 hands，
 // 再逐条核对改了什么 —— 生成器只会照着现在的实现写，看不出规则错。
