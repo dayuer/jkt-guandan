@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -224,20 +226,123 @@ func TestGamesPublisherForwardsToHub(t *testing.T) {
 	defer c.CloseNow()
 	_, _, _ = c.Read(ctx) // hello
 	_ = c.Write(ctx, websocket.MessageText, []byte(`{"op":"sub","topics":["game:8K2"]}`))
-	_, _, _ = c.Read(ctx) // subscribed
+	if err := awaitSubscribed(ctx, c); err != nil {
+		t.Fatal(err)
+	}
 
 	gamesPublisher{hub}.Publish(games.Event{Topic: games.GameTopic("8K2"), Type: games.EventSeatTaken, V: 7, Data: map[string]int{"missing": 1}})
-	var data []byte
-	for {
-		_, data, err = c.Read(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(data), `"type":"presence"`) { // 订阅牌局后的在看人数（#46），跟这里无关
-			break
-		}
+	data, err := nextEvent(ctx, c)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if got := string(data); got != `{"topic":"game:8K2","type":"seat.taken","v":7,"data":{"missing":1}}` {
 		t.Fatalf("收到 %s", got)
 	}
+}
+
+// 订阅牌局后，「已订阅」和「在看人数」（presence，#46）谁先到不固定：Hub 在 subscribe 里另起
+// goroutine 发 presence，conn 随后才把 subscribed 放进发送队列，负载高时 presence 会抢在前面。
+// 原来按「hello → subscribed」盲读一条，presence 先到时就把它当成了 subscribed，后面再把真正的
+// subscribed 当成事件，测试偶发红（#232）。下面两个函数按类型认帧，不依赖先后。
+
+// wsReader 是读帧要用的那一个方法；真连接和下面测试里的剧本都满足它。
+type wsReader interface {
+	Read(context.Context) (websocket.MessageType, []byte, error)
+}
+
+func frameType(data []byte) string {
+	var m struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(data, &m)
+	return m.Type
+}
+
+// awaitSubscribed 一直读到 subscribed 为止，中间的 presence 一并丢掉。
+func awaitSubscribed(ctx context.Context, r wsReader) error {
+	for {
+		_, data, err := r.Read(ctx)
+		if err != nil {
+			return err
+		}
+		if frameType(data) == "subscribed" {
+			return nil
+		}
+	}
+}
+
+// nextEvent 跳过连接层的帧（hello、subscribed、presence），返回下一条业务事件。
+func nextEvent(ctx context.Context, r wsReader) ([]byte, error) {
+	for {
+		_, data, err := r.Read(ctx)
+		if err != nil {
+			return nil, err
+		}
+		switch frameType(data) {
+		case "hello", "subscribed", realtime.EventPresence:
+			continue
+		}
+		return data, nil
+	}
+}
+
+// scriptedReader 按给定顺序吐帧，读完返回 io.EOF。用来确定性地造出 presence 抢先的那种顺序 ——
+// 真连接上它只在负载高时偶尔出现，单独跑几百次也撞不上（#232）。
+type scriptedReader [][]byte
+
+func (s *scriptedReader) Read(context.Context) (websocket.MessageType, []byte, error) {
+	if len(*s) == 0 {
+		return 0, nil, io.EOF
+	}
+	data := (*s)[0]
+	*s = (*s)[1:]
+	return websocket.MessageText, data, nil
+}
+
+func TestSubscribeReadsTolerateFrameOrder(t *testing.T) {
+	sub := []byte(`{"type":"subscribed","topics":["game:8K2"]}`)
+	pres := []byte(`{"topic":"game:8K2","type":"presence","data":{"viewers":1}}`)
+	ev := []byte(`{"topic":"game:8K2","type":"seat.taken","v":7}`)
+	for name, frames := range map[string][][]byte{
+		"subscribed 先到":                  {sub, pres, ev},
+		"presence 抢在 subscribed 前（#232）": {pres, sub, ev},
+		"没有 presence":                    {sub, ev},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := scriptedReader(frames)
+			ctx := context.Background()
+			if err := awaitSubscribed(ctx, &r); err != nil {
+				t.Fatalf("等 subscribed：%v", err)
+			}
+			// awaitSubscribed 必须正好停在 subscribed 之后：presence 抢先时不能只读一条就收手。
+			if want := len(frames) - 1 - indexOf(frames, sub); len(r) != want {
+				t.Fatalf("awaitSubscribed 之后还剩 %d 帧，应该剩 %d 帧（没读到 subscribed 就停了）", len(r), want)
+			}
+			got, err := nextEvent(ctx, &r)
+			if err != nil {
+				t.Fatalf("等事件：%v", err)
+			}
+			if string(got) != string(ev) {
+				t.Fatalf("拿到的不是事件：%s", got)
+			}
+		})
+	}
+	// nextEvent 自己也要跳过 subscribed：没先等 subscribed（或者等的时候被 presence 打断）时，
+	// 不能把 subscribed 当成事件交出去。
+	t.Run("nextEvent 跳过 subscribed 和 presence", func(t *testing.T) {
+		r := scriptedReader{pres, sub, ev}
+		got, err := nextEvent(context.Background(), &r)
+		if err != nil || string(got) != string(ev) {
+			t.Fatalf("拿到 %s（err=%v），应该是事件", got, err)
+		}
+	})
+}
+
+func indexOf(frames [][]byte, f []byte) int {
+	for i, x := range frames {
+		if string(x) == string(f) {
+			return i
+		}
+	}
+	return -1
 }
