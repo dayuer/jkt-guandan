@@ -29,30 +29,44 @@ export class Me implements Scene {
 
   onEnter() { this.refresh(); }
   onResume() { this.refresh(); }
+  /**
+   * 每次 refresh() 加一。请求回来时代数变了就丢掉结果（auditor-230）：
+   * 不然「看更早的」读到一半页面刷新了，旧的下一页会拼到新列表后面。
+   */
+  private gen = 0;
+  /** 没有身份 / 凭证失效：要打的、历史、翻页状态全清掉，不留「历史」标题和「看更早的」。 */
+  private clear() {
+    this.upcoming = []; this.history = []; this.hasMore = false; this.cursor = undefined;
+  }
   private refresh() {
-    if (!currentUser()) { this.upcoming = []; this.history = []; this.hasMore = false; this.cursor = undefined; return; }
+    const gen = ++this.gen;
+    this.loadingMore = false;
+    if (!currentUser()) { this.clear(); return; }
     Promise.all([listMyGames(), listMyHistory()]).then(([up, h]) => {
+      if (gen !== this.gen) return;
       this.upcoming = up; this.history = h.games; this.hasMore = h.has_more; this.error = "";
       this.cursor = h.games[h.games.length - 1];
     }).catch((err) => {
-      if (err instanceof ApiError && err.status === 401) { this.upcoming = []; this.history = []; return; }
+      if (gen !== this.gen) return;
+      if (err instanceof ApiError && err.status === 401) { this.clear(); return; }
       this.error = "读不到我的牌局，稍后再试";
       this.upcoming ??= []; this.history ??= [];
     }).finally(() => this.app.redraw());
   }
 
   private async more() {
-    const last = this.cursor;
+    const last = this.cursor, gen = this.gen;
     if (!last || this.loadingMore) return;
     this.loadingMore = true; this.app.redraw();
     try {
       const page = await listMyHistory(last);
+      if (gen !== this.gen) return;
       const seen = new Set((this.history ?? []).map((g) => g.short_code));
       this.history = [...(this.history ?? []), ...page.games.filter((g) => !seen.has(g.short_code))];
       this.hasMore = page.has_more;
       if (page.games.length) this.cursor = page.games[page.games.length - 1];
-    } catch { this.app.toast("没读到更早的，稍后再试"); }
-    finally { this.loadingMore = false; this.app.redraw(); }
+    } catch { if (gen === this.gen) this.app.toast("没读到更早的，稍后再试"); }
+    finally { if (gen === this.gen) this.loadingMore = false; this.app.redraw(); }
   }
 
   /** 从我自己的历史里删掉：先确认，删成功了再从列表里拿掉。 */
