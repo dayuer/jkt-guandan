@@ -17,7 +17,7 @@
 // **不读时间、不读随机数**：同样的初始局面和同样的动作序列，一定走到同样的局面（复盘、断线恢复）。
 //
 // 和服务端的 server/internal/rules/play.go 是同一套语义，两边对着改。
-import { ACE, TWO, type Card, type Rank } from "./card";
+import { ACE, TWO, cardKey, type Card, type Rank } from "./card";
 import { compare, pick, recognize, type Combo, type ComboType } from "./combo";
 // 桌子是四家 —— 座位数只定义一处（发牌那边也是同一个常量），别各写各的。
 import { SEATS } from "./deal";
@@ -172,9 +172,19 @@ export class Game {
     this.checkTurn(seat);
     if (cards.length === 0) throw new RuleError("no-cards", "出牌：没有牌（不出请过牌）");
 
-    const held = new Set(this.hands[seat - 1].map((card) => card.id));
+    // ⚠️ 手里按 **ID → 那张牌** 存，不是「这个 ID 在不在」：`Card.id` 在 TS 里是一个普通字段，
+    // 不是从 rank/suit 推出来的，所以 `{ id: 手里那张 ♠3 的 id, rank: A, suit: ♠, deck: 0 }`
+    // 这种牌是能写出来的。只核 ID 就会收下它 —— `recognize` 按 rank/suit 认出一张 A，
+    // 拿掉的时候却按 ID 把 ♠3 从手里删掉：**打出去的和手里少掉的不是同一张牌**，
+    // 存出来的存档自己都读不回。所以牌的**每个字段**都得和手里那张对得上。
+    // （Go 端 `server/internal/rules/play.go` 是同一处、同一修法，那边比整个 Card 结构体。）
+    const held = new Map(this.hands[seat - 1].map((card): [number, Card] => [card.id, card]));
     for (const card of cards) {
-      if (!held.has(card.id)) throw new RuleError("cards-not-in-hand", `出牌：${seat} 号座手里没有这张牌（ID ${card.id}）`);
+      const got = held.get(card.id);
+      // 先按 ID 找到手里那一张（`got.id === card.id` 就已经成立），再比这张牌的字段。
+      if (!got || cardKey(got) !== cardKey(card)) {
+        throw new RuleError("cards-not-in-hand", `出牌：${seat} 号座手里没有这张牌（${cardKey(card)}，ID ${card.id}）`);
+      }
     }
 
     const combos = recognize(cards, this.level);

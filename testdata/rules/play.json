@@ -145,6 +145,19 @@
    "expect": {"turn": 1, "leading": true, "last_seat": null, "finished": []}
   },
   {
+   "name": "拒绝：出牌时一张牌都没给 —— 不出牌就该过牌（第八条 一、1、2）",
+   "rule": ["第八条 一、1", "第八条 一、2"],
+   "level": "7",
+   "leader": 1,
+   "hands": [["♠9/0"], ["♠K/0"], ["♥8/0"], ["♣5/0"]],
+   "steps": [
+    {"seat": 1, "cards": [], "kind": "single", "reject": "no-cards"},
+    {"seat": 1, "cards": ["♠9/0"], "kind": "single", "rank": "9",
+     "after": {"turn": 2, "leading": false, "last_seat": 1, "finished": [1]}}
+   ],
+   "expect": {"turn": 2, "leading": false, "last_seat": 1, "finished": [1]}
+  },
+  {
    "name": "拒绝：压不住上一手（第八条 一、1）",
    "rule": ["第八条 一、1"],
    "level": "7",

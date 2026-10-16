@@ -3,6 +3,7 @@ package rules
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -677,4 +678,289 @@ func reverseOrder(o Order) Order {
 		return Greater
 	}
 	return o
+}
+
+// 出牌状态机（#204 第 5 步、#87 第 5 步）：初始局面 + 动作序列 → 走完之后（每一步之后）的局面。
+//
+// **期望值不由 -update 生成**，比 deck.json 的 order 那条理由还硬：这里的 after / expect 是
+// 人手算出来的。「实现是什么样、牌例就写成什么样」等于没测 —— 前面几步几次被审计盯出来的
+// 缺口（A 当 1、跟牌时的同花顺、排序漏了张数）都只有人手写的用例守得住。要改期望值，
+// 得说清楚依据是哪一条规则，不能跑一遍实现就把数字抄进去。
+//
+// 被拒的那一步还多查一条：**局面一点没动**。那是「拒绝」的全部含义，也最容易漏
+// —— 先改状态再报错，测试照样绿，可存档已经坏了。
+type playResult struct {
+	Order        []int `json:"order"`
+	HeadSeat     int   `json:"head_seat"`
+	PartnerPlace int   `json:"partner_place"`
+}
+
+// nullableSeat 分开「没写 last_seat」和「写了 `"last_seat": null`」：前者是**不断言**，
+// 后者是断言「现在是领出」（领出时 last_seat 就是 null）。用 *int 分不开这两样 —— 都是 nil。
+type nullableSeat struct {
+	Set  bool
+	Null bool
+	Seat int
+}
+
+func (n *nullableSeat) UnmarshalJSON(b []byte) error {
+	n.Set = true
+	if string(bytes.TrimSpace(b)) == "null" {
+		n.Null = true
+		return nil
+	}
+	if err := json.Unmarshal(b, &n.Seat); err != nil {
+		return err
+	}
+	if n.Seat < 1 || n.Seat > Seats {
+		return fmt.Errorf("last_seat 只能是 null 或者 1–%d，写的是 %d", Seats, n.Seat)
+	}
+	return nil
+}
+
+// playState 是某一刻的局面。每个字段都可以不写，**只断言写了的那些**
+// （README「只断言写了的字段」）—— 一条用例只关心回合就只写 turn，不必抄一遍整局面。
+type playState struct {
+	Turn     *int         `json:"turn"`
+	Leading  *bool        `json:"leading"`
+	LastSeat nullableSeat `json:"last_seat"`
+	LastKind *string      `json:"last_kind"`
+	LastRank *string      `json:"last_rank"`
+	Finished *[]int       `json:"finished"`
+	Result   *playResult  `json:"result"`
+}
+
+type playStep struct {
+	Seat  int      `json:"seat"`
+	Pass  bool     `json:"pass"`
+	Cards []string `json:"cards"`
+	Kind  string   `json:"kind"`
+	Rank  string   `json:"rank"`
+	// 成功的那一步写 After，被拒的那一步写 Reject，两个互斥。
+	After  *playState `json:"after"`
+	Reject string     `json:"reject"`
+}
+
+type playVector struct {
+	Name   string     `json:"name"`
+	Rule   []string   `json:"rule"`
+	Level  string     `json:"level"`
+	Leader int        `json:"leader"`
+	Hands  [][]string `json:"hands"`
+	Steps  []playStep `json:"steps"`
+	Expect playState  `json:"expect"`
+}
+
+type playFixture struct {
+	Comment []string     `json:"_comment"`
+	Vectors []playVector `json:"vectors"`
+}
+
+// rejectSentinels 把牌例里那个封闭取值映到哨兵。
+//
+// 这一张表兼两个用处：一是拿 errors.Is 判别（README：牌例只比取值，不比给人看的句子），
+// 二是**牌例写错一个字就当场报出来** —— `not-your-turns` 这种会落在这个表外面。
+var rejectSentinels = map[string]*RuleError{
+	string(ReasonGameOver):          ErrGameOver,
+	string(ReasonNotYourTurn):       ErrNotYourTurn,
+	string(ReasonLeadingCannotPass): ErrLeadingCannotPass,
+	string(ReasonNoCards):           ErrNoCards,
+	string(ReasonCardsNotInHand):    ErrCardsNotInHand,
+	string(ReasonBadCombo):          ErrBadCombo,
+	string(ReasonDoesNotBeat):       ErrDoesNotBeat,
+}
+
+// playSnap 是「一次失败的动作不该改坏」的那些字段。
+//
+// 不拿 MarshalJSON 当快照：存档里**没有 passes、没有这一圈的情况**，它们被改坏了照样是
+// 同一个存档。同包看得到私有字段，就直接抓原样。
+type playSnap struct {
+	turn      int
+	lastSeat  int
+	lastCombo Combo
+	passes    int
+	finished  []int
+	moves     int
+	hands     []int
+}
+
+func playSnapOf(g *Game) playSnap {
+	s := playSnap{
+		turn:      g.turn,
+		lastSeat:  g.lastSeat,
+		lastCombo: g.lastCombo,
+		passes:    g.passes,
+		finished:  append([]int{}, g.finished...),
+		moves:     len(g.moves),
+		hands:     make([]int, Seats+1),
+	}
+	for seat := 1; seat <= Seats; seat++ {
+		s.hands[seat] = len(g.hands[seat])
+	}
+	return s
+}
+
+// checkPlayState 断言局面：**只查牌例写了的字段**。
+func checkPlayState(t *testing.T, what string, want playState, g *Game) {
+	t.Helper()
+
+	if want.Turn != nil && *want.Turn != g.Turn() {
+		t.Fatalf("%s：轮到谁，算出 %d，牌例 %d", what, g.Turn(), *want.Turn)
+	}
+	if want.Leading != nil && *want.Leading != g.Leading() {
+		t.Fatalf("%s：是不是领出，算出 %v，牌例 %v", what, g.Leading(), *want.Leading)
+	}
+
+	seat, combo, hasLast := g.LastPlay()
+	if want.LastSeat.Set {
+		switch {
+		case want.LastSeat.Null && hasLast:
+			t.Fatalf("%s：牌例说现在是领出（last_seat 是 null），实际是 %d 号座出的 %s", what, seat, combo)
+		case !want.LastSeat.Null && !hasLast:
+			t.Fatalf("%s：牌例说上一手是 %d 号座，实际是领出", what, want.LastSeat.Seat)
+		case !want.LastSeat.Null && seat != want.LastSeat.Seat:
+			t.Fatalf("%s：上一手是 %d 号座，牌例写的是 %d 号座", what, seat, want.LastSeat.Seat)
+		}
+	}
+	if want.LastKind != nil || want.LastRank != nil {
+		if !hasLast {
+			t.Fatalf("%s：牌例要断上一手的牌型/牌面，可现在是领出", what)
+		}
+		if want.LastKind != nil && combo.Type.String() != *want.LastKind {
+			t.Fatalf("%s：上一手的牌型是 %s，牌例写的是 %s", what, combo.Type, *want.LastKind)
+		}
+		if want.LastRank != nil && rankText(combo) != *want.LastRank {
+			t.Fatalf("%s：上一手的牌面是 %q，牌例写的是 %q", what, rankText(combo), *want.LastRank)
+		}
+	}
+
+	if want.Finished != nil && !reflect.DeepEqual(*want.Finished, g.Finished()) {
+		t.Fatalf("%s：出完的先后，算出 %v，牌例 %v", what, g.Finished(), *want.Finished)
+	}
+
+	if want.Result != nil {
+		got, ok, err := g.Result()
+		if err != nil {
+			t.Fatalf("%s：%v", what, err)
+		}
+		if !ok {
+			t.Fatalf("%s：牌例写了 result，可这一副还没结束", what)
+		}
+		if !reflect.DeepEqual(got.Order, want.Result.Order) ||
+			got.HeadSeat != want.Result.HeadSeat || got.PartnerPlace != want.Result.PartnerPlace {
+			t.Fatalf("%s：结果，算出 {order %v head %d partner %d}，牌例 {order %v head %d partner %d}",
+				what, got.Order, got.HeadSeat, got.PartnerPlace,
+				want.Result.Order, want.Result.HeadSeat, want.Result.PartnerPlace)
+		}
+	}
+}
+
+func TestPlayFixture(t *testing.T) {
+	var f playFixture
+	loadFixture(t, "play.json", &f)
+	if len(f.Vectors) == 0 {
+		t.Fatal("没有用例")
+	}
+	for _, v := range f.Vectors {
+		checkRules(t, v.Name, v.Rule)
+		if len(v.Hands) != Seats {
+			t.Fatalf("%s：要 %d 家手牌，牌例写了 %d 家", v.Name, Seats, len(v.Hands))
+		}
+		if len(v.Steps) == 0 {
+			t.Fatalf("%s：没有动作 —— 这条用例什么都没测", v.Name)
+		}
+		level, err := ParseRank(v.Level)
+		if err != nil {
+			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
+		}
+
+		var hands [Seats][]Card
+		for i, h := range v.Hands {
+			// 残局允许少于 27 张，但每家至少一张（README「允许残局」）。
+			if len(h) == 0 {
+				t.Fatalf("%s：%d 号座一张牌都没有", v.Name, i+1)
+			}
+			hands[i] = cardsOf(t, h)
+		}
+		g, err := NewGame(level, hands, v.Leader)
+		if err != nil {
+			t.Fatalf("%s：开局：%v", v.Name, err)
+		}
+
+		for i := range v.Steps {
+			step := &v.Steps[i]
+			what := fmt.Sprintf("%s 第 %d 步（%d 号座）", v.Name, i+1, step.Seat)
+			if step.Reject != "" && step.After != nil {
+				t.Fatalf("%s：reject 和 after 互斥（被拒的那一步局面不变，不用写 after）", what)
+			}
+			before := playSnapOf(g)
+
+			var stepErr error
+			switch {
+			case step.Pass:
+				if len(step.Cards) > 0 {
+					t.Fatalf("%s：过牌的那一步不该写 cards", what)
+				}
+				stepErr = g.Pass(step.Seat)
+			case len(step.Cards) == 0:
+				// 「一张牌都没给」也是出牌的一种（README 的 no-cards），照样走 Play，
+				// 让实现自己判 —— 这里不替它决定这算不算错。
+				if step.Kind == "" {
+					t.Fatalf("%s：出牌的那一步要写 kind（声明的牌型）", what)
+				}
+				kind, err := ParseComboType(step.Kind)
+				if err != nil {
+					t.Fatalf("%s：声明的牌型 %q：%v", what, step.Kind, err)
+				}
+				stepErr = g.Play(step.Seat, nil, kind, 0)
+			default:
+				if step.Kind == "" {
+					t.Fatalf("%s：出牌的那一步要写 kind（声明的牌型）", what)
+				}
+				kind, err := ParseComboType(step.Kind)
+				if err != nil {
+					t.Fatalf("%s：声明的牌型 %q：%v", what, step.Kind, err)
+				}
+				rank := Rank(0)
+				if step.Rank != "" { // 四大天王没有牌面，不写（README）
+					rank, err = ParseRank(step.Rank)
+					if err != nil {
+						t.Fatalf("%s：声明的牌面 %q：%v", what, step.Rank, err)
+					}
+				}
+				stepErr = g.Play(step.Seat, cardsOf(t, step.Cards), kind, rank)
+			}
+
+			if step.Reject != "" {
+				want, ok := rejectSentinels[step.Reject]
+				if !ok {
+					t.Fatalf("%s：reject 的取值 %q 不在那七个里（见 testdata/rules/README.md 的表）", what, step.Reject)
+				}
+				if !errors.Is(stepErr, want) {
+					t.Fatalf("%s：牌例说这一步要被拒（%s），实际 %v", what, step.Reject, stepErr)
+				}
+				if after := playSnapOf(g); !reflect.DeepEqual(before, after) {
+					t.Fatalf("%s：被拒之后局面变了\n被拒之前 %+v\n被拒之后 %+v", what, before, after)
+				}
+				continue
+			}
+			if stepErr != nil {
+				t.Fatalf("%s：牌例说这一步会成功，实际 %v", what, stepErr)
+			}
+			if step.After == nil {
+				t.Fatalf("%s：成功的那一步要写 after —— 不然这一步过了什么都没查", what)
+			}
+			checkPlayState(t, what+" 之后", *step.After, g)
+		}
+
+		// 走完之后整体对一次。turn: 0 和 result 是一对：结束了就一定有结果，
+		// 写了结果就一定结束了（少了这条，牌例只写 turn: 0 就绕过了整个结果的口径）。
+		if v.Expect.Turn != nil && *v.Expect.Turn == 0 && v.Expect.Result == nil {
+			t.Fatalf("%s：expect 说这一副结束了（turn: 0），却没写 result", v.Name)
+		}
+		if v.Expect.Result != nil && (v.Expect.Turn == nil || *v.Expect.Turn != 0) {
+			t.Fatalf("%s：expect 写了 result，却没写 turn: 0", v.Name)
+		}
+		checkPlayState(t, v.Name+" 走完之后", v.Expect, g)
+	}
 }

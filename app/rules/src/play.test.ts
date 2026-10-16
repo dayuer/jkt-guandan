@@ -1,7 +1,7 @@
 // 出牌状态机的单测和性质测试。两端共用的那些用例在 testdata.test.ts（play.json）；
 // 这里管牌例没覆盖到的：入参、拒绝之后局面不变、以及**随机对局的恒等式**。
 import { describe, expect, it } from "vitest";
-import { cardKey, newDeck, SEVEN, type Card } from "./card";
+import { ACE, cardKey, newDeck, SEVEN, type Card, type Rank } from "./card";
 import { moves } from "./moves";
 import { Game, nextSeat, partnerSeat, REJECT_REASONS, RuleError } from "./play";
 import { handOf } from "./testing/cards";
@@ -58,6 +58,34 @@ describe("出牌的校验", () => {
 
   it("打了手里没有的牌：cards-not-in-hand", () => {
     expect(rejectReason(() => game().play(1, handOf(["♠3/0"]), "single", 3))).toBe("cards-not-in-hand");
+  });
+
+  // 和 Go 的 `TestPlayRejectsTamperedCard` 对着（#245 复审 B1 之后补的）。
+  //
+  // 光核 `card.id` 不够：TS 里 `id` 是个普通字段，不是从 rank/suit 推出来的，下面这三张
+  // 「ID 偷自手里那张 ♠3、字段却是别的」的牌都能写出来。收下它的后果是 —— `recognize`
+  // 按 rank/suit 认成一张 A，拿掉的时候却按 ID 把 ♠3 删了：**打出去的和手里少掉的不是同一张牌**。
+  // 这种牌牌例里写不出来（牌例按 cardKey 写、两端都走 parseKey，造不出一张 ID 和字段打架的牌），
+  // 所以只有这里守得住。
+  it("改过字段的牌不能出：ID 对得上也不行", () => {
+    // 原样的牌照常能出 —— 别把好的也一起拦了。
+    const good = new Game(SEVEN, [handOf(["♠3/0", "♠4/0"]), handOf(["♠5/0"]), handOf(["♠6/0"]), handOf(["♠7/0"])], 1);
+    good.play(1, handOf(["♠3/0"]), "single", 3);
+    expect(good.hand(1).map(cardKey)).toStrictEqual(["♠4/0"]);
+
+    const stolenId = handOf(["♠3/0"])[0]!.id;
+    const cases: Array<[string, Card, Rank]> = [
+      ["点数改成 A", { ...handOf(["♠A/0"])[0]!, id: stolenId }, ACE],
+      ["花色改成 ♥", { ...handOf(["♥3/0"])[0]!, id: stolenId }, 3],
+      ["副号改成 1", { ...handOf(["♠3/0"])[0]!, id: stolenId, deck: 1 }, 3],
+    ];
+    for (const [what, card, rank] of cases) {
+      const g = new Game(SEVEN, [handOf(["♠3/0", "♠4/0"]), handOf(["♠5/0"]), handOf(["♠6/0"]), handOf(["♠7/0"])], 1);
+      const before = [g.turn(), g.hand(1).map(cardKey), g.moves().length];
+      expect(rejectReason(() => g.play(1, [card], "single", rank)), what).toBe("cards-not-in-hand");
+      // 被拒之后局面一点没动：手里还是那两张，什么都没记进 moveLog。
+      expect([g.turn(), g.hand(1).map(cardKey), g.moves().length], what).toStrictEqual(before);
+    }
   });
 
   it("声明的那一种解读不成立：bad-combo", () => {
