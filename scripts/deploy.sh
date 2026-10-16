@@ -21,6 +21,7 @@
 #   WEB_ROOT      默认 /var/www/guandan
 #   IMAGE_SOURCE  ssh（默认）或 ghcr
 #   GHCR_REPO     默认 ghcr.io/dayuer/jkt-guandan
+#   LOCAL_ENV     默认 deploy/guandan.env：存在时把里面写了值的变量合并进服务器的 env 文件（见 deploy/guandan.env.example）
 #   其余（PORT、MEMORY、PUBLIC_URL、READY_TIMEOUT、KEEP……）原样传给 deploy-remote.sh
 set -eu
 
@@ -90,6 +91,44 @@ COPYFILE_DISABLE=1 tar $tar_flags -C "$work/dist" -czf - . | ssh "$SSH_HOST" "se
   tar -xzf - -C \"\$d.tmp\"
   chmod -R a+rX \"\$d.tmp\"
   mv \"\$d.tmp\" \"\$d\""
+
+# deploy/guandan.env（本机，不进仓库）里写了的变量合并进服务器的 env 文件，只替换这些键，
+# 其余原样保留；空值的行跳过。值只经 ssh 的标准输入传过去，不打印、不进命令行。
+LOCAL_ENV=${LOCAL_ENV:-deploy/guandan.env}
+if [ -f "$LOCAL_ENV" ]; then
+  # 去掉 CRLF 的 \r 和行尾空白（docker --env-file 只去行首空白，行尾空白会原样进值里）；
+  # 值为空或只有空白的行跳过，不会把服务器上的值清掉。
+  merged=$(tr -d '\r' <"$LOCAL_ENV" | sed 's/[[:space:]]*$//' | grep -E '^[A-Z][A-Z0-9_]*=[^[:space:]]' || true)
+  if [ -n "$merged" ]; then
+    secret=$(printf '%s\n' "$merged" | sed -n 's/^GUANDAN_WX_SECRET=//p')
+    if [ -n "$secret" ] && ! printf '%s' "$secret" | grep -Eq '^[A-Za-z0-9]{32}$'; then
+      case "$secret" in
+        wx*) log "$LOCAL_ENV 里的 GUANDAN_WX_SECRET 以 wx 开头，像是填成了 AppID" ;;
+        *) log "$LOCAL_ENV 里的 GUANDAN_WX_SECRET 不是 32 位字母数字（现在 ${#secret} 位）" ;;
+      esac
+      exit 1
+    fi
+    keys=$(printf '%s\n' "$merged" | cut -d= -f1 | paste -sd'|' -)
+    count=$(printf '%s\n' "$merged" | wc -l | tr -d ' ')
+    log "合并 $LOCAL_ENV 到服务器：$(printf '%s' "$keys" | tr '|' ' ')"
+    # 远端：先把标准输入收进同目录的临时文件，行数对得上才合并；合并结果写进另一个临时文件再 mv，
+    # 中途断开不会留下半个 env 文件，也不会在 /tmp 留下含密钥的文件。
+    printf '%s\n' "$merged" | ssh "$SSH_HOST" "set -eu
+      f=\${ENV_FILE:-${ENV_FILE:-/etc/guandan/guandan.env}}
+      d=\$(dirname \"\$f\")
+      mkdir -p \"\$d\" && chmod 700 \"\$d\"
+      touch \"\$f\" && chmod 600 \"\$f\"
+      in=\$(mktemp \"\$f.in.XXXXXX\"); out=\$(mktemp \"\$f.new.XXXXXX\")
+      trap 'rm -f \"\$in\" \"\$out\"' EXIT
+      cat >\"\$in\"
+      [ \"\$(wc -l <\"\$in\" | tr -d ' ')\" = '$count' ] || { echo '[deploy] env 内容没传完整，服务器上的文件没动' >&2; exit 1; }
+      rc=0; grep -v -E \"^($keys)=\" \"\$f\" >\"\$out\" || rc=\$?
+      [ \"\$rc\" -le 1 ] || { echo '[deploy] 读不了服务器上的 env 文件，没动' >&2; exit 1; }
+      cat \"\$in\" >>\"\$out\"
+      chmod 600 \"\$out\"
+      mv \"\$out\" \"\$f\""
+  fi
+fi
 
 log "在服务器上切换"
 # 只把 deploy-remote.sh 认识的变量传过去。
