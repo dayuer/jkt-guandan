@@ -6,6 +6,7 @@ import { C, Ctx, circle, font, text } from "./core/ui";
 import { icon, type Suit } from "./core/widgets";
 import { API_BASE } from "./lib/api";
 import { flush as flushTelemetry } from "./lib/telemetry";
+import { APP_NAME } from "../../shared/src/appName.mts";
 import { realtime, reconnectRealtime } from "./lib/realtime";
 import { boot, currentUser, onSessionChange } from "./lib/session";
 import { loadSubscribeTemplates } from "./lib/subscribe";
@@ -121,7 +122,7 @@ wx.showShareMenu({ withShareTicket: false, menus: ["shareAppMessage", "shareTime
 wx.onShareAppMessage(() => {
   const top = app.top;
   const d = top instanceof Detail ? top.current : null;
-  return d ? sharePayload(app, d) : { title: "随时掼掼蛋 · 找人凑一桌，就差你一个" };
+  return d ? sharePayload(app, d) : { title: `${APP_NAME} · 找人凑一桌，就差你一个` };
 });
 
 if (__DEV__) {
