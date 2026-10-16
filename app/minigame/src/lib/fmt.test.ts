@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cardDay, dayLabel, dayShort, lastSeenLabel, slashDate, timeHM, weekday, wibAt, wibParts } from "./fmt";
+import { cardDay, dayLabel, dayShort, kindLabel, lastSeenLabel, missingLabel, slashDate, timeHM, weekday, wibAt, wibParts } from "./fmt";
 
 // 2026-10-14 周三 12:00 WIB = 05:00 UTC
 const NOW = Date.UTC(2026, 9, 14, 5, 0) / 1000;
@@ -36,5 +36,13 @@ describe("fmt（不用 Intl，按 UTC+7 算）", () => {
     expect(lastSeenLabel(NOW - 30, NOW)).toBe("刚刚");
     expect(lastSeenLabel(NOW - 5 * 60, NOW)).toBe("5 分钟前");
     expect(lastSeenLabel(NOW - 26 * 3600, NOW)).toBe("昨天");
+  });
+
+  // #253：这两个不碰时间，实体在 app/shared/src/labels.ts，这里转出去 —— 断言它真的转到了。
+  it("玩法名字和差几个人（从共享层转出）", () => {
+    expect(kindLabel("classic")).toBe("经典掼蛋");
+    expect(kindLabel("whatever")).toBe("whatever");
+    expect(missingLabel(2)).toBe("差 2 人");
+    expect(missingLabel(0)).toBe("已满");
   });
 });

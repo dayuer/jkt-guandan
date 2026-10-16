@@ -1,7 +1,8 @@
-// 实时（§5.5）：直接复用 H5 的 RealtimeClient（退避、降级轮询、按 v 去重都在里面），
+// 实时（§5.5）：直接用共享层的 RealtimeClient（退避、降级轮询、按 v 去重都在里面），
 // 只把 WebSocket 换成 wx.connectSocket，鉴权用 Bearer 头（#84）。前后台用 wx.onShow / onHide。
+// #253 起不再从 app/h5 借（那会让小游戏反向依赖 H5），改从 app/shared 拿。
 
-import { RealtimeClient, type RealtimeEvent, type RealtimeStatus, type SocketLike } from "../../../h5/src/realtime";
+import { RealtimeClient, type RealtimeEvent, type RealtimeStatus, type SocketLike } from "../../../shared/src/realtime";
 import { API_BASE, getToken } from "./api";
 
 export type { RealtimeEvent, RealtimeStatus };
