@@ -17,17 +17,29 @@
 
 import { dayShort, timeHM } from "./format";
 import {
+  posterURL as sharedPosterURL,
   shareText as sharedShareText,
+  shareURL as sharedShareURL,
   systemShareText as sharedSystemShareText,
   type ShareLike,
 } from "../../shared/src/share";
 
-export {
-  posterURL,
-  shareURL,
-  whatsappURL,
-  type ShareLike,
-} from "../../shared/src/share";
+export { whatsappURL, type ShareLike } from "../../shared/src/share";
+
+/** H5 这边默认用当前站点（小游戏传自己的 `API_BASE`）—— 共享层不读 window。 */
+function pageOrigin(): string {
+  return window.location.origin;
+}
+
+/** 牌局链接。 */
+export function shareURL(code: string, overrideOrigin: string = pageOrigin()): string {
+  return sharedShareURL(code, overrideOrigin);
+}
+
+/** 海报地址。 */
+export function posterURL(code: string, version: number, overrideOrigin: string = pageOrigin()): string {
+  return sharedPosterURL(code, version, overrideOrigin);
+}
 
 /** H5 这边话术还要用开始时间（共享层只要拼好的文本，不认时间字段）。 */
 export interface H5ShareInput extends ShareLike {
@@ -43,7 +55,7 @@ function whenText(detail: H5ShareInput, now: number): string {
 export function shareText(
   detail: H5ShareInput,
   now: number = Math.floor(Date.now() / 1000),
-  overrideOrigin?: string,
+  overrideOrigin: string = pageOrigin(),
 ): string {
   return sharedShareText(detail, whenText(detail, now), overrideOrigin);
 }
