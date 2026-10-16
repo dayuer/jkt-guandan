@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -92,15 +93,35 @@ func cardCounts(hands [Seats][]Card) (int, string) {
 	return n, out
 }
 
-// reject 灌一个该被拒的动作：确实被拒了、局面一个字都没动。
-func reject(what string, before string, tr *Tribute, act func() error) error {
-	if err := act(); err == nil {
+// reject 灌一个该被拒的动作，查三件事：确实被拒、**错误码就是那一个**、局面一个字都没动。
+//
+// 比错误码不只是好看：牌例（jkt-2 起草的 tribute.json）只比取值不比句子，取值改了就是改协议；
+// 而且「同一个动作报错但报成了别的码」也是一种改坏 —— 只查 err != nil 是查不出来的。
+func reject(what string, want error, before string, tr *Tribute, act func() error) error {
+	err := act()
+	if err == nil {
 		return fmt.Errorf("%s：这个动作不合规，却被接受了", what)
+	}
+	var te *TributeError
+	if !errors.As(err, &te) {
+		return fmt.Errorf("%s：报的不是贡牌的规则错误（封闭取值那一族）：%v", what, err)
+	}
+	if !errors.Is(err, want) {
+		return fmt.Errorf("%s：错误码不对，想要 %v，拿到 %q（%v）", what, reasonOfTribute(want), te.Reason, err)
 	}
 	if after := handsText4(handsNow(tr)); after != before {
 		return fmt.Errorf("%s：被拒之后手牌变了\n之前：%s\n之后：%s", what, before, after)
 	}
 	return nil
+}
+
+// reasonOfTribute 取哨兵的取值（哨兵本身没有句子）。
+func reasonOfTribute(err error) string {
+	var te *TributeError
+	if errors.As(err, &te) {
+		return string(te.Reason)
+	}
+	return fmt.Sprintf("%v", err)
 }
 
 func TestTributeSingleGiveMustBeBiggestAndNotWild(t *testing.T) {
@@ -125,7 +146,7 @@ func TestTributeSingleGiveMustBeBiggestAndNotWild(t *testing.T) {
 
 	before := handsText4(handsNow(tr))
 	// 红心级牌（逢人配）不能贡（第十条 二）。
-	if err := reject("贡红心级牌", before, tr, func() error {
+	if err := reject("贡红心级牌", ErrTributeWildCannotGive, before, tr, func() error {
 		return tr.Give(4, cardIn(t, hands[3], "♥7/0"))
 	}); err != nil {
 		t.Fatal(err)
@@ -133,15 +154,21 @@ func TestTributeSingleGiveMustBeBiggestAndNotWild(t *testing.T) {
 	// 不是最大的一张也不能贡：手里最大的是 ♠A。
 	for _, key := range []string{"♦5/1", "♣6/0"} {
 		key := key
-		if err := reject("贡非最大的 "+key, before, tr, func() error {
+		if err := reject("贡非最大的 "+key, ErrTributeNotBiggest, before, tr, func() error {
 			return tr.Give(4, cardIn(t, hands[3], key))
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// 不用进贡的人也不能贡。
-	if err := reject("不用进贡的人贡牌", before, tr, func() error {
+	if err := reject("不用进贡的人贡牌", ErrTributeNotAGiver, before, tr, func() error {
 		return tr.Give(2, cardIn(t, hands[1], "♠2/0"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 贡别人手里的牌。
+	if err := reject("贡别人手里的牌", ErrTributeCardNotInHand, before, tr, func() error {
+		return tr.Give(4, cardIn(t, hands[2], "♠4/0"))
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +199,7 @@ func TestTributeWildIsNeverTributeEvenIfBiggest(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := handsText4(handsNow(tr))
-	if err := reject("手里最大的就是逢人配，也不能贡", before, tr, func() error {
+	if err := reject("手里最大的就是逢人配，也不能贡", ErrTributeWildCannotGive, before, tr, func() error {
 		return tr.Give(4, cardIn(t, hands[3], "♥7/0"))
 	}); err != nil {
 		t.Fatal(err)
@@ -195,20 +222,21 @@ func TestTributeSingleReturnUnderTenAndLeader(t *testing.T) {
 	}
 	before := handsText4(handsNow(tr))
 	// 1 号座手里有牌面不超过 10 的牌（♠3、♥7），只能还这种 —— ♠K 不能还。
-	if err := reject("还 ♠K", before, tr, func() error {
+	if err := reject("还 ♠K", ErrTributeCannotReturn, before, tr, func() error {
 		return tr.Return(1, cardIn(t, hands[0], "♠K/0"))
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// 没收贡的人不能还。
-	if err := reject("没收贡的人还牌", before, tr, func() error {
+	if err := reject("没收贡的人还牌", ErrTributeNotAReceiver, before, tr, func() error {
 		return tr.Return(2, cardIn(t, hands[1], "♠2/0"))
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// 手里没有的牌不能还。
-	if err := reject("还手里的牌之外的牌", before, tr, func() error {
-		return tr.Return(1, cardIn(t, hands[3], "♠A/0"))
+	// 手里没有的牌不能还（拿 2 号座手里的牌试；贡进来的 ♠A 已经在 1 号座手里了，
+	// 拿它试会落到下面「不能还」那一条上 —— 这是写这条用例时自己绊的一次）。
+	if err := reject("还手里没有的牌", ErrTributeCardNotInHand, before, tr, func() error {
+		return tr.Return(1, cardIn(t, hands[1], "♠2/0"))
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -217,8 +245,8 @@ func TestTributeSingleReturnUnderTenAndLeader(t *testing.T) {
 	if err := tr.Return(1, cardIn(t, hands[0], "♥7/0")); err != nil {
 		t.Fatalf("读法 A 下牌面 7 的牌该能还：%v", err)
 	}
-	if err := tr.Return(1, cardIn(t, hands[0], "♥7/0")); err == nil {
-		t.Fatal("同一家不该能还两次")
+	if err := tr.Return(1, cardIn(t, hands[0], "♠3/0")); !errors.Is(err, ErrTributeAlreadyReturned) {
+		t.Fatalf("同一家不该能还两次，该报 already-returned：%v", err)
 	}
 	if !tr.Done() {
 		t.Fatal("贡完还完该算完了")
@@ -255,7 +283,7 @@ func TestTributeSingleReturnSmallestWhenAllAboveTen(t *testing.T) {
 	// 全都大于 10：只能还最小的（按当前级数下的大小）—— J 最小，K、A 不能还。
 	for _, key := range []string{"♠K/0", "♥A/0"} {
 		key := key
-		if err := reject("还 "+key, before, tr, func() error {
+		if err := reject("还 "+key, ErrTributeCannotReturn, before, tr, func() error {
 			return tr.Return(1, cardIn(t, hands[0], key))
 		}); err != nil {
 			t.Fatal(err)
@@ -415,12 +443,12 @@ func TestTributeResisted(t *testing.T) {
 		t.Fatalf("抗贡时首圈由上游 1 号座领出（第十条 四），得到 %d（ok=%v）", seat, ok)
 	}
 	before := handsText4(handsNow(tr))
-	if err := reject("抗贡了还进贡", before, tr, func() error {
+	if err := reject("抗贡了还进贡", ErrTributeResisted, before, tr, func() error {
 		return tr.Give(2, cardIn(t, hands[1], "♦6/0"))
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := reject("抗贡了还还牌", before, tr, func() error {
+	if err := reject("抗贡了还还牌", ErrTributeResisted, before, tr, func() error {
 		return tr.Return(1, cardIn(t, hands[0], "♠3/0"))
 	}); err != nil {
 		t.Fatal(err)
@@ -511,6 +539,61 @@ func TestTributeRejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestTributeDoubleReturnBeforeAllGiven(t *testing.T) {
+	// 双贡：只有一家贡完就想还牌 → not-all-given（第十条 三：两家都要贡）。
+	hands := tributeHands(t, "♠3/0 ♦4/0", "♠K/0 ♦6/0", "♠5/0 ♦7/0", "♠A/0 ♦8/0")
+	tr, err := NewTribute(Seven, hands, prevResult(1, 3, 2, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Give(2, cardIn(t, hands[1], "♠K/0")); err != nil {
+		t.Fatal(err)
+	}
+	before := handsText4(handsNow(tr))
+	if err := reject("还有人没贡完就还牌", ErrTributeNotAllGiven, before, tr, func() error {
+		return tr.Return(1, cardIn(t, hands[0], "♠3/0"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTributeReasonValuesPinTheProtocol 把十个取值逐字钉住：牌例（tribute.json）只比取值，
+// 取值改了就是改协议。这张表和 #204 评论 6213375545 第三节那张表逐字对应。
+func TestTributeReasonValuesPinTheProtocol(t *testing.T) {
+	for _, tc := range []struct {
+		sentinel error
+		want     string
+	}{
+		{ErrTributeResisted, "resisted"},
+		{ErrTributeNotAGiver, "not-a-giver"},
+		{ErrTributeAlreadyGave, "already-gave"},
+		{ErrTributeNotBiggest, "not-biggest"},
+		{ErrTributeWildCannotGive, "wild-cannot-give"},
+		{ErrTributeCardNotInHand, "card-not-in-hand"},
+		{ErrTributeNotAllGiven, "not-all-given"},
+		{ErrTributeNotAReceiver, "not-a-receiver"},
+		{ErrTributeAlreadyReturned, "already-returned"},
+		{ErrTributeCannotReturn, "cannot-return"},
+	} {
+		if got := reasonOfTribute(tc.sentinel); got != tc.want {
+			t.Fatalf("取值对不上：想要 %q，得到 %q", tc.want, got)
+		}
+		// 报错句子换一种措辞，errors.Is 照样判得出来；换一个取值就判不出来。
+		e := tributeErr(tc.sentinel.(*TributeError), "句子随便写")
+		if !errors.Is(e, tc.sentinel) {
+			t.Fatalf("%q 的哨兵 errors.Is 判不出来", tc.want)
+		}
+		for _, other := range []error{ErrTributeResisted, ErrTributeCannotReturn} {
+			if other == tc.sentinel {
+				continue
+			}
+			if errors.Is(e, other) && reasonOfTribute(other) != tc.want {
+				t.Fatalf("%q 的错被判成了 %q", tc.want, reasonOfTribute(other))
+			}
+		}
+	}
+}
+
 func TestTributeHandsAndStartRequireDone(t *testing.T) {
 	prev := prevResult(1, 2, 3, 4)
 	hands := tributeHands(t, "♠3/0", "♠2/0", "♠4/0", "♠A/0")
@@ -527,8 +610,8 @@ func TestTributeHandsAndStartRequireDone(t *testing.T) {
 	if err := tr.Give(4, cardIn(t, hands[3], "♠A/0")); err != nil {
 		t.Fatal(err)
 	}
-	if err := tr.Give(4, cardIn(t, hands[3], "♠A/0")); err == nil {
-		t.Fatal("同一家不该能贡两次")
+	if err := tr.Give(4, cardIn(t, hands[3], "♠A/0")); !errors.Is(err, ErrTributeAlreadyGave) {
+		t.Fatalf("同一家不该能贡两次，该报 already-gave：%v", err)
 	}
 	if err := tr.Return(1, cardIn(t, hands[0], "♠3/0")); err != nil {
 		t.Fatal(err)

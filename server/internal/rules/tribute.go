@@ -6,6 +6,62 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/scoring"
 )
 
+// TributeReason 是「这一步不合规则」的**封闭取值**（和出牌那边的 RejectReason 一个套路）。
+//
+// 牌例只比取值、不比给人看的句子（第十条这边十个取值见下面那张表）：句子随时能改措辞，
+// 取值改了就是改协议。取值名和 #204 评论 6213375545 第三节那张表逐字对应。
+type TributeReason string
+
+const (
+	ReasonTributeResisted       TributeReason = "resisted"         // 抗贡了还要贡 / 还
+	ReasonTributeNotAGiver      TributeReason = "not-a-giver"      // 不用进贡的人来贡
+	ReasonTributeAlreadyGave    TributeReason = "already-gave"     // 同一家贡了两次
+	ReasonTributeNotBiggest     TributeReason = "not-biggest"      // 贡的不是手里最大的一张
+	ReasonTributeWildCannotGive TributeReason = "wild-cannot-give" // 拿红心级牌去贡
+	ReasonTributeCardNotInHand  TributeReason = "card-not-in-hand" // 贡 / 还手里没有的牌
+	ReasonTributeNotAllGiven    TributeReason = "not-all-given"    // 还有人没贡完就还牌
+	ReasonTributeNotAReceiver   TributeReason = "not-a-receiver"   // 没收贡的人来还
+	ReasonTributeAlreadyRet     TributeReason = "already-returned" // 同一家还了两次
+	ReasonTributeCannotReturn   TributeReason = "cannot-return"    // 还的牌不合「不超过 10 / 全大于 10 还最小」
+)
+
+// TributeError 是「这一步不合规则」。Error() 是给人看的句子，Reason 是上面的封闭取值。
+//
+// 判别用 errors.Is，不用拿句子做字符串比对：
+//
+//	if errors.Is(err, rules.ErrTributeNotBiggest) { ... }
+type TributeError struct {
+	Reason  TributeReason
+	Message string
+}
+
+func (e *TributeError) Error() string { return e.Message }
+
+// Is 让 errors.Is 按 **Reason** 判：调用方拿 Reason 的哨兵去问，不关心句子的措辞。
+func (e *TributeError) Is(target error) bool {
+	t, ok := target.(*TributeError)
+	return ok && t.Reason == e.Reason
+}
+
+// 每个原因一个哨兵，哨兵本身没有句子，只用来比 Reason。
+var (
+	ErrTributeResisted        = &TributeError{Reason: ReasonTributeResisted}
+	ErrTributeNotAGiver       = &TributeError{Reason: ReasonTributeNotAGiver}
+	ErrTributeAlreadyGave     = &TributeError{Reason: ReasonTributeAlreadyGave}
+	ErrTributeNotBiggest      = &TributeError{Reason: ReasonTributeNotBiggest}
+	ErrTributeWildCannotGive  = &TributeError{Reason: ReasonTributeWildCannotGive}
+	ErrTributeCardNotInHand   = &TributeError{Reason: ReasonTributeCardNotInHand}
+	ErrTributeNotAllGiven     = &TributeError{Reason: ReasonTributeNotAllGiven}
+	ErrTributeNotAReceiver    = &TributeError{Reason: ReasonTributeNotAReceiver}
+	ErrTributeAlreadyReturned = &TributeError{Reason: ReasonTributeAlreadyRet}
+	ErrTributeCannotReturn    = &TributeError{Reason: ReasonTributeCannotReturn}
+)
+
+// tributeErr 造一个带原因码的规则错误。句子还是自由写的，牌例不比对它。
+func tributeErr(sentinel *TributeError, format string, args ...any) error {
+	return &TributeError{Reason: sentinel.Reason, Message: fmt.Sprintf(format, args...)}
+}
+
 // 进贡、还贡、抗贡（#204 第 6 步），以及接 scoring 算下一副打几。
 //
 // 口径（2022《竞技掼蛋竞赛规则（试行）》第十条）：
@@ -70,7 +126,8 @@ type Tribute struct {
 // NewTribute 按上副牌的结果开始贡牌：hands[i] 是这一副发到 i+1 号座的手牌，prev 是上副牌的结果。
 //
 // 每一场（轮）的第一副牌不进贡（第十条 二「从第二副牌开始」），调用方不要为它建 Tribute ——
-// 要不要进贡看 NeedsTribute。抗贡在这里直接判定，返回的 Tribute 已经结束。
+// 要不要进贡看 Next(...).Tribute（本场打过至少一副、且本场还没结束）。抗贡在这里直接判定，
+// 返回的 Tribute 已经结束。
 func NewTribute(level Rank, hands [Seats][]Card, prev Result) (*Tribute, error) {
 	if level < Two || level > Ace {
 		return nil, fmt.Errorf("贡牌：级数 %d 超出 2–A", level)
@@ -227,20 +284,20 @@ func without(hand []Card, c Card) []Card {
 // Give 进贡：seat 把 card 贡出去。card 必须是他手里最大的一张（红心级牌除外）。
 func (t *Tribute) Give(seat int, card Card) error {
 	if t.kind == TributeResisted {
-		return fmt.Errorf("进贡：这一副抗贡了，不贡牌（第十条 四）")
+		return tributeErr(ErrTributeResisted, "进贡：这一副抗贡了，不贡牌（第十条 四）")
 	}
 	if !t.isGiver(seat) {
-		return fmt.Errorf("进贡：%d 号座不用进贡（要进贡的是 %v）", seat, t.givers)
+		return tributeErr(ErrTributeNotAGiver, "进贡：%d 号座不用进贡（要进贡的是 %v）", seat, t.givers)
 	}
 	if _, ok := t.gave[seat]; ok {
-		return fmt.Errorf("进贡：%d 号座已经贡过了", seat)
+		return tributeErr(ErrTributeAlreadyGave, "进贡：%d 号座已经贡过了", seat)
 	}
 	hand := t.hands[seat]
 	if !holds(hand, card) {
-		return fmt.Errorf("进贡：%d 号座手里没有 %s", seat, card.Key())
+		return tributeErr(ErrTributeCardNotInHand, "进贡：%d 号座手里没有 %s", seat, card.Key())
 	}
 	if card.IsWild(t.level) {
-		return fmt.Errorf("进贡：红心级牌 %s 不用贡（第十条 二）", card.Key())
+		return tributeErr(ErrTributeWildCannotGive, "进贡：红心级牌 %s 不用贡（第十条 二）", card.Key())
 	}
 	max := -1
 	for _, c := range hand {
@@ -249,7 +306,7 @@ func (t *Tribute) Give(seat int, card Card) error {
 		}
 	}
 	if card.Power(t.level) != max {
-		return fmt.Errorf("进贡：要贡手里最大的一张（红心级牌除外），%s 不是（第十条 二）", card.Key())
+		return tributeErr(ErrTributeNotBiggest, "进贡：要贡手里最大的一张（红心级牌除外），%s 不是（第十条 二）", card.Key())
 	}
 
 	t.hands[seat] = without(hand, card)
@@ -309,10 +366,10 @@ func (t *Tribute) canReturn(hand []Card, card Card) bool {
 // Return 还牌：收了贡的 seat 把 card 还给贡给他的人。
 func (t *Tribute) Return(seat int, card Card) error {
 	if t.kind == TributeResisted {
-		return fmt.Errorf("还牌：这一副抗贡了，不还牌（第十条 四）")
+		return tributeErr(ErrTributeResisted, "还牌：这一副抗贡了，不还牌（第十条 四）")
 	}
 	if len(t.gave) < len(t.givers) {
-		return fmt.Errorf("还牌：还有人没贡完")
+		return tributeErr(ErrTributeNotAllGiven, "还牌：还有人没贡完")
 	}
 	giver := 0
 	for g, r := range t.to {
@@ -321,17 +378,17 @@ func (t *Tribute) Return(seat int, card Card) error {
 		}
 	}
 	if giver == 0 {
-		return fmt.Errorf("还牌：%d 号座没收贡，不用还", seat)
+		return tributeErr(ErrTributeNotAReceiver, "还牌：%d 号座没收贡，不用还", seat)
 	}
 	if _, ok := t.returned[seat]; ok {
-		return fmt.Errorf("还牌：%d 号座已经还过了", seat)
+		return tributeErr(ErrTributeAlreadyReturned, "还牌：%d 号座已经还过了", seat)
 	}
 	hand := t.hands[seat]
 	if !holds(hand, card) {
-		return fmt.Errorf("还牌：%d 号座手里没有 %s", seat, card.Key())
+		return tributeErr(ErrTributeCardNotInHand, "还牌：%d 号座手里没有 %s", seat, card.Key())
 	}
 	if !t.canReturn(hand, card) {
-		return fmt.Errorf("还牌：%s 不能还 —— 有牌面不超过 10 的牌时还那种，全都大于 10 时还最小的（第十条 二）", card.Key())
+		return tributeErr(ErrTributeCannotReturn, "还牌：%s 不能还 —— 有牌面不超过 10 的牌时还那种，全都大于 10 时还最小的（第十条 二）", card.Key())
 	}
 	t.hands[seat] = without(hand, card)
 	t.hands[giver] = append(t.hands[giver], card)
