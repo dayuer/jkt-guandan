@@ -35,10 +35,16 @@ eq 'go.mod 与后端同等对待' \
   "$(lines local-ci/test local-ci/vuln local-ci/docker local-ci/e2e)" \
   "$(printf 'go.sum\n' | scope_contexts)"
 
-# 计分规则的对照用例两端共用（#174）：服务端规则或 vectors.json 改了，小游戏的 vitest 也要跑。
+# 计分规则的对照用例两端共用（#174）：服务端规则改了，小游戏的 vitest 也要跑。
 eq '计分规则改动也要跑小游戏' \
   "$(lines local-ci/test local-ci/minigame local-ci/vuln local-ci/docker local-ci/e2e)" \
-  "$(printf 'server/internal/scoring/testdata/vectors.json\nserver/internal/scoring/scoring.go\n' | scope_contexts)"
+  "$(printf 'server/internal/scoring/scoring.go\n' | scope_contexts)"
+
+# #253 P7：那份对照用例挪到了仓库根 testdata/scoring/（原来是 server/internal/scoring/testdata/，
+# 应用反向伸进服务端内部）。挪走之后它自己**必须**有分支，否则改用例时一条检查都不跑。
+eq '计分对照用例改动：两端都要跑' \
+  "$(lines local-ci/test local-ci/minigame)" \
+  "$(printf 'testdata/scoring/vectors.json\n' | scope_contexts)"
 
 # 小游戏复用 app/h5/src 的纯逻辑（原 ci.yml 的注释）：H5 改了接口类型，小游戏要先报出来。
 eq 'app/h5/src 改动也要跑小游戏' \

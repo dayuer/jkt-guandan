@@ -9,14 +9,14 @@ import (
 	"testing"
 )
 
-// testdata/vectors.json 是两端共用的规则对照用例（#174）：小游戏的预览照抄了这份规则
+// 仓库根 testdata/scoring/vectors.json 是两端共用的规则对照用例（#174）：小游戏的预览照抄了这份规则
 // （app/minigame/src/lib/scoring.ts），vitest 读同一个文件。哪边改了规则对不上，CI 就红。
 //
 // 改规则时：先改 input，再 `go test ./server/internal/scoring/ -run TestVectors -update`
 // 重新生成 expect，逐条核对 diff。
-var updateVectors = flag.Bool("update", false, "按 Compute 重新生成 testdata/vectors.json 里的 expect")
+var updateVectors = flag.Bool("update", false, "按 Compute 重新生成 testdata/scoring/vectors.json 里的 expect")
 
-const vectorsPath = "testdata/vectors.json"
+const vectorsPath = "../../../testdata/scoring/vectors.json"
 
 type vectorEdit struct {
 	RoundNo int `json:"round_no"`

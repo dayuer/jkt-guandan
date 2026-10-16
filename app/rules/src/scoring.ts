@@ -2,7 +2,7 @@
 // （纯搬家，一行逻辑都没改）—— 那份文件原来是「规则 + 记分弹层的界面/会话」混在一起。
 //
 // 规则以服务端 `server/internal/scoring` 为准，一致性由**两端共用的对照用例**锁住：
-// `server/internal/scoring/testdata/vectors.json`。Go 那边 `scoring/vectors_test.go` 读它，
+// `testdata/scoring/vectors.json`。Go 那边 `scoring/vectors_test.go` 读它，
 // 小游戏那边 `app/minigame/src/lib/scoring.vectors.test.ts` 读同一份文件，CI 里两边都会跑
 // （`scripts/test-local-ci.sh` 的 scope）。改了规则这个文件、或者改了那份用例，两边一起红。
 //
