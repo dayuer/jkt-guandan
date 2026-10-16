@@ -8,10 +8,11 @@ import { cardKey, newDeck, parseKey, parseRank, type Card, type Rank } from "./c
 import { asKey, comboRankName, comboSummary, compare, parseComboType, pick, recognize, type Combo, type Order } from "./combo";
 import { deal, HANDS_EACH, permShuffler, SEATS } from "./deal";
 import { moves } from "./moves";
+import { Game, RuleError } from "./play";
 import { power } from "./power";
 import { handOf } from "./testing/cards";
-import { compareFixture, combosFixture, dealFixture, deckFixture, movesFixture, powerFixture } from "./testing/testdata";
-import type { CompareSide } from "./testing/fixtures";
+import { compareFixture, combosFixture, dealFixture, deckFixture, movesFixture, playFixture, powerFixture } from "./testing/testdata";
+import type { CompareSide, PlayStep } from "./testing/fixtures";
 
 const keys = (cards: readonly Card[]): string[] => cards.map(cardKey);
 
@@ -149,6 +150,67 @@ describe("moves.json：合法出法（第三条、第四条 二）", () => {
       const level = parseRank(vector.level);
       const lead = vector.lead ? declaredCombo(vector.lead, level, `${vector.name}（上一手）`) : undefined;
       expect(moves(handOf(vector.hand), level, lead).map(moveSpec)).toStrictEqual(vector.moves);
+    });
+  }
+});
+
+describe("play.json：出牌状态机（第八条、第九条）", () => {
+  /** 这一刻的局面，写成牌例里的那套字段。 */
+  const stateOf = (game: Game): Record<string, unknown> => {
+    const last = game.lastPlay();
+    const state: Record<string, unknown> = {
+      turn: game.turn(),
+      leading: game.leading(),
+      last_seat: last ? last.seat : null,
+      finished: game.finished(),
+    };
+    if (last) {
+      state.last_kind = last.combo.type;
+      state.last_rank = comboRankName(last.combo);
+    }
+    const result = game.result();
+    if (result) {
+      state.result = { order: result.order, head_seat: result.headSeat, partner_place: result.partnerPlace };
+    }
+    return state;
+  };
+
+  /** 走一步。出牌时按牌例里的写法去整副牌里取那一张（ID 才和手里的对得上）。 */
+  const applyStep = (game: Game, step: PlayStep): void => {
+    if (step.pass) {
+      game.pass(step.seat);
+      return;
+    }
+    const rank = step.rank === undefined ? undefined : parseRank(step.rank);
+    game.play(step.seat, handOf(step.cards ?? []), parseComboType(step.kind ?? ""), rank);
+  };
+
+  /** 这一步被拒的原因；没被拒、或者抛的不是 `RuleError`，都返回能看懂的字符串。 */
+  const rejectReasonOf = (fn: () => void): string => {
+    try {
+      fn();
+      return "（没被拒）";
+    } catch (error) {
+      return error instanceof RuleError ? error.reason : `（不是 RuleError：${String(error)}）`;
+    }
+  };
+
+  for (const vector of playFixture) {
+    it(vector.name, () => {
+      const level = parseRank(vector.level);
+      const game = new Game(level, vector.hands.map(handOf), vector.leader);
+
+      vector.steps.forEach((step, i) => {
+        const what = `第 ${i + 1} 步`;
+        if (step.reject !== undefined) {
+          expect(rejectReasonOf(() => applyStep(game, step)), what).toBe(step.reject);
+        } else {
+          applyStep(game, step);
+        }
+        if (step.after) expect(stateOf(game), what).toMatchObject(step.after);
+      });
+
+      expect(stateOf(game)).toMatchObject(vector.expect);
     });
   }
 });

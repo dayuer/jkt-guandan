@@ -8,6 +8,8 @@
 // 这里**不读文件**（JSON 的 import 在 testdata.ts 里），校验逻辑单独放，才好单测 ——
 // 读取器的每条拒绝都该有测试盯着（见 fixtures.test.ts）。
 
+import { REJECT_REASONS, type RejectReason } from "../play";
+
 const README = "testdata/rules/README.md";
 
 type Json = unknown;
@@ -51,6 +53,13 @@ function asStringList(value: Json, what: string): string[] {
 
 function asStringRows(value: Json, what: string): string[][] {
   return asArray(value, what).map((row, i) => asStringList(row, `${what}[${i}]`));
+}
+
+function asBoolean(value: Json, what: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${what}：应该是布尔值`);
+  }
+  return value;
 }
 
 function asInteger(value: Json, what: string): number {
@@ -396,5 +405,116 @@ export function readMoves(raw: Json): MovesVector[] {
     };
     if (vector.lead !== undefined) out.lead = readCompareSide(vector.lead, `${at}.lead`);
     return out;
+  });
+}
+
+/** 某一刻的局面（`steps[].after` 和 `expect` 同一套字段）。字段名照 JSON 写，一眼看得出对应。 */
+export interface PlayState {
+  /** 轮到谁；0 = 这一副结束。 */
+  turn?: number;
+  leading?: boolean;
+  /** 这一圈最近出牌的人；领出时是 `null`。 */
+  last_seat?: number | null;
+  last_kind?: string;
+  last_rank?: string;
+  finished?: number[];
+  result?: { order: number[]; head_seat: number; partner_place: number };
+}
+
+export interface PlayStep {
+  seat: number;
+  pass?: boolean;
+  cards?: string[];
+  kind?: string;
+  rank?: string;
+  /** 这一步**成功之后**的局面（只断言写了的字段）。和 `reject` 互斥。 */
+  after?: PlayState;
+  /** 这一步**必须被拒**，值是封闭取值之一（见 README「play.json」那一节的表）。 */
+  reject?: RejectReason;
+}
+
+export interface PlayVector {
+  name: string;
+  rule: string[];
+  level: string;
+  /** 首圈领出的座位号 1–4。 */
+  leader: number;
+  /** **四家**手牌，下标 0–3 就是座位 1–4（和 `deal.json` 不一样）。 */
+  hands: string[][];
+  steps: PlayStep[];
+  expect: PlayState;
+}
+
+function readPlayState(value: Json, what: string): PlayState {
+  const state = asObject(value, what);
+  rejectUnknownKeys(state, ["turn", "leading", "last_seat", "last_kind", "last_rank", "finished", "result"], what);
+  const out: PlayState = {};
+  if (state.turn !== undefined) out.turn = asInteger(state.turn, `${what}.turn`);
+  if (state.leading !== undefined) out.leading = asBoolean(state.leading, `${what}.leading`);
+  if (state.last_seat !== undefined) {
+    out.last_seat = state.last_seat === null ? null : asInteger(state.last_seat, `${what}.last_seat`);
+  }
+  if (state.last_kind !== undefined) out.last_kind = asString(state.last_kind, `${what}.last_kind`);
+  if (state.last_rank !== undefined) out.last_rank = asString(state.last_rank, `${what}.last_rank`);
+  if (state.finished !== undefined) out.finished = asIntegerList(state.finished, `${what}.finished`);
+  if (state.result !== undefined) {
+    const at = `${what}.result`;
+    const result = asObject(state.result, at);
+    rejectUnknownKeys(result, ["order", "head_seat", "partner_place"], at);
+    out.result = {
+      order: asIntegerList(required(result, "order", at), `${at}.order`),
+      head_seat: asInteger(required(result, "head_seat", at), `${at}.head_seat`),
+      partner_place: asInteger(required(result, "partner_place", at), `${at}.partner_place`),
+    };
+  }
+  return out;
+}
+
+function readPlayStep(value: Json, what: string): PlayStep {
+  const step = asObject(value, what);
+  rejectUnknownKeys(step, ["seat", "pass", "cards", "kind", "rank", "after", "reject"], what);
+  const out: PlayStep = { seat: asInteger(required(step, "seat", what), `${what}.seat`) };
+  if (step.pass !== undefined) out.pass = asBoolean(step.pass, `${what}.pass`);
+  if (step.cards !== undefined) out.cards = asStringList(step.cards, `${what}.cards`);
+  if (step.kind !== undefined) out.kind = asString(step.kind, `${what}.kind`);
+  if (step.rank !== undefined) out.rank = asString(step.rank, `${what}.rank`);
+  if (step.after !== undefined) out.after = readPlayState(step.after, `${what}.after`);
+  if (step.reject !== undefined) {
+    const reason = asString(step.reject, `${what}.reject`);
+    if (!(REJECT_REASONS as readonly string[]).includes(reason)) {
+      throw new Error(`${what}.reject：${JSON.stringify(reason)} 不是封闭取值之一（${REJECT_REASONS.join(" / ")}）`);
+    }
+    out.reject = reason as RejectReason;
+  }
+  if (out.reject !== undefined && out.after !== undefined) {
+    throw new Error(`${what}：reject 和 after 互斥（被拒的那一步局面不变，不需要 after）`);
+  }
+  return out;
+}
+
+export function readPlay(raw: Json): PlayVector[] {
+  const what = "play.json";
+  const obj = asObject(raw, what);
+  rejectUnknownKeys(obj, ["_comment", "vectors"], what);
+  checkComment(obj, what);
+  return requiredVectors(obj, what).map((item, i) => {
+    const at = `${what}.vectors[${i}]`;
+    const vector = asObject(item, at);
+    rejectUnknownKeys(vector, ["name", "rule", "level", "leader", "hands", "steps", "expect"], at);
+    const hands = asArray(required(vector, "hands", at), `${at}.hands`).map((hand, j) =>
+      asStringList(hand, `${at}.hands[${j}]`),
+    );
+    if (hands.length !== 4) throw new Error(`${at}.hands：要四家，写的是 ${hands.length} 家`);
+    return {
+      name: asString(required(vector, "name", at), `${at}.name`),
+      rule: requiredRule(vector, at),
+      level: asString(required(vector, "level", at), `${at}.level`),
+      leader: asInteger(required(vector, "leader", at), `${at}.leader`),
+      hands,
+      steps: asArray(required(vector, "steps", at), `${at}.steps`).map((step, j) =>
+        readPlayStep(step, `${at}.steps[${j}]`),
+      ),
+      expect: readPlayState(required(vector, "expect", at), `${at}.expect`),
+    };
   });
 }
