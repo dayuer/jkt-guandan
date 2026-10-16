@@ -260,13 +260,19 @@ func templateHand(rnd *rand.Rand, deck []Card, level Rank) []Card {
 			k--
 		}
 	}
-	// 换成逢人配（最多两张，只换非王）。
 	wilds := []Card{}
 	for _, c := range deck {
 		if c.IsWild(level) {
 			wilds = append(wilds, c)
 		}
 	}
+	// 实牌不够时用逢人配**补**（加牌，不是换牌）：同一点数最多 8 张实牌（是级牌时只有 6 张），
+	// 不补的话 9 张、10 张炸弹永远发不出来，炸弹上限写错了也测不出（#236 复审）。
+	for len(hand) < nd.size() && len(wilds) > 0 {
+		hand = append(hand, wilds[0])
+		wilds = wilds[1:]
+	}
+	// 再把几张换成剩下的逢人配（最多两张，只换非王）。
 	for _, w := range wilds {
 		if len(hand) == 0 || rnd.Intn(2) == 0 {
 			continue
@@ -305,6 +311,7 @@ func TestRecognizeComplete(t *testing.T) {
 	start := time.Now()
 	var hands, withWild, allWild, readings, wildReadings int
 	byType := map[ComboType]int{}
+	bombSizes := map[int]int{}
 	for i := 0; i < 8000; i++ {
 		level := levels[rnd.Intn(len(levels))]
 		var hand []Card
@@ -349,6 +356,9 @@ func TestRecognizeComplete(t *testing.T) {
 		readings += len(combos)
 		for _, c := range combos {
 			byType[c.Type]++
+			if c.Type == TypeBomb {
+				bombSizes[len(c.Cards)]++
+			}
 			if len(c.Wilds) > 0 && len(c.Wilds) < len(c.Cards) {
 				wildReadings++ // 逢人配真的顶替了别的牌（不算「全是逢人配」那种）
 			}
@@ -373,12 +383,23 @@ func TestRecognizeComplete(t *testing.T) {
 		parts = append(parts, fmt.Sprintf("%s %d", typ, byType[typ]))
 	}
 	t.Logf("各牌型验到的次数：%s", strings.Join(parts, "、"))
+	sizes := []string{}
+	for k := 4; k <= 10; k++ {
+		sizes = append(sizes, fmt.Sprintf("%d 张 %d", k, bombSizes[k]))
+	}
+	t.Logf("炸弹各张数验到的次数：%s", strings.Join(sizes, "、"))
 
 	// 随机牌要真的覆盖到要紧的情形，否则「全过」不说明什么：十种牌型每种都要验到几十次，
 	// 逢人配真的顶替了别的牌的解读要上百，全是逢人配的手牌也要有。
 	for typ := TypeSingle; typ <= TypeJokerBomb; typ++ {
 		if byType[typ] < 20 {
 			t.Fatalf("随机牌覆盖不够：%s 只验到 %d 次", typ, byType[typ])
+		}
+	}
+	// 炸弹 4–10 张每一档都要验到：9、10 张只能靠逢人配凑出来，漏了它们的话炸弹上限写错也测不出。
+	for k := 4; k <= 10; k++ {
+		if bombSizes[k] < 10 {
+			t.Fatalf("随机牌覆盖不够：%d 张的炸弹只验到 %d 次", k, bombSizes[k])
 		}
 	}
 	if wildReadings < 300 || allWild < 20 {
