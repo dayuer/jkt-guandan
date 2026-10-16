@@ -465,11 +465,11 @@ export class ScoreScene implements Scene {
   }
 }
 
-/** 「 · 过 A」「 · 红方没过 A」「 · 红方回到 2」 */
+/** 「 · 过 A」「 · 红方没过 A」（#205：A 必打，没过就是没过，没有回到 2） */
 function aNote(r: ScoreRound): string {
   if (r.passed_a) return " · 过 A";
   if (!r.failed_a) return "";
-  return ` · ${TEAM_NAME[r.failed_a as Side]}${r.reset_to_2 ? "回到 2" : "没过 A"}`;
+  return ` · ${TEAM_NAME[r.failed_a as Side]}没过 A`;
 }
 
 function line(ctx: Ctx, x1: number, y1: number, x2: number, y2: number, c: string, lw: number) {

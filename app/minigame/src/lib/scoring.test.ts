@@ -6,8 +6,8 @@ import {
   type RoundFact, type Score, type ScoreRound, type ScoreSettings, type StartedScore,
 } from "./scoring";
 
-const classic: ScoreSettings = { kind: "classic", a_fail_limit: 3 };
-const noLevel: ScoreSettings = { kind: "no-level", a_fail_limit: 3 };
+const classic: ScoreSettings = { kind: "classic" };
+const noLevel: ScoreSettings = { kind: "no-level" };
 const f = (head_seat: number, partner_place: number): RoundFact => ({ head_seat, partner_place });
 // 设计稿的例子：红方 1 老王 + 3 阿杰，黑方 2 Lily + 4 小周
 const NAMES: Record<number, string> = { 1: "老王", 2: "Lily", 3: "阿杰", 4: "小周" };
@@ -61,7 +61,7 @@ describe("规则照抄（只做预览）与设计稿例子一致", () => {
     expect(pass.main).toBe("过 A！红方赢下这一场");
     expect(pass.sub).toBe("老王头游、阿杰二游 · 一共 5 局");
     const failOwn = previewText(classic, state, f(1, 4), names);
-    expect(failOwn).toMatchObject({ kind: "fail", main: "没过 A · 红方下一局还打 A", sub: "已没过 1 次，第 3 次再不过就回到 2" });
+    expect(failOwn).toMatchObject({ kind: "fail", main: "没过 A · 红方下一局还打 A", sub: "已没过 1 次" });
     const failOpp = previewText(classic, state, f(2, 3), names);
     expect(failOpp).toMatchObject({ kind: "fail", main: "红方没过 A · 黑方 2 → 4" });
   });
@@ -73,18 +73,17 @@ describe("规则照抄（只做预览）与设计稿例子一致", () => {
     expect(p.kind).toBe("normal");
     expect(p.sub).toBe("已在 A · 下一局打 A");
   });
-  it("第 3 次没过回到 2，计数清零；约定不回 2 时不回", () => {
+  it("A 必打：没过就一直打 A，计数一直累加（2022 竞赛规则第二条 13）", () => {
     const toA = [f(1, 2), f(1, 2), f(1, 2), f(1, 2)];
     const two = compute(classic, [...toA, f(1, 4), f(1, 4)]).state;
     expect(aTip(two.red)).toBe("打 A · 已没过 2 次");
     const p = previewText(classic, two, f(1, 4), names);
-    expect(p).toMatchObject({ kind: "fail", main: "没过 A · 红方回到 2", sub: "第 3 次没过，按约定回到 2" });
+    expect(p).toMatchObject({ kind: "fail", main: "没过 A · 红方下一局还打 A", sub: "已没过 3 次" });
     const after = apply(classic, two, f(1, 4)).state;
-    expect([after.red.level, after.red.a_fails, after.playing_level]).toEqual([2, 0, 2]);
-    const never: ScoreSettings = { kind: "classic", a_fail_limit: 0 };
-    const st = compute(never, [...toA, f(1, 4), f(1, 4), f(1, 4)]).state;
-    expect(st.red.level).toBe(14);
-    expect(previewText(never, st, f(1, 4), names).sub).toBe("已没过 4 次（约定不回 2）");
+    expect([after.red.level, after.red.a_fails, after.playing_level]).toEqual([14, 3, 14]);
+    // 再没过几次也一样：级数不动，次数接着涨。
+    const st = compute(classic, [...toA, f(1, 4), f(1, 4), f(1, 4), f(1, 4)]).state;
+    expect([st.red.level, st.red.a_fails]).toEqual([14, 4]);
   });
   it("过 A 后再记一局就是下一场：两队都从 2 开始，局号接着编", () => {
     const toA = [f(1, 2), f(1, 2), f(1, 2), f(1, 2), f(1, 2)];
@@ -142,7 +141,7 @@ describe("S12 冲突", () => {
 
 describe("改一局重试收到 round_changed", () => {
   const latest = (rounds: RoundFact[], kind: ScoreSettings["kind"] = "classic"): Score => {
-    const settings = { kind, a_fail_limit: 3 }, c = compute(settings, rounds);
+    const settings = { kind }, c = compute(settings, rounds);
     return { started: true, can_record: true, settings, started_at: 0, revision: 9, started_by: { id: "x", nickname: "x" },
       rounds: c.rounds.map((r) => ({ ...r, recorded_by: { id: "x", nickname: "x" }, recorded_at: 0 })), state: c.state };
   };

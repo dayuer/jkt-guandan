@@ -206,7 +206,6 @@ CREATE TABLE wx_subscribe_quota (
 CREATE TABLE score_matches (               -- 一局牌一行：开局约定。「再来一场」沿用，场次从各局推出来
   game_id      TEXT PRIMARY KEY REFERENCES games(id),
   kind         TEXT NOT NULL CHECK (kind IN ('classic','no-level')),  -- 开始时按牌局的 kind 定，teaching 按 classic
-  a_fail_limit INTEGER NOT NULL CHECK (a_fail_limit IN (0, 3)),        -- 打自己的 A 第几次没过回到 2；0 = 不回 2
   started_by   TEXT NOT NULL REFERENCES users(id),
   started_at   INTEGER NOT NULL,
   revision     INTEGER NOT NULL DEFAULT 1                             -- 开始、记一局、改一局各 +1，实时事件按它去重
@@ -234,6 +233,9 @@ CREATE TABLE score_seat_leavers (
   left_at INTEGER NOT NULL,
   PRIMARY KEY (game_id, seat_no)            -- 后离开的人覆盖先离开的
 );
+-- 0012（#205）删掉 score_matches.a_fail_limit：2022《竞技掼蛋竞赛规则（试行）》没有「打 A 几次不过回到 2」，
+-- 第二条 13「A 级必打」，打不过就一直打 A。是 breaking 迁移（删列），按 runbook §2.3 走。
+
 ```
 
 连接设置和并发规则见 §11。
@@ -456,7 +458,7 @@ CREATE TABLE score_seat_leavers (
 四个人坐满后在同一局里接着记分（设计稿 `design/guandan-minigame/README.md` §7，截图 S1–S15）。**不涉及金钱**（#91）：没有分数、倍率、金额、结算。
 
 - **只存事实，状态重算**：库里只有开局约定（`score_matches`）和每局谁头游、搭档第几（`score_rounds`）。两队级数、打谁的级、A 没过几次、第几场、是否结束，每次读的时候由纯函数 `server/internal/scoring.Compute` 从第 1 局算到最后一局；改任意一局 = 替换这一局再算一遍，后面的局自动跟着变。前端只展示，不自己算。
-- **规则**（README §7.1，口径同学牌页）：1、3 号红方，2、4 号黑方；只有头游所在的队升级，搭档二游 +3、三游 +2、末游 +1；第 1 局打 2，之后打上一局赢的那一队的级；到 A 封顶；打**本队的** A 时本队头游且搭档不是末游 = 过 A，本场结束（打对方的级时在 A 上赢了只升级，不算过）；打本队 A 的局没过（含对方拿头游）计一次，到约定次数（3）回到 2、计数清零，约定「不回 2」（0）时不回；本队头游搭档末游恰好是第 3 次时，回到 2 优先，不再 +1。过 A 后再记的一局就是下一场：两队都从 2 开始、计数和统计清零，局号接着编。`no-level` 只记每队赢了几局、双上几次。
+- **规则**（README §7.1，口径按 2022《竞技掼蛋竞赛规则（试行）》，同学牌页）：1、3 号红方，2、4 号黑方；只有头游所在的队升级（第二条 12），搭档二游 +3、三游 +2、末游 +1；第 1 局打 2，之后打上一局赢的那一队的级（第二条 14）；到 A 封顶；打**本队的** A 时本队头游且搭档不是末游 = 过 A，本场结束（第二条 13、第十二条；打对方的级时在 A 上赢了只升级，不算过）；打本队 A 的局没过（含对方拿头游）计一次，**没过就一直打 A**（第二条 13「A 级必打」），没有「几次不过回到 2」这个约定（#205），`a_fails` 只累加、只用来展示。过 A 后再记的一局就是下一场：两队都从 2 开始、计数和统计清零，局号接着编。`no-level` 只记每队赢了几局、双上几次。
 - **权限**（README §7.6）：能看牌局详情的人都能读；开始、记一局、改一局只有**座位上**的人能做（局头没有额外权限），否则 403 `not_seated`。牌局必须是 `full`（有人中途退出、局回到 `open` 时 409 `not_full`，补齐了再记），`done` / `cancelled` 的局 409 `game_closed`，只读。开局前 30 分钟起才能开始记分（S1 的入口条同一时刻出现），更早 409 `too_early`；能不能点「开始」看响应里的 `can_start`，客户端不自己算时间；开始之后记一局、改一局不再看时间，直到清理任务把局标成 `done`（开局 6 小时后，§13.1）。
 - **回原座位**（#168）：记分开始以后有人退出、被移出或注销，局回到 `open`、记分暂停。`leave` 时把「这个座号最后是谁离开的」写进 `score_seat_leavers`（后离开的覆盖先离开的）。之后这个人报名（`POST /seat`）：他是某个**现在还空着**的座号最后离开的人，就回到那个座号，过了 `JoinGrace` 也行；分队按座号定，所以队伍不变，坐满后接着记。只限本人、只限原座号：别人、或者他想坐别的空座号，过了 `JoinGrace` 照旧 409 `game_started`；他的座号在 `JoinGrace` 之内被别人补上了，就是补上的人的座号了；有候补时，`leave` 当场就让候补补进空出的座号（见上面的「候补补位」），这个座号不会空着，原来的人回不来。被移出的人仍在 `game_bans` 里，报名先查它，403 `banned`，回不来。还没开始记分的局不写这张表，规则照旧。`JoinGrace` 之内回来的原座位的人也优先回原座号，而不是取最小空座号，免得两个空座时坐到对方队里。注销时删掉这个人的离座记录，admin 合并身份时搬到保留的身份上。
 - **并发**：写都在单个写事务里（§11.2）。记一局带 `expected_round_no`：正好是下一局才写；已经有人记了（两人同时记，S12）返回 409 `round_taken`，带上已经记下的那一局（`round`）和最新的全部计分，前端结果相同就静默合并，不同就让用户选；跳号是 400。改一局可以带 `was`（打开弹层时看到的原结果），库里已经不是它（别人刚改过）返回 409 `round_changed` 和最新计分；不带就直接覆盖。只比这一局，别人在此期间记了新的一局不算冲突。改成和现在一样的结果什么也不写。
@@ -466,14 +468,14 @@ CREATE TABLE score_seat_leavers (
   | 接口 | 身份 | 说明 |
   |---|---|---|
   | `GET /api/games/{code}/score` | public | 没开始：`{"started":false,"can_record":…,"can_start":…}`；开始了：见下 |
-  | `POST /api/games/{code}/score` | user | 开始记分 `{"a_fail_limit":3}`（3 默认，或 0 = 不回 2）。已经开始了就原样返回，后到的约定不生效。接受 `Idempotency-Key`，同一个键换了 `a_fail_limit` 422 `idempotency_key_reused` |
+  | `POST /api/games/{code}/score` | user | 开始记分，**没有请求参数**（#205：开局没有可选的约定了，打 A 必打）；旧客户端带的 `a_fail_limit` 忽略，不报错。已经开始了就原样返回。接受 `Idempotency-Key`，同一个键用在别的接口上 422 `idempotency_key_reused` |
   | `POST /api/games/{code}/score/rounds` | user | 记一局 `{"expected_round_no":7,"head_seat":1,"partner_place":3}`。本场已结束时这一局就是下一场的第 1 局（「再来一场」不需要单独的接口；「结束记分」只是前端离开记分页）。接受 `Idempotency-Key`：同一次提交重发返回现在的计分，不报 `round_taken`；同一个键用在别的请求上（别的接口、别的局，或者 `expected_round_no` / `head_seat` / `partner_place` 不同）422 `idempotency_key_reused`，什么也不记 |
   | `PUT /api/games/{code}/score/rounds/{no}` | user | 改一局 `{"head_seat":2,"partner_place":2,"was":{"head_seat":1,"partner_place":2}}`，`was` 可省 |
 
   四个接口成功时都返回同一个形状：
   ```json
   {"started":true,"can_record":true,"can_start":false,
-   "settings":{"kind":"classic","a_fail_limit":3},
+   "settings":{"kind":"classic"},
    "started_by":{"id":"01J…","nickname":"Lily"},"started_at":1791980000,"revision":7,
    "rounds":[{"round_no":1,"match":1,"head_seat":1,"partner_place":2,
               "playing":"","playing_level":2,"winner":"red","double_up":true,
@@ -487,7 +489,7 @@ CREATE TABLE score_seat_leavers (
   ```
   - `can_record`：当前身份在座位上、牌局 `full`（访客、旁观、缺人时为假）。`can_start`：`can_record` 为真、还没开始记分、而且已经到了开局前 30 分钟，这时 `POST /score` 才会成功；开始以后恒为假。小游戏的 S1 入口条按 `can_start` 显示。
   - 级数是整数 2–14（11 = J、12 = Q、13 = K、14 = A）；队是 `red` / `black`，`playing` 为空串表示一场的第 1 局（打 2，不算哪队的）。
-  - `rounds` 按局号从小到大（S9 新的在上由前端倒过来）。每局还可能有：`failed_a`（这一局哪队打自己的 A 没过）、`a_fails`（它记完后的次数）、`reset_to_2`、`edited_by`、`edited_at`（改过的局，S9 的「已改」）。`seats` 是这一局**当时** 1–4 号座上的人（#172，下标 0 是 1 号）：中途换人后，换人前的局仍显示原来的人，S9、S12、S15 按每局自己的 `seats` 显示称呼；改一局只改结果，`seats` 不变。0009 迁移前记的局按迁移时的座位补上，那时空着的座号为 `null`，客户端退回用现在的座位。`level_before` → `level_after` 是赢的一队实际的变化，封顶和回到 2 都算进去；不升级玩法里这三项是 0。
+  - `rounds` 按局号从小到大（S9 新的在上由前端倒过来）。每局还可能有：`failed_a`（这一局哪队打自己的 A 没过）、`a_fails`（它记完后的次数，只累加）、`edited_by`、`edited_at`（改过的局，S9 的「已改」）。`seats` 是这一局**当时** 1–4 号座上的人（#172，下标 0 是 1 号）：中途换人后，换人前的局仍显示原来的人，S9、S12、S15 按每局自己的 `seats` 显示称呼；改一局只改结果，`seats` 不变。0009 迁移前记的局按迁移时的座位补上，那时空着的座号为 `null`，客户端退回用现在的座位。`level_before` → `level_after` 是赢的一队实际的变化，到 A 封顶已经算进去；不升级玩法里这三项是 0。
   - `state` 是记完最后一局之后、下一局要看的：`match_over` 为真时 `winner` 是过 A 的一队，`playing` / `playing_level` 已经是下一场第 1 局的值（空串、2），两队的 `level` 和统计仍是这一场结束时的（S8「停在 Q」）。`wins`、`double_ups` 是本场的（S8、S15「红方双上 4 次」）；`a_fails` 用于「打 A · 已没过 N 次」。
   - 用时（S8）由前端从 `started_at` 和各局 `recorded_at` 算，服务端不另存。
 - **实时**：`score.started`、`score.round`、`score.edited` 推到 `game:{code}`（§5.5）。**不带顶层 `v`**（`v` 是牌局版本号，计分不动它），客户端按 `data.revision` 丢弃不比本地新的：
@@ -524,7 +526,7 @@ POST /api/games/{code}/cancel         局头取消
 POST /api/games/{code}/kick           局头移出 {user_id}
 POST /api/games/{code}/invites        邀请 {user_ids}
 GET  /api/games/{code}/score          牌桌计分：开局约定、每局记录、重算后的状态（#165，§5.6）
-POST /api/games/{code}/score          开始记分 {a_fail_limit}
+POST /api/games/{code}/score          开始记分（无请求参数）
 POST /api/games/{code}/score/rounds   记一局 {expected_round_no, head_seat, partner_place}
 PUT  /api/games/{code}/score/rounds/{no}  改一局 {head_seat, partner_place, was?}
 PUT/DELETE /api/follows/{user_id}     星标牌友
@@ -938,7 +940,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 
 - 微信内置浏览器里经常出现「点两下」和「超时后用户再点一次」。`POST /api/games`（开局）本身不幂等，重复执行会开出两个一样的局。
 - 前端每次提交都生成一个 `Idempotency-Key`。服务端在**同一个写事务**里先查 `idempotency_keys`：查到了，直接返回保存的响应；没查到，执行业务，再把响应写进表里。保存 24 小时，由清理任务删除。
-- 开局（`POST /api/games`）和计分的两个 POST（§5.6）另外存**请求指纹**（`fingerprint`，业务参数的 sha256，从解析、整理后的参数算，和 JSON 字段顺序、空白无关；开局取 `starts_at`、`area`、`venue`、`kind`、`note`）：同一个键用在别的接口上、或者配了不同的请求时返回 422 `idempotency_key_reused`，不当成重放静默返回 200（#175）。`fingerprint` 为空的旧记录只比路由。
+- 开局（`POST /api/games`）和计分的两个 POST（§5.6）另外存**请求指纹**（`fingerprint`，业务参数的 sha256，从解析、整理后的参数算，和 JSON 字段顺序、空白无关；开局取 `starts_at`、`area`、`venue`、`kind`、`note`；开始记分没有参数了（#205），指纹是空参数集的 sha256）：同一个键用在别的接口上、或者配了不同的请求时返回 422 `idempotency_key_reused`，不当成重放静默返回 200（#175）。`fingerprint` 为空的旧记录只比路由。
 - 报名、退出、取消本身就是幂等的（重复执行结果不变），但也一并接受幂等键，保证重复请求拿到的响应也完全一样。
 
 ### 11.5 进程内的 goroutine

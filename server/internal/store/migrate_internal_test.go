@@ -78,7 +78,12 @@ func TestMigrateAddsBreakingColumnToOldTable(t *testing.T) {
 
 // confirmedBreaking 列出已经按 runbook §2.3 人工确认过的 breaking 迁移。
 // 新加 breaking 迁移时这条测试会失败，逼着作者和复审方在 PR 里明确确认，而不是悄悄混进去。
-var confirmedBreaking = map[string]bool{}
+var confirmedBreaking = map[string]bool{
+	// 删掉计分的 a_fail_limit（#205）：2022 竞赛规则里没有「打 A 几次不过回到 2」，A 必打
+	// （第二条 13）。#165 还没部署（线上是 9254990），没有要迁移的数据；回滚到 #205 之前的
+	// 镜像要先恢复发布前的快照（runbook §2.3）。
+	"0012_score_drop_a_fail_limit.sql": true,
+}
 
 func TestEmbeddedBreakingMigrationsAreConfirmed(t *testing.T) {
 	names, err := migrationNames()

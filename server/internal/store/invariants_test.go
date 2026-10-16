@@ -247,8 +247,8 @@ func TestInvariantsScoreRoundsContiguous(t *testing.T) {
 	host, _ := seedUsers(t, st)
 	newGame(t, st, "g1", host, "open")
 	seat(t, st, "g1", 1, host)
-	mustExec(t, st, `INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at)
-		VALUES ('g1', 'classic', 3, ?, 0)`, host)
+	mustExec(t, st, `INSERT INTO score_matches (game_id, kind, started_by, started_at)
+		VALUES ('g1', 'classic', ?, 0)`, host)
 	round := func(no int) {
 		mustExec(t, st, `INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at)
 			VALUES ('g1', ?, 1, 2, ?, 0)`, no, host)
@@ -264,14 +264,13 @@ func TestInvariantsScoreRoundsContiguous(t *testing.T) {
 	}
 }
 
-// 计分表的约束在数据库层挡住不合法的事实（#165）：座号、名次、开局约定、同一局号两条。
+// 计分表的约束在数据库层挡住不合法的事实（#165）：玩法、座号、名次、同一局号两条。
 func TestScoreTablesConstraints(t *testing.T) {
 	st := openTest(t)
 	host, _ := seedUsers(t, st)
 	newGame(t, st, "g1", host, "full")
 	for _, bad := range []string{
-		`INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at) VALUES ('g1', 'teaching', 3, 'u-host', 0)`,
-		`INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at) VALUES ('g1', 'classic', 2, 'u-host', 0)`,
+		`INSERT INTO score_matches (game_id, kind, started_by, started_at) VALUES ('g1', 'teaching', 'u-host', 0)`,
 		// 没开始记分就不能记局（外键指向 score_matches）。
 		`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at) VALUES ('g1', 1, 1, 2, 'u-host', 0)`,
 	} {
@@ -279,7 +278,7 @@ func TestScoreTablesConstraints(t *testing.T) {
 			t.Fatalf("应当被拒绝：%s", bad)
 		}
 	}
-	mustExec(t, st, `INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at) VALUES ('g1', 'no-level', 0, 'u-host', 0)`)
+	mustExec(t, st, `INSERT INTO score_matches (game_id, kind, started_by, started_at) VALUES ('g1', 'no-level', 'u-host', 0)`)
 	for _, bad := range []string{
 		`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at) VALUES ('g1', 0, 1, 2, 'u-host', 0)`,
 		`INSERT INTO score_rounds (game_id, round_no, head_seat, partner_place, recorded_by, created_at) VALUES ('g1', 1, 5, 2, 'u-host', 0)`,
