@@ -7,11 +7,9 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
-// DeletedNickname 是注销之后座位上显示的名字（§14）。
-//
+// 注销之后座位上显示的名字是 store.DeletedNickname（§14，定义在 store 里，只留一份；#221）。
 // 直接把称呼改掉，而不是留个空值让每个查询自己兜底：座位、候补、邀请列表都从
 // users 里取称呼，改一处就够了，也不会出现「有的地方显示空白」。
-const DeletedNickname = "已注销牌友"
 
 // GameCleaner 是注销时要用到的牌局侧能力（由 games.Service 实现）。
 //
@@ -110,7 +108,7 @@ func (s *Service) DeleteMe(ctx context.Context, ident *Identity) error {
 		// 用户行留着（座位引用着它），但个人数据抹掉。
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE users SET nickname = ?, wa_phone = NULL, deleted_at = ?
-			 WHERE id = ?`, DeletedNickname, now.Unix(), userID); err != nil {
+			 WHERE id = ?`, store.DeletedNickname, now.Unix(), userID); err != nil {
 			return err
 		}
 

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/dayuer/jkt-guandan/server/internal/identity"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
@@ -169,8 +168,8 @@ func TestDeleteMeKeepsSeatsInFinishedGames(t *testing.T) {
 	if err := f.st.Read().QueryRow(`SELECT nickname FROM users WHERE id = ?`, playerID).Scan(&nickname); err != nil {
 		t.Fatalf("查称呼: %v", err)
 	}
-	if nickname != identity.DeletedNickname {
-		t.Fatalf("称呼应当被抹成 %q，实际 %q", identity.DeletedNickname, nickname)
+	if nickname != store.DeletedNickname {
+		t.Fatalf("称呼应当被抹成 %q，实际 %q", store.DeletedNickname, nickname)
 	}
 }
 
@@ -239,7 +238,7 @@ func TestDeleteMeIsIdempotent(t *testing.T) {
 	if err := f.st.Read().QueryRow(`SELECT nickname FROM users WHERE id = ?`, userID).Scan(&nickname); err != nil {
 		t.Fatal(err)
 	}
-	if nickname != identity.DeletedNickname {
+	if nickname != store.DeletedNickname {
 		t.Fatalf("称号 = %q", nickname)
 	}
 }
