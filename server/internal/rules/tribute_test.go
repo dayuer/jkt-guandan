@@ -16,8 +16,8 @@ import (
 //   - **被拒的动作不许改局面**：进贡/还牌和出牌一样是玩家给的牌，引擎只校验 —— 校验失败必须
 //     哪都没动（和 #246 复审给随机对局加的那条一个道理）。
 //
-// 「不超过 10」按**牌面数字**算（读法 A，仓库所有者还没拍板，见 #204 里那条 needs-user 评论
-// 以及下面单列的 TestTributeReturnUnderTenPending）：打 7 时 ♦7/♠7、♥7 牌面是 7，能还。
+// 「不超过 10」按**牌面数字**算（读法 A，**仓库所有者 2026-10-16 已确认**，见 #204；
+// 牌例见下面单列的 TestTributeReturnUnderTen）：打 7 时 ♦7/♠7、♥7 牌面是 7，能还。
 
 // prevResult 造一个「上副牌的结果」：order 是出完的先后、按座位号写。
 func prevResult(order ...int) Result {
@@ -667,8 +667,8 @@ func TestTributeNextUsesScoring(t *testing.T) {
 	}
 }
 
-// TestTributeReturnUnderTenPending 是「还牌不超过 10」这一条的牌例，**单列出来**：
-// 仓库所有者还没拍板按哪种读法，改起来就改这一张表（判定集中在 canReturn 一个函数里）。
+// TestTributeReturnUnderTen 是「还牌不超过 10」这一条的牌例，**单列出来**：
+// 读法 A 已拍板（owner 2026-10-16）；真要换读法，改起来就改这一张表（判定集中在 canReturn 里）。
 //
 //	读法 A（现在按这个实现）：按**牌面数字**，2–10 都能还 —— 打 7 时 ♠7（级牌）、♥7（逢人配）
 //	        牌面是 7，也能还。
@@ -676,7 +676,7 @@ func TestTributeNextUsesScoring(t *testing.T) {
 //
 // 「全都大于 10 时还最小的」两种读法都按当前级数下的大小（下面最后两行就是它）。
 // 真要改成读法 B，把「能还」那两行改成 false、把 canReturn 里的判断换成按 Power 比即可。
-func TestTributeReturnUnderTenPending(t *testing.T) {
+func TestTributeReturnUnderTen(t *testing.T) {
 	// 每行：手里的牌 / 想还的那张 / 现在（读法 A）能不能还
 	cases := []struct {
 		hand  string
@@ -688,8 +688,8 @@ func TestTributeReturnUnderTenPending(t *testing.T) {
 		{"♠3/0 ♠K/0", "♠K/0", false, "手里有 ≤ 10 的牌时，只能还那种"},
 		{"♠10/0 ♠J/0", "♠10/0", true, "牌面 10 正好是边界"},
 		{"♠10/0 ♠J/0", "♠J/0", false, "11 不行"},
-		{"♠7/0 ♠8/0", "♠7/0", true, "牌面 7：级牌（♠7）按读法 A 能还 —— **待确认**"},
-		{"♥7/0 ♠8/0", "♥7/0", true, "牌面 7：逢人配（♥7）按读法 A 能还 —— **待确认**"},
+		{"♠7/0 ♠8/0", "♠7/0", true, "牌面 7：级牌（♠7）按读法 A 能还（读法 A 已确认）"},
+		{"♥7/0 ♠8/0", "♥7/0", true, "牌面 7：逢人配（♥7）按读法 A 能还（读法 A 已确认）"},
 		{"♠K/0 ♥A/0", "♠K/0", true, "全大于 10：还最小的（K 比 A 小）"},
 		{"♠K/0 ♥A/0", "♥A/0", false, "全大于 10：A 不是最小的"},
 	}
