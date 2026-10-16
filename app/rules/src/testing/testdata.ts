@@ -9,7 +9,8 @@ import deckRaw from "../../../../testdata/rules/deck.json";
 import movesRaw from "../../../../testdata/rules/moves.json";
 import playRaw from "../../../../testdata/rules/play.json";
 import powerRaw from "../../../../testdata/rules/power.json";
-import { readCombos, readCompare, readDeal, readDeck, readMoves, readPlay, readPower } from "./fixtures";
+import tributeRaw from "../../../../testdata/rules/tribute.json";
+import { readCombos, readCompare, readDeal, readDeck, readMoves, readPlay, readPower, readTribute } from "./fixtures";
 
 export const deckFixture = readDeck(deckRaw);
 export const powerFixture = readPower(powerRaw);
@@ -18,3 +19,4 @@ export const combosFixture = readCombos(combosRaw);
 export const compareFixture = readCompare(compareRaw);
 export const movesFixture = readMoves(movesRaw);
 export const playFixture = readPlay(playRaw);
+export const tributeFixture = readTribute(tributeRaw);

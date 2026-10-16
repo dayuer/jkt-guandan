@@ -1,0 +1,215 @@
+{
+ "_comment": [
+  "进贡 / 还贡 / 抗贡（#204 第 6 步 / #87 第 6 步）：上一副的名次 + 这一副的手牌 → 贡哪张、还哪张、抗不抗贡、首圈谁领出。",
+  "口径是 2022《竞技掼蛋竞赛规则（试行）》第十条，三处歧义的读法见 README「进贡与还贡」一节。",
+  "hands 下标 0–3 就是座位 1–4（和 play.json 一样；deal.json 是按首抓者起逆时针第 k 家，那个不一样）。",
+  "prev.order 是上一副出完的先后（上游在前，四家都在）。head_seat / partner_place 由它推出来；写了就必须和它一致（不一致是牌例自己写错了）。",
+  "每条 steps[k] 是这一步**成功之后**的局面；某一步不合法时写 reject 而不是 after —— 两个字段互斥。",
+  "reject 的取值是封闭的十个（见 README 的表）：牌例只比这个取值，不比给人看的错误句子。",
+  "抗贡的用例 steps 是**空数组** —— 抗贡在开局就判定了，本来就没有动作可做（allow 空 steps 只对进贡这一类）。",
+  "「不超过 10」怎么算有两读（见 README「待确认」）：按读法 A（牌面数字）写的用例带 pending 字段标出来。"
+ ],
+ "vectors": [
+  {
+   "name": "单贡：贡手里最大的一张（逢人配不算最大），还一张不超过 10 的，下游领出首圈（第十条 二）",
+   "rule": ["第十条 二"],
+   "level": "7",
+   "hands": [["♠K/0", "♣5/0"], ["♠3/0"], ["♠4/0"], ["♠A/0", "♥7/0"]],
+   "prev": {"order": [1, 2, 3, 4], "head_seat": 1, "partner_place": 3},
+   "steps": [
+    {"seat": 4, "give": "♠A/0", "after": {"receiver": {"4": 1}, "done": false}},
+    {"seat": 1, "return": "♣5/0"}
+   ],
+   "expect": {
+    "kind": "single",
+    "givers": [4],
+    "receiver": {"4": 1},
+    "leader": 4,
+    "done": true,
+    "hands": [["♠K/0", "♠A/0"], ["♠3/0"], ["♠4/0"], ["♥7/0", "♣5/0"]]
+   }
+  },
+  {
+   "name": "单贡：手里全大于 10 时还最小的（按当前级数下的大小）（第十条 二）",
+   "rule": ["第十条 二"],
+   "level": "7",
+   "hands": [["♠K/0", "♠Q/0"], ["♠3/0"], ["♠4/0"], ["♠A/0", "♥7/0"]],
+   "prev": {"order": [1, 2, 3, 4], "head_seat": 1, "partner_place": 3},
+   "steps": [
+    {"seat": 4, "give": "♠A/0"},
+    {"seat": 1, "return": "♠Q/0"}
+   ],
+   "expect": {
+    "kind": "single",
+    "givers": [4],
+    "receiver": {"4": 1},
+    "leader": 4,
+    "done": true,
+    "hands": [["♠K/0", "♠A/0"], ["♠3/0"], ["♠4/0"], ["♥7/0", "♠Q/0"]]
+   }
+  },
+  {
+   "name": "【待确认】级牌的牌面算不算「不超过 10」：打 7 时 ♠7 牌面是 7（第十条 二）",
+   "rule": ["第十条 二"],
+   "level": "7",
+   "pending": "按读法 A（牌面数字）：♠7 牌面 7，算不超过 10，第 2 步还 ♠7/0。按读法 B（级牌排在 A 之上、不算不超过 10）：1 号座手里就全是「大于 10」了，第 2 步应当被拒（cannot-return），要还的是 ♠K/0。仓库所有者还没拍板。",
+   "hands": [["♠7/0", "♠K/0"], ["♠3/0"], ["♠4/0"], ["♠A/0"]],
+   "prev": {"order": [1, 2, 3, 4], "head_seat": 1, "partner_place": 3},
+   "steps": [
+    {"seat": 4, "give": "♠A/0"},
+    {"seat": 1, "return": "♠7/0"}
+   ],
+   "expect": {
+    "kind": "single",
+    "givers": [4],
+    "receiver": {"4": 1},
+    "leader": 4,
+    "done": true,
+    "hands": [["♠K/0", "♠A/0"], ["♠3/0"], ["♠4/0"], ["♠7/0"]]
+   }
+  },
+  {
+   "name": "【待确认】逢人配的牌面算不算「不超过 10」：打 7 时 ♥7 牌面是 7（第十条 二、14）",
+   "rule": ["第十条 二", "第二条 14"],
+   "level": "7",
+   "pending": "和上一条同一个分歧点，只是把级牌换成逢人配（♥7 是红心级牌）。按读法 A 还 ♥7/0；按读法 B 第 2 步应被拒（cannot-return），要还 ♠K/0。",
+   "hands": [["♥7/0", "♠K/0"], ["♠3/0"], ["♠4/0"], ["♠A/0"]],
+   "prev": {"order": [1, 2, 3, 4], "head_seat": 1, "partner_place": 3},
+   "steps": [
+    {"seat": 4, "give": "♠A/0"},
+    {"seat": 1, "return": "♥7/0"}
+   ],
+   "expect": {
+    "kind": "single",
+    "givers": [4],
+    "receiver": {"4": 1},
+    "leader": 4,
+    "done": true,
+    "hands": [["♠K/0", "♠A/0"], ["♠3/0"], ["♠4/0"], ["♥7/0"]]
+   }
+  },
+  {
+   "name": "双贡：大的给上游、小的给搭档，还牌后由贡给上游的那位领出（第十条 三）",
+   "rule": ["第十条 三"],
+   "level": "7",
+   "hands": [["♠K/0", "♣5/0"], ["♠A/0", "♥3/0"], ["♠Q/0", "♦8/0"], ["♣K/0", "♥4/0"]],
+   "prev": {"order": [1, 3, 2, 4], "head_seat": 1, "partner_place": 2},
+   "steps": [
+    {"seat": 2, "give": "♠A/0", "after": {"done": false}},
+    {"seat": 4, "give": "♣K/0", "after": {"receiver": {"2": 1, "4": 3}}},
+    {"seat": 1, "return": "♣5/0"},
+    {"seat": 3, "return": "♦8/0"}
+   ],
+   "expect": {
+    "kind": "double",
+    "givers": [2, 4],
+    "receiver": {"2": 1, "4": 3},
+    "leader": 2,
+    "done": true,
+    "hands": [["♠K/0", "♠A/0"], ["♥3/0", "♣5/0"], ["♠Q/0", "♣K/0"], ["♥4/0", "♦8/0"]]
+   }
+  },
+  {
+   "name": "双贡：两张贡牌一样大时各给自己顺时针方向的那一家（第十条 三）",
+   "rule": ["第十条 三"],
+   "level": "7",
+   "hands": [["♠K/0", "♣5/0"], ["♠A/0", "♥3/0"], ["♠Q/0", "♦8/0"], ["♥A/0", "♥4/0"]],
+   "prev": {"order": [1, 3, 2, 4], "head_seat": 1, "partner_place": 2},
+   "steps": [
+    {"seat": 2, "give": "♠A/0"},
+    {"seat": 4, "give": "♥A/0", "after": {"receiver": {"2": 1, "4": 3}}},
+    {"seat": 1, "return": "♣5/0"},
+    {"seat": 3, "return": "♦8/0"}
+   ],
+   "expect": {
+    "kind": "double",
+    "givers": [2, 4],
+    "receiver": {"2": 1, "4": 3},
+    "leader": 2,
+    "done": true,
+    "hands": [["♠K/0", "♠A/0"], ["♥3/0", "♣5/0"], ["♠Q/0", "♥A/0"], ["♥4/0", "♦8/0"]]
+   }
+  },
+  {
+   "name": "抗贡：要进贡的一方（双下是两人合起来）抓到两个大王（第十条 四）",
+   "rule": ["第十条 四"],
+   "level": "7",
+   "hands": [["♠K/0", "♣5/0"], ["大王/0", "♥3/0"], ["♠Q/0", "♦8/0"], ["大王/1", "♥4/0"]],
+   "prev": {"order": [1, 3, 2, 4], "head_seat": 1, "partner_place": 2},
+   "steps": [],
+   "expect": {
+    "kind": "resisted",
+    "givers": [2, 4],
+    "leader": 1,
+    "done": true,
+    "hands": [["♠K/0", "♣5/0"], ["大王/0", "♥3/0"], ["♠Q/0", "♦8/0"], ["大王/1", "♥4/0"]]
+   }
+  },
+  {
+   "name": "抗贡之后不出牌也不还牌（第十条 四）",
+   "rule": ["第十条 四"],
+   "level": "7",
+   "hands": [["♠K/0", "♣5/0"], ["大王/0", "♥3/0"], ["♠Q/0", "♦8/0"], ["大王/1", "♥4/0"]],
+   "prev": {"order": [1, 3, 2, 4], "head_seat": 1, "partner_place": 2},
+   "steps": [
+    {"seat": 2, "give": "♥3/0", "reject": "resisted"},
+    {"seat": 1, "return": "♣5/0", "reject": "resisted"}
+   ],
+   "expect": {
+    "kind": "resisted",
+    "givers": [2, 4],
+    "leader": 1,
+    "done": true,
+    "hands": [["♠K/0", "♣5/0"], ["大王/0", "♥3/0"], ["♠Q/0", "♦8/0"], ["大王/1", "♥4/0"]]
+   }
+  },
+  {
+   "name": "单贡：只有一个大王不抗贡；大王是手里最大的，可以贡（第十条 二、四）",
+   "rule": ["第十条 二", "第十条 四"],
+   "level": "7",
+   "hands": [["♠K/0", "♣5/0"], ["♠3/0"], ["♠4/0"], ["大王/0", "♠9/0"]],
+   "prev": {"order": [1, 2, 3, 4], "head_seat": 1, "partner_place": 3},
+   "steps": [
+    {"seat": 4, "give": "大王/0"},
+    {"seat": 1, "return": "♣5/0"}
+   ],
+   "expect": {
+    "kind": "single",
+    "givers": [4],
+    "receiver": {"4": 1},
+    "leader": 4,
+    "done": true,
+    "hands": [["♠K/0", "大王/0"], ["♠3/0"], ["♠4/0"], ["♠9/0", "♣5/0"]]
+   }
+  },
+  {
+   "name": "拒绝：进贡/还牌的各种不合规，都不许改局面（第十条 二）",
+   "rule": ["第十条 二"],
+   "level": "7",
+   "hands": [["♠K/0", "♣5/0"], ["♠3/0"], ["♠4/0"], ["♠A/0", "♥7/0", "♠5/0"]],
+   "prev": {"order": [1, 2, 3, 4], "head_seat": 1, "partner_place": 3},
+   "steps": [
+    {"seat": 2, "give": "♠3/0", "reject": "not-a-giver"},
+    {"seat": 4, "give": "♥7/0", "reject": "wild-cannot-give"},
+    {"seat": 4, "give": "♠5/0", "reject": "not-biggest"},
+    {"seat": 4, "give": "♦9/0", "reject": "card-not-in-hand"},
+    {"seat": 1, "return": "♣5/0", "reject": "not-all-given"},
+    {"seat": 4, "give": "♠A/0"},
+    {"seat": 4, "give": "♠5/0", "reject": "already-gave"},
+    {"seat": 2, "return": "♠3/0", "reject": "not-a-receiver"},
+    {"seat": 1, "return": "♦9/0", "reject": "card-not-in-hand"},
+    {"seat": 1, "return": "♠K/0", "reject": "cannot-return"},
+    {"seat": 1, "return": "♣5/0"},
+    {"seat": 1, "return": "♣5/0", "reject": "already-returned"}
+   ],
+   "expect": {
+    "kind": "single",
+    "givers": [4],
+    "receiver": {"4": 1},
+    "leader": 4,
+    "done": true,
+    "hands": [["♠K/0", "♠A/0"], ["♠3/0"], ["♠4/0"], ["♥7/0", "♠5/0", "♣5/0"]]
+   }
+  }
+ ]
+}

@@ -16,3 +16,4 @@ export * from "./deal";
 export * from "./combo";
 export * from "./moves";
 export * from "./play";
+export * from "./tribute";

@@ -9,6 +9,7 @@
 // 读取器的每条拒绝都该有测试盯着（见 fixtures.test.ts）。
 
 import { REJECT_REASONS, type RejectReason } from "../play";
+import { TRIBUTE_REJECT_REASONS, type TributeRejectReason } from "../tribute";
 
 const README = "testdata/rules/README.md";
 
@@ -516,5 +517,149 @@ export function readPlay(raw: Json): PlayVector[] {
       ),
       expect: readPlayState(required(vector, "expect", at), `${at}.expect`),
     };
+  });
+}
+
+/** 某一刻的贡牌局面（`steps[].after` 和 `expect` 同一套字段）。只看写了的那些字段。 */
+export interface TributeState {
+  /** 贡牌、还牌是不是都完了。 */
+  done?: boolean;
+  /** 进贡的人 → 贡给谁，如 `{"2": 1, "4": 3}`。 */
+  receiver?: Record<string, number>;
+  /** 四家手牌，下标 0–3 就是座位 1–4。**全比**（不是部分断言）—— 牌有没有真的挪对人只有这里看得出来。 */
+  hands?: string[][];
+  /** `single` / `double` / `resisted`。 */
+  kind?: string;
+  /** 要进贡的人（抗贡时也写：界面要显示是谁抗的贡）。 */
+  givers?: number[];
+  /** 首圈领出的人；**只在 `done` 为真时有意义**。 */
+  leader?: number;
+}
+
+/** 上一副的名次。`order` 是出完的先后（上游在前）；后两个由它推得，写了就要求一致。 */
+export interface TributePrev {
+  order: number[];
+  head_seat?: number;
+  partner_place?: number;
+}
+
+export interface TributeStep {
+  seat: number;
+  /** 贡出去的牌；和 `return` 二选一。 */
+  give?: string;
+  /** 还出去的牌；和 `give` 二选一。 */
+  return?: string;
+  /** 这一步**成功之后**的局面（只断言写了的字段）。和 `reject` 互斥。 */
+  after?: TributeState;
+  /** 这一步**必须被拒**，值是封闭取值之一（见 README「tribute.json」那一节的表）。 */
+  reject?: TributeRejectReason;
+}
+
+export interface TributeVector {
+  name: string;
+  rule: string[];
+  level: string;
+  /** 只有【待确认】的用例写：分歧在哪、另一种读法下期望值该是什么。 */
+  pending?: string;
+  /** **四家**手牌，下标 0–3 就是座位 1–4（和 `play.json` 一样）。 */
+  hands: string[][];
+  prev: TributePrev;
+  /** **允许空数组**：抗贡在开局就判定了，本来就没有动作可做。 */
+  steps: TributeStep[];
+  expect: TributeState;
+}
+
+function readTributeState(value: Json, what: string): TributeState {
+  const state = asObject(value, what);
+  rejectUnknownKeys(state, ["kind", "givers", "receiver", "leader", "done", "hands"], what);
+  const out: TributeState = {};
+  if (state.kind !== undefined) out.kind = asString(state.kind, `${what}.kind`);
+  if (state.givers !== undefined) out.givers = asIntegerList(state.givers, `${what}.givers`);
+  if (state.receiver !== undefined) {
+    const raw = asObject(state.receiver, `${what}.receiver`);
+    const receiver: Record<string, number> = {};
+    for (const seat of Object.keys(raw)) {
+      // 键必须是座位号：写成别的（比如 "1 号座"）在两端都该当场报错。
+      if (!/^[1-4]$/.test(seat)) {
+        throw new Error(`${what}.receiver：键 ${JSON.stringify(seat)} 不是座位号（1–4）`);
+      }
+      receiver[seat] = asInteger(raw[seat], `${what}.receiver.${seat}`);
+    }
+    out.receiver = receiver;
+  }
+  if (state.leader !== undefined) out.leader = asInteger(state.leader, `${what}.leader`);
+  if (state.done !== undefined) out.done = asBoolean(state.done, `${what}.done`);
+  if (state.hands !== undefined) {
+    const hands = asStringRows(state.hands, `${what}.hands`);
+    if (hands.length !== 4) throw new Error(`${what}.hands：要四家，写的是 ${hands.length} 家`);
+    out.hands = hands;
+  }
+  return out;
+}
+
+function readTributeStep(value: Json, what: string): TributeStep {
+  const step = asObject(value, what);
+  rejectUnknownKeys(step, ["seat", "give", "return", "after", "reject"], what);
+  const out: TributeStep = { seat: asInteger(required(step, "seat", what), `${what}.seat`) };
+  if (step.give !== undefined) out.give = asString(step.give, `${what}.give`);
+  if (step.return !== undefined) out.return = asString(step.return, `${what}.return`);
+  if (out.give !== undefined && out.return !== undefined) {
+    throw new Error(`${what}：give 和 return 只能写一个`);
+  }
+  if (step.after !== undefined) out.after = readTributeState(step.after, `${what}.after`);
+  if (step.reject !== undefined) {
+    const reason = asString(step.reject, `${what}.reject`);
+    if (!(TRIBUTE_REJECT_REASONS as readonly string[]).includes(reason)) {
+      throw new Error(`${what}.reject：${JSON.stringify(reason)} 不是封闭取值之一（${TRIBUTE_REJECT_REASONS.join(" / ")}）`);
+    }
+    out.reject = reason as TributeRejectReason;
+  }
+  if (out.reject !== undefined && out.after !== undefined) {
+    throw new Error(`${what}：reject 和 after 互斥（被拒的那一步局面不变，不需要 after）`);
+  }
+  if (out.reject === undefined && out.give === undefined && out.return === undefined) {
+    throw new Error(`${what}：这一步既没写 give / return，也没写 reject`);
+  }
+  return out;
+}
+
+export function readTribute(raw: Json): TributeVector[] {
+  const what = "tribute.json";
+  const obj = asObject(raw, what);
+  rejectUnknownKeys(obj, ["_comment", "vectors"], what);
+  checkComment(obj, what);
+  return requiredVectors(obj, what).map((item, i) => {
+    const at = `${what}.vectors[${i}]`;
+    const vector = asObject(item, at);
+    rejectUnknownKeys(vector, ["name", "rule", "level", "pending", "hands", "prev", "steps", "expect"], at);
+    const hands = asStringRows(required(vector, "hands", at), `${at}.hands`);
+    if (hands.length !== 4) throw new Error(`${at}.hands：要四家，写的是 ${hands.length} 家`);
+
+    const rawPrev = asObject(required(vector, "prev", at), `${at}.prev`);
+    rejectUnknownKeys(rawPrev, ["order", "head_seat", "partner_place"], `${at}.prev`);
+    const prev: TributePrev = {
+      order: asIntegerList(required(rawPrev, "order", at), `${at}.prev.order`),
+    };
+    if (prev.order.length !== 4) {
+      throw new Error(`${at}.prev.order：上一副的先后要写全四家，写的是 ${prev.order.length} 家`);
+    }
+    if (rawPrev.head_seat !== undefined) prev.head_seat = asInteger(rawPrev.head_seat, `${at}.prev.head_seat`);
+    if (rawPrev.partner_place !== undefined) {
+      prev.partner_place = asInteger(rawPrev.partner_place, `${at}.prev.partner_place`);
+    }
+
+    const out: TributeVector = {
+      name: asString(required(vector, "name", at), `${at}.name`),
+      rule: requiredRule(vector, at),
+      level: asString(required(vector, "level", at), `${at}.level`),
+      hands,
+      prev,
+      steps: asArray(required(vector, "steps", at), `${at}.steps`).map((step, j) =>
+        readTributeStep(step, `${at}.steps[${j}]`),
+      ),
+      expect: readTributeState(required(vector, "expect", at), `${at}.expect`),
+    };
+    if (vector.pending !== undefined) out.pending = asString(vector.pending, `${at}.pending`);
+    return out;
   });
 }

@@ -9,10 +9,11 @@ import { asKey, comboRankName, comboSummary, compare, parseComboType, pick, reco
 import { deal, HANDS_EACH, permShuffler, SEATS } from "./deal";
 import { moves } from "./moves";
 import { Game, RuleError } from "./play";
+import { Tribute, TributeError } from "./tribute";
 import { power } from "./power";
 import { handOf } from "./testing/cards";
-import { compareFixture, combosFixture, dealFixture, deckFixture, movesFixture, playFixture, powerFixture } from "./testing/testdata";
-import type { CompareSide, PlayStep } from "./testing/fixtures";
+import { compareFixture, combosFixture, dealFixture, deckFixture, movesFixture, playFixture, powerFixture, tributeFixture } from "./testing/testdata";
+import type { CompareSide, PlayStep, TributeStep } from "./testing/fixtures";
 
 const keys = (cards: readonly Card[]): string[] => cards.map(cardKey);
 
@@ -243,6 +244,79 @@ describe("play.json：出牌状态机（第八条、第九条）", () => {
         expect(vector.expect.turn, "expect 写了 result，却没写 turn: 0").toBe(0);
       }
       expect(stateOf(game)).toMatchObject(vector.expect);
+    });
+  }
+});
+
+describe("tribute.json：进贡 / 还贡 / 抗贡（第十条）", () => {
+  /** 这一刻的贡牌局面，写成牌例里的那套字段。 */
+  const stateOf = (tr: Tribute): Record<string, unknown> => {
+    const state: Record<string, unknown> = { kind: tr.kind(), givers: tr.givers(), done: tr.done() };
+    const receiver: Record<string, number> = {};
+    for (const g of tr.givers()) {
+      const to = tr.receiver(g);
+      if (to !== undefined) receiver[String(g)] = to;
+    }
+    if (Object.keys(receiver).length > 0) state.receiver = receiver;
+    const leader = tr.leader();
+    if (leader !== undefined) state.leader = leader;
+    // 牌例里的 `hands` 是「四家全比」。`hands()` 按 Go 的口径要求贡完才给，而 `after` 可能写在
+    // 还没贡完的那一步上 —— 所以直接读私有字段（和 Go 那边测试里的 `handsNow` 同一个用法）。
+    state.hands = (tr as unknown as { handCards: Card[][] }).handCards.map(keys);
+    return state;
+  };
+
+  /** 走一步。牌按牌例里的写法取**整副牌里的那一张**（ID 要对得上，而且可能不在这一家手里）。 */
+  const applyStep = (tr: Tribute, step: TributeStep): void => {
+    const card = handOf([step.give ?? step.return ?? ""])[0]!;
+    if (step.give !== undefined) tr.give(step.seat, card);
+    else if (step.return !== undefined) tr.returnCard(step.seat, card);
+    else throw new Error("这一步既没写 give 也没写 return");
+  };
+
+  /** 这一步被拒的原因；没被拒、或者抛的不是 `TributeError`，都返回能看懂的字符串。 */
+  const rejectReasonOf = (fn: () => void): string => {
+    try {
+      fn();
+      return "（没被拒）";
+    } catch (error) {
+      return error instanceof TributeError ? error.reason : `（不是 TributeError：${String(error)}）`;
+    }
+  };
+
+  for (const vector of tributeFixture) {
+    it(`${vector.name}${vector.pending ? "（待确认）" : ""}`, () => {
+      const level = parseRank(vector.level);
+      const tr = new Tribute(
+        level,
+        vector.hands.map(handOf),
+        {
+          order: vector.prev.order,
+          headSeat: vector.prev.head_seat ?? vector.prev.order[0],
+          partnerPlace: vector.prev.partner_place ?? 0,
+        },
+      );
+
+      vector.steps.forEach((step, i) => {
+        const what = `第 ${i + 1} 步`;
+        const before = stateOf(tr);
+        if (step.reject !== undefined) {
+          expect(rejectReasonOf(() => applyStep(tr, step)), what).toBe(step.reject);
+          // 「被拒」的全部含义就是局面没动 —— 先挪了牌再报错，局面就坏了。
+          expect(stateOf(tr), `${what}：被拒之后局面不该变`).toStrictEqual(before);
+          return;
+        }
+        applyStep(tr, step);
+        // `after` 是**可选**的：只在「这一步之后值得单独断一下」的地方写（比如双贡两人都贡完之后
+        // 收贡的人定下来那一步）。一条用例到底走对没有，最后由 `expect` 兜 —— 那里面四家手牌是**全比**的。
+        if (step.after) expect(stateOf(tr), what).toMatchObject(step.after);
+      });
+
+      // `leader` 只在贡完还完之后有意义：写了 leader 就必须写 done: true，反过来也一样。
+      if (vector.expect.leader !== undefined) {
+        expect(vector.expect.done, "expect 写了 leader，就必须写 done: true").toBe(true);
+      }
+      expect(stateOf(tr)).toMatchObject(vector.expect);
     });
   }
 });
