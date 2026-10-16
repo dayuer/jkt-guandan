@@ -73,7 +73,7 @@ func TestMigrationsCreateDesignTables(t *testing.T) {
 	got := tables(t, openTest(t))
 	want := []string{
 		"claim_tokens", "devices", "events", "follows", "game_bans", "games",
-		"hidden_games", "idempotency_keys", "invites", "kv", "outbox", "push_subscriptions",
+		"hidden_games", "idempotency_keys", "invites", "kv", "outbox", "practice_games", "push_subscriptions",
 		"schema_migrations", "score_matches", "score_rounds", "score_seat_leavers", "seats", "user_links", "users", "waitlist", "wx_subscribe_quota",
 	}
 	if len(got) != len(want) {

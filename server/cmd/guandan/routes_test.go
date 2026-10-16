@@ -24,6 +24,7 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/server/internal/identity"
 	"github.com/dayuer/jkt-guandan/server/internal/notify"
+	"github.com/dayuer/jkt-guandan/server/internal/practice"
 	"github.com/dayuer/jkt-guandan/server/internal/realtime"
 	"github.com/dayuer/jkt-guandan/server/internal/route"
 	"github.com/dayuer/jkt-guandan/server/internal/share"
@@ -74,6 +75,7 @@ func newApp(t *testing.T) *app {
 		Config: cfg, Store: st, Clock: clk, Identity: identitySvc,
 		Routes: appRoutes(appDeps{
 			identity: identitySvc, games: gamesSvc, notify: notifySvc, friends: friends.NewService(st, clk),
+			practice: practice.NewService(st, clk),
 			ws: realtime.Handler(realtime.Options{
 				Hub: hub, AllowOrigin: cfg.AllowsOrigin, CookieFree: identitySvc.CookieFree, Identify: realtimeIdentify,
 				Revalidate: func(ctx context.Context, p realtime.Principal) bool {
@@ -141,6 +143,8 @@ func TestRouteTable(t *testing.T) {
 		{"GET /api/friends", "user", "friends.(*handler).list"},
 		{"PUT /api/follows/{user_id}", "user", "friends.(*handler).star"},
 		{"DELETE /api/follows/{user_id}", "user", "friends.(*handler).unstar"},
+		{"POST /api/practice", "user", "practice.(*handler).create"},
+		{"GET /api/practice/{id}", "user", "practice.(*handler).get"},
 		{"POST /api/agent", "public", "agent.(*handler).draft"},
 		{"POST /api/events", "public", "telemetry.(*handler).events"},
 		{"POST /api/client-errors", "public", "telemetry.(*handler).clientError"},
