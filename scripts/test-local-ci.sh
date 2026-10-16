@@ -59,6 +59,12 @@ eq '小游戏自己的改动只跑小游戏' \
   'local-ci/minigame' \
   "$(printf 'app/minigame/src/main.ts\napp/minigame/package.json\n' | scope_contexts)"
 
+# #253：两端共用的纯逻辑搬到了 app/shared（第一批是 status）。H5 和小游戏都 import 它，
+# 所以两边的检查都要跑；这个目录不在 app/h5 下，不会被 h5 的分支抢走，但它自己**必须有**
+# 一条分支 —— 漏了就是「改了没人跑」。
+eq 'app/shared 改动：test / minigame / e2e 都要跑'   "$(lines local-ci/test local-ci/minigame local-ci/e2e)"   "$(printf 'app/shared/src/status.ts
+' | scope_contexts)"
+
 # #87：小游戏从第 6 步起 import app/rules（计分规则搬过去了），改了引擎小游戏的包也会变 ——
 # 和上面 app/h5/src/* 那条同一个道理。这条断言就是钉住这件事的：漏了它，改规则引擎时
 # 小游戏那边不会跑，打包坏了也不会红。

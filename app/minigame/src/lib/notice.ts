@@ -15,7 +15,7 @@
 import {
   acknowledge, fromDetail, fromSummary, noticesFor, snapshotKey,
   type GameView, type Notice, type NoticeKind,
-} from "../../../h5/src/status";
+} from "../../../shared/src/status";
 import type { GameDetail, GameSummary } from "./api";
 
 type Store = Pick<Storage, "getItem" | "setItem">;

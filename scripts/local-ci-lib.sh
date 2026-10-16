@@ -52,6 +52,11 @@ _path_to_context() {
       echo 'local-ci/test'; echo 'local-ci/vuln'; echo 'local-ci/docker'; echo 'local-ci/e2e'; echo 'local-ci/rules' ;;
     server/*)
       echo 'local-ci/test'; echo 'local-ci/vuln'; echo 'local-ci/docker'; echo 'local-ci/e2e' ;;
+    # 两端共用的纯逻辑（#253：从 app/h5/src 一批批搬过来的，第一批是 status）。H5 和小游戏
+    # **都** import 它，所以两边的检查都要跑 —— 道理同下面 `app/h5/src/*` 那条。
+    # 它不在 app/h5 下，不会被下面几条抢走；但新目录不挂上来就是「改了没人跑」（静默漏检）。
+    app/shared/*)
+      echo 'local-ci/test'; echo 'local-ci/minigame'; echo 'local-ci/e2e' ;;
     # ⚠️ 下面三条要排在 `app/h5/*` 前面：case 取**第一个**命中的分支。
     app/h5/package.json|app/h5/package-lock.json)
       echo 'local-ci/test'; echo 'local-ci/h5-audit'; echo 'local-ci/e2e' ;;

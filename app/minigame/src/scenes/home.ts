@@ -8,7 +8,7 @@ import { leaveGame, listGames, type GameSummary } from "../lib/api";
 import { cardDay, kindLabel, missingLabel, slashDate, timeHM, dayShort } from "../lib/fmt";
 import { realtime } from "../lib/realtime";
 import { currentUser } from "../lib/session";
-import type { Notice } from "../../../h5/src/status";
+import type { Notice } from "../../../shared/src/status";
 import { dismissNotice, observeNotices, summaryView } from "../lib/notice";
 import { promotedSheet } from "./sheets";
 import type { Nav } from "./nav";
