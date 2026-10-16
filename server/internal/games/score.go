@@ -137,10 +137,10 @@ func loadScore(ctx context.Context, q queryer, game Game, viewerID string, now t
 
 	var startedAt int64
 	err := q.QueryRowContext(ctx, `
-		SELECT m.kind, m.a_fail_limit, m.started_by, COALESCE(u.nickname, ''), m.started_at, m.revision
+		SELECT m.kind, m.started_by, COALESCE(u.nickname, ''), m.started_at, m.revision
 		  FROM score_matches m LEFT JOIN users u ON u.id = m.started_by
 		 WHERE m.game_id = ?`, game.ID).
-		Scan(&sc.Settings.Kind, &sc.Settings.AFailLimit, &sc.StartedBy.ID, &sc.StartedBy.Nickname,
+		Scan(&sc.Settings.Kind, &sc.StartedBy.ID, &sc.StartedBy.Nickname,
 			&startedAt, &sc.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		// 和 StartScore 的判断一致：full 已经排除了 done / cancelled。
@@ -256,15 +256,18 @@ func (s *Service) scoreWriter(ctx context.Context, tx *store.Tx, code, userID st
 }
 
 // StartScore 开始记分（S2）。座位上任何一人都能点；已经开始了就原样返回（两人同时点「开始」
-// 也只开一次，后到的那个人的约定不生效）。aFailLimit 只能是 3 或 0（不回 2）。
+// 也只开一次）。
 // 玩法按牌局的 kind 定：no-level 只记胜局，其余（classic、teaching）记级数。
-func (s *Service) StartScore(ctx context.Context, code, userID string, aFailLimit int, idemKey string) (*Score, error) {
+// 请求体没有参数：开局没有可选的约定了（#205，打 A 必打，见 scoring.Settings），
+// 早先客户端带的 `a_fail_limit` 忽略掉，不报错。
+func (s *Service) StartScore(ctx context.Context, code, userID string, idemKey string) (*Score, error) {
 	if !s.scoreLimiter.Allow(userID) {
 		return nil, ErrRateLimited
 	}
 	now := s.clk.Now()
 	const route = "POST /api/games/{code}/score"
-	fp := idemFingerprint("a_fail_limit", aFailLimit)
+	// 空参数集的指纹：这个接口的请求体没有业务参数可比，同一个键重复点就是重放（§11.4）。
+	fp := idemFingerprint()
 
 	var sc *Score
 	err := s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
@@ -287,7 +290,7 @@ func (s *Service) StartScore(ctx context.Context, code, userID string, aFailLimi
 			if now.Before(scoreOpensAt(game)) {
 				return ErrScoreTooEarly
 			}
-			settings := scoring.Settings{Kind: scoring.KindClassic, AFailLimit: aFailLimit}
+			settings := scoring.Settings{Kind: scoring.KindClassic}
 			if game.Kind == scoring.KindNoLevel {
 				settings.Kind = scoring.KindNoLevel
 			}
@@ -295,9 +298,9 @@ func (s *Service) StartScore(ctx context.Context, code, userID string, aFailLimi
 				return fmt.Errorf("%w：%v", ErrInvalidInput, err)
 			}
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO score_matches (game_id, kind, a_fail_limit, started_by, started_at, revision)
-				VALUES (?, ?, ?, ?, ?, 1)`,
-				game.ID, settings.Kind, settings.AFailLimit, userID, now.Unix()); err != nil {
+				INSERT INTO score_matches (game_id, kind, started_by, started_at, revision)
+				VALUES (?, ?, ?, ?, 1)`,
+				game.ID, settings.Kind, userID, now.Unix()); err != nil {
 				return err
 			}
 			tx.Touch(game.ID)

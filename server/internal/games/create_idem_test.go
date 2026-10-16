@@ -86,7 +86,7 @@ func TestCreateIdemKeyFromOtherRoute(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	code, seats := f.fullGame()
-	if _, err := f.games.StartScore(ctx, code, seats[0], 3, "shared"); err != nil {
+	if _, err := f.games.StartScore(ctx, code, seats[0], "shared"); err != nil {
 		t.Fatal(err)
 	}
 	before := f.count(`SELECT count(*) FROM games WHERE host_id = ?`, seats[0])

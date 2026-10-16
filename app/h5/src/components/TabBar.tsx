@@ -10,10 +10,11 @@ import { useTabBarHeight } from "../useBarHeight";
  */
 export type TabKey = "games" | "learn" | "create" | "friends" | "me";
 
-const TABS: { key: TabKey; label: string; glyph: string; egg?: boolean }[] = [
+const TABS: { key: TabKey; label: string; glyph: string; ball?: boolean }[] = [
   { key: "games", label: "牌局", glyph: "♠" },
   { key: "learn", label: "学牌", glyph: "♣" },
-  { key: "create", label: "约局", glyph: "蛋", egg: true },
+  // 中间这一颗红球：球里是「雅」（雅加达），#218 之前写的是「蛋」。
+  { key: "create", label: "约局", glyph: "雅", ball: true },
   { key: "friends", label: "牌友", glyph: "♦" },
   { key: "me", label: "我的", glyph: "♥" },
 ];
@@ -33,7 +34,7 @@ export function TabBar({ active, onTab }: Props) {
       {TABS.map((t) => (
         <button
           key={t.key}
-          class={`tab${t.key === active ? " on" : ""}${t.egg ? " egg" : ""}`}
+          class={`tab${t.key === active ? " on" : ""}${t.ball ? " ball" : ""}`}
           aria-current={t.key === active ? "page" : undefined}
           onClick={() => onTab(t.key)}
         >

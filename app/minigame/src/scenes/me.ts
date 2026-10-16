@@ -1,11 +1,12 @@
-// 我的（G1–G5）：称呼、在别的设备上登录（认领码）、我在网页上报过名、WhatsApp、设备、隐私与注销。
+// 我的（G1–G5）：称呼、我的牌局（#211）、隐私与注销；不常用的（认领码、网页版身份、WhatsApp、设备）收进「设置」。
 
 import type { App, Scene, Sheet } from "../core/app";
-import { C, Ctx, Scroller, fillRR, font, initial, text } from "../core/ui";
-import { PAD, avatar, button, copy, disclaimer, emptyState, errorLine, field, list, nav, sheetButtons, sheetHeader, simpleSheet } from "../core/widgets";
-import { ApiError, API_BASE, clearWaPhone, deleteMe, getMe, issueClaim, setWaPhone, signOutDevice, signOutOtherDevices, type ClaimTicket, type Device } from "../lib/api";
-import { lastSeenLabel, timeHM } from "../lib/fmt";
-import { currentUser, signOutHere } from "../lib/session";
+import { C, Ctx, Scroller, card, circle, ellipsize, fillRR, font, initial, measure, text } from "../core/ui";
+import { PAD, avatar, button, copy, disclaimer, emptyState, errorLine, field, list, nav, sheetButtons, sheetHeader, simpleSheet, textLink } from "../core/widgets";
+import { ApiError, API_BASE, clearWaPhone, deleteMe, getMe, hideFromHistory, issueClaim, listMyGames, listMyHistory, setNickname, setWaPhone, signOutDevice, signOutOtherDevices, type ClaimTicket, type Device, type GameSummary, type HistoryGame } from "../lib/api";
+import { cardDay, dayLabel, kindLabel, lastSeenLabel, timeHM, weekday } from "../lib/fmt";
+import { historyStatus, roleBadge, scoreLine, upcomingStatus, type Badge, type Tone } from "../lib/mygames";
+import { currentUser, signOutHere, updateNickname } from "../lib/session";
 import { maskWaPhone, normalizeWaPhone } from "../../../h5/src/wa";
 import { TAB_H } from "./home";
 import type { Nav } from "./nav";
@@ -13,6 +14,218 @@ import { linkSheet, requireIdentity } from "./sheets";
 
 export class Me implements Scene {
   tab = "me";
+  private scroll = new Scroller();
+  /** 要打的（#211）。null 是还没读到。 */
+  private upcoming: GameSummary[] | null = null;
+  private history: HistoryGame[] | null = null;
+  private hasMore = false;
+  private loadingMore = false;
+  private error = "";
+  private top = 0;
+  private bottom = 0;
+  constructor(private app: App, private nav: Nav) {}
+
+  onEnter() { this.refresh(); }
+  onResume() { this.refresh(); }
+  private refresh() {
+    if (!currentUser()) { this.upcoming = []; this.history = []; this.hasMore = false; return; }
+    Promise.all([listMyGames(), listMyHistory()]).then(([up, h]) => {
+      this.upcoming = up; this.history = h.games; this.hasMore = h.has_more; this.error = "";
+    }).catch((err) => {
+      if (err instanceof ApiError && err.status === 401) { this.upcoming = []; this.history = []; return; }
+      this.error = "读不到我的牌局，稍后再试";
+      this.upcoming ??= []; this.history ??= [];
+    }).finally(() => this.app.redraw());
+  }
+
+  private async more() {
+    const last = this.history?.[this.history.length - 1];
+    if (!last || this.loadingMore) return;
+    this.loadingMore = true; this.app.redraw();
+    try {
+      const page = await listMyHistory(last);
+      const seen = new Set(this.history!.map((g) => g.short_code));
+      this.history = [...this.history!, ...page.games.filter((g) => !seen.has(g.short_code))];
+      this.hasMore = page.has_more;
+    } catch { this.app.toast("没读到更早的，稍后再试"); }
+    finally { this.loadingMore = false; this.app.redraw(); }
+  }
+
+  /** 从我自己的历史里删掉：先确认，删成功了再从列表里拿掉。 */
+  private confirmHide(g: HistoryGame) {
+    const a = this.app;
+    simpleSheet(a, {
+      title: "从我的历史里删掉这一局？",
+      sub: `${dayLabel(g.starts_at)} ${timeHM(g.starts_at)} · ${g.venue}。只是你自己看不到了，牌局本身、同局牌友的记录和比分都不受影响。删了不能恢复。`,
+      buttons: (s) => [
+        { label: "删掉", style: "danger", onTap: () => { a.closeSheet(s); void this.hide(g); } },
+        { label: "算了", style: "soft", onTap: () => a.closeSheet(s) },
+      ],
+    });
+  }
+  private async hide(g: HistoryGame) {
+    try {
+      await hideFromHistory(g.short_code);
+      this.history = (this.history ?? []).filter((h) => h.short_code !== g.short_code);
+      this.app.toast("删掉了");
+    } catch (err) {
+      this.app.toast(err instanceof ApiError && err.code === "not_history" ? "这一局还没开始，要退出请去详情页" : "没删掉，稍后再试");
+    } finally { this.app.redraw(); }
+  }
+
+  scrollerAt(_x: number, y: number) {
+    return y > this.app.contentTop && y < this.app.H - TAB_H - this.app.safeBottom ? { s: this.scroll, axis: "y" as const } : null;
+  }
+  step() { return this.scroll.step(); }
+
+  draw(ctx: Ctx) {
+    const a = this.app, W = a.W, top = a.contentTop, bottom = a.H - TAB_H - a.safeBottom, fw = W - PAD * 2;
+    this.top = top; this.bottom = bottom;
+    const me = currentUser();
+    ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, a.H);
+    ctx.save(); ctx.beginPath(); ctx.rect(0, top, W, bottom - top); ctx.clip();
+    let y = top + 4 - this.scroll.pos;
+
+    if (me) {
+      const nickId = "edit-nick";
+      fillRR(ctx, PAD, y + 2, fw, 76, 18, C.line);
+      fillRR(ctx, PAD, y, fw, 76, 18, a.isPressed(nickId) ? C.paper : C.card);
+      avatar(ctx, PAD + 40, y + 38, 24, initial(me.nickname), "me");
+      // 「改」比箭头直白：这里点进去就是改称呼（#210）
+      text(ctx, me.nickname, PAD + 76, y + 28, font(18, "900", true), C.ink);
+      text(ctx, "这个称呼就是你在牌局里的名字", PAD + 76, y + 52, font(12), C.ink3);
+      fillRR(ctx, PAD + fw - 62, y + 26, 46, 24, 12, C.paper);
+      text(ctx, "改", PAD + fw - 39, y + 38, font(13, "700"), C.red, "center");
+      a.hit(nickId, PAD, y, fw, 76, () => nickSheet(a));
+      y += 92;
+      y = this.drawMyGames(ctx, y, fw, me.id);
+    } else {
+      y += emptyState(a, ctx, y, ["还没有身份。", "填个称呼就能报名、开一局。"]);
+      button(a, ctx, "fill-nick", PAD, y, fw, 50, "填个称呼", "primary", () => void requireIdentity(a).then(() => this.refresh()));
+      y += 64;
+    }
+    // 不常用的都收进「设置」（#211）；「隐私与数据」留在这里，注销也从这里进。
+    y += list(a, ctx, PAD, y, fw, [
+      { id: "settings", title: "设置", sub: "在别的设备上登录、绑定 WhatsApp、网页版身份、登录的设备", chevron: true, onTap: () => this.nav.settings() },
+      { id: "privacy", title: "隐私与数据", sub: "我们存了什么、存多久、怎么注销", chevron: true, onTap: () => this.nav.privacy() },
+    ]) + 6;
+    y += disclaimer(a, ctx, y) + 12;
+    ctx.restore();
+    this.scroll.setMax(y + this.scroll.pos - bottom);
+    nav(a, ctx, "我的");
+  }
+
+  /** 我的牌局（#211）：要打的在上，历史在下。返回画完之后的 y。 */
+  private drawMyGames(ctx: Ctx, y: number, fw: number, meID: string): number {
+    const a = this.app, W = a.W;
+    text(ctx, "我的牌局", PAD, y + 16, font(20, "900", true), C.ink);
+    y += 36;
+    if (this.error) y += errorLine(a, ctx, y, this.error);
+
+    const up = this.upcoming;
+    text(ctx, up && up.length ? `要打的 · ${up.length} 局` : "要打的", PAD, y + 10, font(13, "700"), C.ink3);
+    y += 26;
+    if (up === null) y += emptyState(a, ctx, y, ["正在看…"]);
+    else if (up.length === 0) {
+      y += emptyState(a, ctx, y, ["还没有要打的局。"]);
+      textLink(a, ctx, "mine-find", W / 2 - 56, y + 4, "去找局 ›", () => this.nav.tab("games"), C.red);
+      textLink(a, ctx, "mine-create", W / 2 + 56, y + 4, "开一局 ›", () => this.nav.create(), C.red);
+      y += 40;
+    }
+    for (const g of up ?? []) {
+      this.drawGame(ctx, g, PAD, y, fw, meID, false);
+      y += ROW_H + ROW_GAP;
+    }
+
+    const hist = this.history;
+    if (hist && hist.length) {
+      y += 8;
+      text(ctx, "历史", PAD, y + 10, font(13, "700"), C.ink3);
+      text(ctx, "删除只是你自己看不到", W - PAD, y + 10, font(11), C.ink4, "right");
+      y += 26;
+      for (const g of hist) {
+        this.drawGame(ctx, g, PAD, y, fw, meID, true);
+        y += ROW_H + ROW_GAP;
+      }
+      if (this.hasMore) {
+        textLink(a, ctx, "mine-more", W / 2, y + 12, this.loadingMore ? "正在读…" : "看更早的 ›", () => void this.more());
+        y += 36;
+      }
+    }
+    return y + 14;
+  }
+
+  private drawGame(ctx: Ctx, g: GameSummary | HistoryGame, x: number, y: number, w: number, meID: string, past: boolean) {
+    const a = this.app, id = "mine:" + g.short_code, h = ROW_H;
+    if (y + h < this.top - 10 || y > this.bottom + 10) return;
+    ctx.save();
+    if (a.isPressed(id)) { ctx.translate(x + w / 2, y + h / 2); ctx.scale(0.98, 0.98); ctx.translate(-x - w / 2, -y - h / 2); }
+    card(ctx, x, y, w, h, 16);
+    // 左边：哪天、几点
+    fillRR(ctx, x + 12, y + 12, 72, h - 24, 10, C.paper);
+    const dim = past ? C.ink3 : C.ink;
+    text(ctx, cardDay(g.starts_at), x + 48, y + 30, font(12, "700"), past ? C.ink3 : C.red, "center");
+    text(ctx, timeHM(g.starts_at), x + 48, y + 53, font(22, "900", true), dim, "center");
+    text(ctx, weekday(g.starts_at), x + 48, y + 75, font(11), C.ink3, "center");
+
+    // 右边：片区、玩法、地点；我的身份；凑局状态 / 比分
+    const rx = x + 96, rw = w - 96 - 12;
+    const role = roleBadge(g, meID);
+    let roleW = 0;
+    if (!past && role) roleW = drawBadge(ctx, role, x + w - 12, y + 14, "right") + 8;
+    const sub = [g.area, kindLabel(g.kind), past && role?.label === "我开的" ? "我开的" : ""].filter(Boolean).join(" · ");
+    text(ctx, ellipsize(ctx, sub, rw - roleW - (past ? 40 : 0), font(12)), rx, y + 25, font(12), C.ink3);
+    text(ctx, ellipsize(ctx, g.venue, rw, font(16, "700")), rx, y + 50, font(16, "700"), dim);
+
+    const status = past ? historyStatus(g) : upcomingStatus(g);
+    const sw = drawBadge(ctx, status, rx, y + 64, "left");
+    if (past) {
+      const line = scoreLine(g as HistoryGame);
+      if (line) text(ctx, ellipsize(ctx, line, rw - sw - 10, font(12, "600")), rx + sw + 10, y + 77, font(12, "600"), C.ink2);
+    } else {
+      // 座位圆点：谁已经坐下了，一眼看出还差几个
+      for (let no = 1; no <= 4; no++) {
+        const cx = rx + sw + 22 + (no - 1) * 26, cy = y + 77;
+        if (cx + 11 > x + w - 8) break;
+        const seat = g.seat_list?.find((s) => s.seat_no === no);
+        if (seat) {
+          const host = seat.user.id === g.host.id, isMe = seat.user.id === meID;
+          circle(ctx, cx, cy, 11, isMe && !host ? C.gold : host ? C.redTint : C.beige);
+          text(ctx, initial(seat.user.nickname), cx, cy + 1, font(11, "900", true), host ? C.red : C.ink, "center");
+        } else circle(ctx, cx, cy, 10.5, null, C.khaki, 1.2, [3, 3]);
+      }
+    }
+    ctx.restore();
+
+    const vy = Math.max(y, this.top), vh = Math.min(y + h, this.bottom) - vy;
+    if (vh > 0) a.hit(id, x, vy, w, vh, () => this.nav.detail(g.short_code));
+    if (past) {
+      // 删除放在右上角，单独一块热区（后登记的先命中，盖在卡片热区上面）
+      const did = "hide:" + g.short_code;
+      text(ctx, "删除", x + w - 14, y + 25, font(12, "600"), a.isPressed(did) ? C.red : C.ink4, "right");
+      const hy = Math.max(y, this.top), hh = Math.min(y + 44, this.bottom) - hy;
+      if (hh > 0) a.hit(did, x + w - 64, hy, 64, hh, () => this.confirmHide(g as HistoryGame));
+    }
+  }
+}
+
+const ROW_H = 104, ROW_GAP = 10;
+
+const TONE: Record<Tone, [string, string]> = {
+  red: [C.redTint, C.red], green: [C.greenTint, C.green], sand: [C.sand, C.ink2], grey: [C.beige, C.ink3],
+};
+/** 画一个小标签，返回宽度。align 是 x 对齐的那一边。 */
+function drawBadge(ctx: Ctx, b: Badge, x: number, y: number, align: "left" | "right"): number {
+  const f = font(12, "700"), bw = measure(ctx, b.label, f) + 16, bx = align === "left" ? x : x - bw;
+  const [bg, fg] = TONE[b.tone];
+  fillRR(ctx, bx, y, bw, 24, 7, bg);
+  text(ctx, b.label, bx + bw / 2, y + 12, f, fg, "center");
+  return bw;
+}
+
+// ── 设置（#211）：从「我的」页挪过来的不常用条目，行为不变 ──
+
+export class Settings implements Scene {
   private wa: string | undefined;
   private scroll = new Scroller();
   constructor(private app: App, private nav: Nav) {}
@@ -25,43 +238,31 @@ export class Me implements Scene {
     getMe().then((b) => { this.wa = b.wa_phone || undefined; this.app.redraw(); }).catch(() => {});
   }
 
-  scrollerAt(_x: number, y: number) {
-    return y > this.app.contentTop && y < this.app.H - TAB_H - this.app.safeBottom ? { s: this.scroll, axis: "y" as const } : null;
-  }
+  scrollerAt(_x: number, y: number) { return y > this.app.contentTop ? { s: this.scroll, axis: "y" as const } : null; }
   step() { return this.scroll.step(); }
 
   draw(ctx: Ctx) {
-    const a = this.app, W = a.W, top = a.contentTop, bottom = a.H - TAB_H - a.safeBottom, fw = W - PAD * 2;
+    const a = this.app, W = a.W, top = a.contentTop, fw = W - PAD * 2;
     const me = currentUser();
     ctx.fillStyle = C.paper; ctx.fillRect(0, 0, W, a.H);
-    ctx.save(); ctx.beginPath(); ctx.rect(0, top, W, bottom - top); ctx.clip();
+    ctx.save(); ctx.beginPath(); ctx.rect(0, top, W, a.H - top); ctx.clip();
     let y = top + 4 - this.scroll.pos;
-
     if (me) {
-      fillRR(ctx, PAD, y + 2, fw, 76, 18, C.line);
-      fillRR(ctx, PAD, y, fw, 76, 18, C.card);
-      avatar(ctx, PAD + 40, y + 38, 24, initial(me.nickname), "me");
-      text(ctx, me.nickname, PAD + 76, y + 28, font(18, "900", true), C.ink);
-      text(ctx, "这个称呼就是你在牌局里的名字", PAD + 76, y + 52, font(12), C.ink3);
-      y += 92;
+      text(ctx, "换设备、找回身份", PAD + 4, y + 12, font(13, "700"), C.ink3);
+      y += 28;
       y += list(a, ctx, PAD, y, fw, [
         { id: "claim", title: "在别的设备上登录", sub: "换手机、在浏览器里打开网页版时找回自己：给你一串认领码", chevron: true, onTap: () => claimSheet(a) },
         { id: "wa", title: "绑定 WhatsApp", sub: "可选。换了手机也能凭号码找回", value: this.wa ? maskWaPhone(this.wa) : "去绑定", chevron: true, onTap: () => this.waSheet() },
         { id: "link", title: "我在网页上报过名", sub: "用网页版给的认领码，把网页上的身份接到这个微信", chevron: true, onTap: () => void linkSheet(a).then(() => this.refresh()) },
       ]) + 14;
-    } else {
-      y += emptyState(a, ctx, y, ["还没有身份。", "填个称呼就能报名、开一局。"]);
-      button(a, ctx, "fill-nick", PAD, y, fw, 50, "填个称呼", "primary", () => void requireIdentity(a).then(() => this.refresh()));
-      y += 64;
     }
     y += list(a, ctx, PAD, y, fw, [
       { id: "devices", title: "登录的设备", sub: "看看哪些设备认得这个身份，不认识的可以退掉", chevron: true, disabled: !me, onTap: () => this.nav.devices() },
-      { id: "privacy", title: "隐私与数据", sub: "我们存了什么、存多久、怎么注销", chevron: true, onTap: () => this.nav.privacy() },
-    ]) + 6;
-    y += disclaimer(a, ctx, y) + 12;
+    ]) + 14;
+    if (!me) { text(ctx, "还没有身份，填个称呼之后这里才有东西。", W / 2, y + 12, font(12), C.ink4, "center"); y += 32; }
     ctx.restore();
-    this.scroll.setMax(y + this.scroll.pos - bottom);
-    nav(a, ctx, "我的");
+    this.scroll.setMax(y + this.scroll.pos - a.H);
+    nav(a, ctx, "设置", () => this.nav.back());
   }
 
   /** 绑定 WhatsApp（#116） */
@@ -110,6 +311,49 @@ export class Me implements Scene {
     };
     app.openSheet(s);
   }
+}
+
+function nickSheet(app: App) {
+  const me = currentUser();
+  if (!me) return;
+  let value = me.nickname, busy = false, error = "";
+  const save = async () => {
+    const name = value.trim();
+    if (busy || !name) return;
+    if (name === me.nickname) { app.closeSheet(s); return; } // 没改，别白跑一次（也算一次限频）
+    busy = true; error = ""; app.redraw();
+    try {
+      const r = await setNickname(name);
+      updateNickname(r.user.nickname); // 「我的」页、牌局里都是读这份缓存
+      app.closeSheet(s);
+      app.toast("改好了");
+    } catch (err) {
+      // 服务端的说明已经够用户看懂（「称呼需要 1–12 个字符」「这个称呼不能用」）；
+      // 内容安全那条回的是 422，把原文写成自己的话。
+      error = err instanceof ApiError
+        ? (err.code === "sensitive_word" ? "这个名字过不了微信的内容检测，换一个吧"
+          : err.code === "rate_limited" ? "这一小时改得太多次了，过一会儿再来"
+          : err.message)
+        : "没改成，稍后再试";
+    } finally {
+      busy = false; app.redraw();
+    }
+  };
+  const s: Sheet = {
+    draw: (ctx, y, w) => {
+      let cy = sheetHeader(ctx, y, w, "改称呼", "牌局里的座位、牌友列表都会跟着变。改动会发给微信做内容检测。");
+      cy += field(app, ctx, 20, cy, w - 40, {
+        key: "nick", value, placeholder: "比如：老王", maxLength: 12, error,
+        onChange: (v) => { value = v; error = ""; }, onConfirm: () => void save(),
+      }) + 14;
+      cy = sheetButtons(app, ctx, cy, w, [
+        { label: busy ? "正在保存…" : "保存", style: "primary", disabled: busy || !value.trim(), onTap: () => void save() },
+        { label: "算了", style: "link", onTap: () => app.closeSheet(s) },
+      ]);
+      return cy - y + 8;
+    },
+  };
+  app.openSheet(s);
 }
 
 /** 在别的设备上登录：认领码（主路径）和登录链接（次要，明说别外发）。 */

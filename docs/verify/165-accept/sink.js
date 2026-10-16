@@ -30,35 +30,65 @@ function firstFilePart(buf, boundary) {
   return null
 }
 
+// query 里的 name 只当文件名用：直接拼路径的话 `?name=../../x` 能写到 OUT 外面（#208 四）。
+// 只监听 127.0.0.1，风险低，但没理由留这个口子。
+function safeName(raw) {
+  const s = String(raw || '')
+  if (!s || s.includes('\0')) return null
+  const base = path.basename(s)
+  if (!base || base === '.' || base === '..' || base.includes('/') || base.includes('\\')) return null
+  return base
+}
+
+function handle(req, res, body) {
+  const url = new URL(req.url, 'http://127.0.0.1')
+  const raw = url.searchParams.get('name')
+  if (raw) {
+    // 截图
+    const name = safeName(raw)
+    if (!name) throw new Error('bad name: ' + JSON.stringify(raw))
+    const ct = req.headers['content-type'] || ''
+    const m = /boundary=(.+)$/.exec(ct)
+    let img = null
+    if (m) img = firstFilePart(body, m[1].replace(/^"|"$/g, ''))
+    if (!img) img = body
+    const file = path.join(OUT, name + '.png')
+    fs.writeFileSync(file, img)
+    console.log('SHOT ' + name + ' ' + img.length + 'B -> ' + file)
+    return
+  }
+  // 日志：JSON 解析失败、或者根本不是对象（null / 数组 / 数字），都当「没解析出来」记下来，
+  // 不能因为一条坏日志就把接收端整个搞崩（#208 四）。
+  let j = null
+  try { j = JSON.parse(body.toString('utf8')) } catch { j = null }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) j = { kind: 'unparsed', raw: body.toString('utf8').slice(0, 200) }
+  fs.appendFileSync(logPath, JSON.stringify(j) + '\n')
+  const d = j.data && typeof j.data === 'object' ? j.data : {}
+  const kind = typeof j.kind === 'string' && j.kind ? j.kind : 'unknown'; // 缺 kind 也要兜住
+  const line = kind === 'state' ? 'STATE ' + d.label + ' stack=' + JSON.stringify(d.stack) + ' sheets=' + d.sheets
+    : kind === 'touchstart' ? 'TOUCH ' + d.x + ',' + d.y + ' hit=' + d.hit
+    : kind === 'unparsed' ? 'UNPARSED ' + String(j.raw || '').slice(0, 200)
+    : kind.toUpperCase() + ' ' + JSON.stringify(d).slice(0, 220);
+  if (kind !== j.kind) console.log('（这条日志没有 kind，按 unknown 记）');
+  console.log(line);
+}
+
 http
   .createServer((req, res) => {
     const chunks = []
     req.on('data', (c) => chunks.push(c))
     req.on('end', () => {
-      const body = Buffer.concat(chunks)
-      const url = new URL(req.url, 'http://127.0.0.1')
-      const name = url.searchParams.get('name')
-      if (name) {
-        // 截图
-        const ct = req.headers['content-type'] || ''
-        const m = /boundary=(.+)$/.exec(ct)
-        let img = null
-        if (m) img = firstFilePart(body, m[1].replace(/^"|"$/g, ''))
-        if (!img) img = body
-        const file = path.join(OUT, name + '.png')
-        fs.writeFileSync(file, img)
-        console.log('SHOT ' + name + ' ' + img.length + 'B -> ' + file)
-      } else {
-        let j = null
-        try { j = JSON.parse(body.toString('utf8')) } catch { j = { kind: 'unparsed', raw: body.toString('utf8').slice(0, 200) } }
-        fs.appendFileSync(logPath, JSON.stringify(j) + '\n')
-        const d = j.data || {}
-        if (j.kind === 'state') console.log('STATE ' + d.label + ' stack=' + JSON.stringify(d.stack) + ' sheets=' + d.sheets)
-        else if (j.kind === 'touchstart') console.log('TOUCH ' + d.x + ',' + d.y + ' hit=' + d.hit)
-        else console.log(j.kind.toUpperCase() + ' ' + JSON.stringify(d).slice(0, 220))
+      try {
+        handle(req, res, Buffer.concat(chunks))
+        res.writeHead(200, { 'content-type': 'text/plain' })
+        res.end('ok')
+      } catch (e) {
+        // 一条请求处理不了不该让接收端退出：回 400、打日志，继续收后面的
+        console.error('BAD ' + (e && e.message ? e.message : e))
+        res.writeHead(400, { 'content-type': 'text/plain' })
+        res.end('bad request\n')
       }
-      res.writeHead(200, { 'content-type': 'text/plain' })
-      res.end('ok')
     })
   })
   .listen(PORT, '127.0.0.1', () => console.log('sink on 127.0.0.1:' + PORT + ' -> ' + OUT))
+

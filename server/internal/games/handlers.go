@@ -37,6 +37,10 @@ func Routes(svc *Service) []route.Route {
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/score", Access: route.User, Handler: http.HandlerFunc(h.startScore)},
 		{Method: http.MethodPost, Pattern: "/api/games/{code}/score/rounds", Access: route.User, Handler: http.HandlerFunc(h.recordRound)},
 		{Method: http.MethodPut, Pattern: "/api/games/{code}/score/rounds/{no}", Access: route.User, Handler: http.HandlerFunc(h.editRound)},
+		// 「我的」页的我的牌局（#211）：要打的、历史，历史里可以删（只从自己的列表里拿掉）。
+		{Method: http.MethodGet, Pattern: "/api/me/games", Access: route.User, Handler: http.HandlerFunc(h.mine)},
+		{Method: http.MethodGet, Pattern: "/api/me/games/history", Access: route.User, Handler: http.HandlerFunc(h.history)},
+		{Method: http.MethodDelete, Pattern: "/api/me/games/history/{code}", Access: route.User, Handler: http.HandlerFunc(h.hideFromHistory)},
 	}
 }
 
@@ -70,6 +74,58 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"games": toSummariesJSON(items)})
+}
+
+func (h *handler) mine(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	items, err := h.svc.Mine(r.Context(), userID)
+	if err != nil {
+		writeServiceError(w, "读我的牌局失败", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"games": toSummariesJSON(items)})
+}
+
+// history 分页：上一页最后一条的 starts_at 和 short_code 原样带回来（before、before_code）。
+func (h *handler) history(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	before, _ := strconv.ParseInt(q.Get("before"), 10, 64)
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	items, hasMore, err := h.svc.History(r.Context(), userID, before, q.Get("before_code"), limit)
+	if err != nil {
+		writeServiceError(w, "读历史牌局失败", err)
+		return
+	}
+	sums := make([]Summary, len(items))
+	for i, it := range items {
+		sums[i] = it.Summary
+	}
+	out := toSummariesJSON(sums)
+	for i, it := range items {
+		if it.Score != nil {
+			out[i]["score"] = it.Score
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"games": out, "has_more": hasMore})
+}
+
+func (h *handler) hideFromHistory(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	if err := h.svc.HideFromHistory(r.Context(), userID, r.PathValue("code")); err != nil {
+		writeGameError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) detail(w http.ResponseWriter, r *http.Request) {
@@ -423,6 +479,8 @@ func writeGameError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "banned", "你被移出过这一局")
 	case errors.Is(err, ErrNotHost):
 		writeError(w, http.StatusForbidden, "not_host", "只有局头能做这件事")
+	case errors.Is(err, ErrNotHistory):
+		writeError(w, http.StatusConflict, "not_history", err.Error())
 	case errors.Is(err, ErrStarted):
 		writeError(w, http.StatusConflict, "game_started", "这一局已经开始了")
 	case errors.Is(err, friends.ErrNotFriend):

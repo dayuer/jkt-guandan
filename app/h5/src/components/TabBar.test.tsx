@@ -26,7 +26,7 @@ describe("TabBar", () => {
   it("五个 tab 都在，顺序是设计稿 A2 的顺序", () => {
     const { container } = setup("games");
     const labels = [...container.querySelectorAll(".tab")].map((b) => b.textContent?.trim());
-    expect(labels).toEqual(["♠牌局", "♣学牌", "蛋约局", "♦牌友", "♥我的"]);
+    expect(labels).toEqual(["♠牌局", "♣学牌", "雅约局", "♦牌友", "♥我的"]);
   });
 
   it("当前那个高亮，别的没有", () => {

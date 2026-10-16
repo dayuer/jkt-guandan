@@ -308,7 +308,7 @@ afterEach(() => {
     expect(container.querySelector('button[aria-label="返回"]')).not.toBeNull();
   });
 
-  // phase 1 的约局就是手填表单（用户的决定）：中间那颗「蛋」直接开 08 表单，
+  // phase 1 的约局就是手填表单（用户的决定）：中间那颗球（现在写「雅」）直接开 08 表单，
   // 界面上不能再有去 07 蛋蛋页的入口（/agent 路由留着，phase 3 的 #11 会回来）。
   it("点「约局」直接开 08 表单，不去蛋蛋页", async () => {
     stubFetch(anonymous);

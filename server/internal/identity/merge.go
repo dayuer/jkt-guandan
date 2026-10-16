@@ -65,6 +65,8 @@ func mergeUsers(ctx context.Context, tx *store.Tx, a, b string) (string, error) 
 		{`UPDATE OR IGNORE game_bans SET user_id = ? WHERE user_id = ?`, `DELETE FROM game_bans WHERE user_id = ?`},
 		{`UPDATE OR IGNORE invites SET user_id = ? WHERE user_id = ?`, `DELETE FROM invites WHERE user_id = ?`},
 		{`UPDATE OR IGNORE idempotency_keys SET user_id = ? WHERE user_id = ?`, `DELETE FROM idempotency_keys WHERE user_id = ?`},
+		// 「我的牌局」历史里删掉的局（#211）：两边删过的都算删过。
+		{`UPDATE OR IGNORE hidden_games SET user_id = ? WHERE user_id = ?`, `DELETE FROM hidden_games WHERE user_id = ?`},
 	} {
 		if _, err := tx.ExecContext(ctx, stmt.update, primary, other); err != nil {
 			return "", err

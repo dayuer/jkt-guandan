@@ -216,8 +216,9 @@ export const updateGame = (code: string, patch: GamePatch, version: number) =>
 // 四个接口都返回整份计分；409 round_taken / round_changed 的响应体里也有（err.body）。
 
 export const getScore = (code: string) => request<Score>("GET", `/api/games/${enc(code)}/score`);
-export const startScore = (code: string, aFailLimit: number, key: string) =>
-  request<Score>("POST", `/api/games/${enc(code)}/score`, { body: { a_fail_limit: aFailLimit }, headers: { "Idempotency-Key": key } });
+// 开始记分没有请求参数了（#205：不再有「打 A 几次不过回到 2」这个约定），带 Idempotency-Key 就行。
+export const startScore = (code: string, key: string) =>
+  request<Score>("POST", `/api/games/${enc(code)}/score`, { body: {}, headers: { "Idempotency-Key": key } });
 export const recordRound = (code: string, expectedRoundNo: number, fact: RoundFact, key: string) =>
   request<Score>("POST", `/api/games/${enc(code)}/score/rounds`, {
     body: { expected_round_no: expectedRoundNo, head_seat: fact.head_seat, partner_place: fact.partner_place },
@@ -236,6 +237,8 @@ export const deleteMe = () => request<void>("DELETE", "/api/me");
 export const issueClaim = () => request<ClaimTicket>("POST", "/api/claim");
 export const setWaPhone = (phone: string) => request<{ wa_phone: string }>("PUT", "/api/me/wa", { body: { phone } });
 export const clearWaPhone = () => request<void>("DELETE", "/api/me/wa");
+/** 改称呼（#210）。返回的是改完之后的 user，直接拿去刷缓存。 */
+export const setNickname = (nickname: string) => request<{ user: UserRef }>("PUT", "/api/me/nickname", { body: { nickname } });
 
 export async function signOutOtherDevices(): Promise<number> {
   const me = await getMe();
@@ -243,6 +246,37 @@ export async function signOutOtherDevices(): Promise<number> {
   for (const d of others) await signOutDevice(d.id);
   return others.length;
 }
+
+// ── 我的牌局（#211）──
+
+/** 历史里记过分的局带的比分摘要（和计分页同一套算法）。 */
+export interface ScoreBrief {
+  kind: string;
+  rounds: number;
+  /** 过了 A 的那一队；没打完没有。 */
+  winner?: "red" | "black";
+  red_level: number;
+  black_level: number;
+  red_double_ups: number;
+  black_double_ups: number;
+  red_wins: number;
+  black_wins: number;
+}
+export type HistoryGame = GameSummary & { score?: ScoreBrief };
+export interface HistoryPage { games: HistoryGame[]; has_more: boolean }
+
+/** 要打的：我开的 / 已报名 / 候补中，还没开始的局，从近到远。 */
+export async function listMyGames(): Promise<GameSummary[]> {
+  return (await request<{ games: GameSummary[] }>("GET", "/api/me/games"))?.games ?? [];
+}
+/** 历史：开过或坐过、已开始或已取消的局，从近到远。after 是上一页最后一条，翻下一页时传。 */
+export async function listMyHistory(after?: HistoryGame): Promise<HistoryPage> {
+  const q = after ? `?before=${after.starts_at}&before_code=${enc(after.short_code)}` : "";
+  const body = await request<HistoryPage>("GET", `/api/me/games/history${q}`);
+  return { games: body?.games ?? [], has_more: !!body?.has_more };
+}
+/** 从我自己的历史里删掉一局：牌局本身和同局别人都不受影响。 */
+export const hideFromHistory = (code: string) => request<void>("DELETE", `/api/me/games/history/${enc(code)}`);
 
 // ── 牌友 ──
 
