@@ -131,3 +131,21 @@ func TestIsWild(t *testing.T) {
 		t.Fatal("黑桃 2 不该是逢人配")
 	}
 }
+
+// 只认规范写法（#213 复审）：大小写、前导零、正号、别的写法都拒绝 ——
+// 牌例是两端逐字符串比对的，Go 端松一点，严格比对的 TS 端就会挂。
+func TestParseRankCanonical(t *testing.T) {
+	good := []string{"2", "3", "9", "10", "J", "Q", "K", "A", "小王", "大王"}
+	for _, s := range good {
+		if _, err := ParseRank(s); err != nil {
+			t.Errorf("%q 应当认得出来：%v", s, err)
+		}
+	}
+	// 反面：能读成同一个牌点、但不是规范写法的那些。
+	bad := []string{"j", "q", "k", "a", "05", "+5", "5 ", " 5", "010", "1", "11", "0", "-2", "小王 ", "王", "", "十"}
+	for _, s := range bad {
+		if got, err := ParseRank(s); err == nil {
+			t.Errorf("%q 应当认不出来，得到了 %s", s, got.RankName())
+		}
+	}
+}
