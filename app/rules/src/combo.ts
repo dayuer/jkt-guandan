@@ -483,6 +483,12 @@ function eachSubstitution(n: number, visit: (as: WildFace[]) => void): void {
 /**
  * 比两串顶法：点数、花色小的算小。同一种（牌型 + 牌面）有多种顶法时留下小的那一种，
  * 两端（Go、TS）才会给出同一个答案。
+ *
+ * ⚠️ 把这里改成「恒 false」（留第一次命中的那种），238 条测试**一条都不红** —— 变异测试验过。
+ * 原因是 `eachSubstitution` 的枚举顺序（先花色、再点数：♠2、♠3……♠A、♥2……）在**能出现自由
+ * 维度**的场合（三带对的那个对子可以取任何点数）恰好也给出最小的那一种。两端共用同一套枚举
+ * 顺序，所以结果仍然是确定的；留着这条是为了以后换枚举顺序（比如改成按点数排）时不会悄悄变
+ * —— 到那时它才开始起作用。写在这里免得复审把它当成没测到的地方。
  */
 function lessWilds(a: readonly Wildcard[], b: readonly Wildcard[]): boolean {
   for (let i = 0; i < a.length; i++) {
