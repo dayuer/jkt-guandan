@@ -17,6 +17,7 @@ import { Home, TAB_H } from "./scenes/home";
 import { Learn, LessonScene } from "./scenes/learn";
 import { Devices, Me, Privacy, Settings } from "./scenes/me";
 import { ScoreScene } from "./scenes/score";
+import { APP_NAME } from "../../shared/src/appName";
 import type { Nav, TabName } from "./scenes/nav";
 
 if (__DEV__ && __SELFTEST__) installSelftest();
@@ -121,7 +122,7 @@ wx.showShareMenu({ withShareTicket: false, menus: ["shareAppMessage", "shareTime
 wx.onShareAppMessage(() => {
   const top = app.top;
   const d = top instanceof Detail ? top.current : null;
-  return d ? sharePayload(app, d) : { title: "随时掼掼蛋 · 找人凑一桌，就差你一个" };
+  return d ? sharePayload(app, d) : { title: `${APP_NAME} · 找人凑一桌，就差你一个` };
 });
 
 if (__DEV__) {

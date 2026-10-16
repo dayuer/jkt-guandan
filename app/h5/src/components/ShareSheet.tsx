@@ -11,6 +11,7 @@ import {
   whatsappURL,
 } from "../share";
 import { track, type ShareChannel } from "../telemetry";
+import { APP_NAME } from "../title";
 
 interface Props {
   detail: GameDetail;
@@ -78,7 +79,7 @@ export function ShareSheet({ detail, toast, onClose }: Props) {
   const shareToSystem = async () => {
     channel("system");
     const result = await systemShare({
-      title: `随时掼掼蛋 · ${detail.game.venue}`,
+      title: `${APP_NAME} · ${detail.game.venue}`,
       // 正文不带链接：链接单独走 url，不然目标 App 里会看到两遍。
       text: systemShareText(detail),
       url: link,

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { installFakeSocket } from "../fakeSocket";
 import { LESSONS, LEVELS, doneLessons, lessonsOf, markDone, nextLesson } from "../learn";
+import { APP_NAME } from "../title";
 
 /** 学牌 Tab（#106，设计稿 E1 / E2）。 */
 
@@ -107,7 +108,7 @@ describe("05 学牌列表 / 06 规则速览", () => {
 
     await vi.waitFor(() => expect(c.querySelector("[data-testid=learn-progress]")).not.toBeNull());
     expect(window.location.pathname).toBe("/learn");
-    await vi.waitFor(() => expect(document.title).toBe("学牌 · 随时掼掼蛋"));
+    await vi.waitFor(() => expect(document.title).toBe(`学牌 · ${APP_NAME}`));
     expect(c.querySelector(".tabbar .tab.on")?.textContent).toContain("学牌");
     expect(c.textContent).toContain("已学 0 / 9 课");
     expect(c.textContent).toContain("从第一课开始：规则速览");
@@ -131,7 +132,7 @@ describe("05 学牌列表 / 06 规则速览", () => {
     await vi.waitFor(() => expect(c.querySelector("[data-testid=quiz]")).not.toBeNull());
     expect(window.location.pathname).toBe("/learn/overview");
     // 标题在 App 的 useEffect 里改，排在下一帧之后，要等（#167）。
-    await vi.waitFor(() => expect(document.title).toBe("规则速览 · 学牌 · 随时掼掼蛋"));
+    await vi.waitFor(() => expect(document.title).toBe(`规则速览 · 学牌 · ${APP_NAME}`));
     expect(c.querySelector(".felt figcaption")?.textContent).toContain("逢人配");
     expect(button(c, "先做练习题")).toBeTruthy();
 
@@ -165,6 +166,6 @@ describe("05 学牌列表 / 06 规则速览", () => {
   it("不存在的课给出提示，不白屏", async () => {
     const c = renderAt("/learn/nope");
     await vi.waitFor(() => expect(c.textContent).toContain("没有这一课"));
-    await vi.waitFor(() => expect(document.title).toBe("学牌 · 随时掼掼蛋"));
+    await vi.waitFor(() => expect(document.title).toBe(`学牌 · ${APP_NAME}`));
   });
 });

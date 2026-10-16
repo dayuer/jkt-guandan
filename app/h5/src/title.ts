@@ -1,5 +1,6 @@
 import type { GameDetail } from "./api";
 import { lessonById } from "./learn";
+import { APP_NAME } from "../../shared/src/appName";
 
 /**
  * 页面标题（#60）。
@@ -9,7 +10,8 @@ import { lessonById } from "./learn";
  * 详情页用和服务端 OG 一样的格式，其他页面用应用名。
  */
 
-export const APP_NAME = "随时掼掼蛋";
+// 应用名住在共享层（#273，小游戏也用），这里照旧转出去，h5 内部的 import 路径不用改。
+export { APP_NAME };
 
 /**
  * 静态页面的标题（#60、#51 新增的三个页面）。
@@ -34,7 +36,7 @@ export function pageTitle(route: string): string {
   }
 }
 
-/** 06 规则速览的标题：「规则速览 · 学牌 · 随时掼掼蛋」（#106）。 */
+/** 06 规则速览的标题：「规则速览 · 学牌 · 应用名」（#106）。 */
 export function lessonTitle(id: string): string {
   const lesson = lessonById(id);
   return lesson ? `${lesson.title} · 学牌 · ${APP_NAME}` : pageTitle("learn");

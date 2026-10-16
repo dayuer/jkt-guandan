@@ -2,6 +2,7 @@ import { render } from "preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { installFakeSocket } from "./fakeSocket";
+import { APP_NAME } from "./title";
 
 /** 假的 fetch 响应：api.ts 用的是 text() + JSON.parse。 */
 function respond(status: number, body: unknown) {
@@ -54,7 +55,7 @@ afterEach(() => {
 
   // #60：从分享链接 /g/X 落地后切回首页，标题要换回应用名，而不是停在那一局。
   // #108：底部「牌友」能点，进 /friends，标题跟着换。
-  it("首页底部点「牌友」进 /friends，标题是「牌友 · 随时掼掼蛋」", async () => {
+  it("首页底部点「牌友」进 /friends，标题带上应用名", async () => {
     stubFetch((url) => {
       if (url === "/api/friends") return respond(401, { error: { code: "unauthorized", message: "" } });
       if (url === "/api/config") return respond(200, { group: { wechat_id: "", whatsapp_group_url: "" } });
@@ -70,7 +71,7 @@ afterEach(() => {
     tab.click();
     await vi.waitFor(() => expect(window.location.pathname).toBe("/friends"));
     await vi.waitFor(() => expect(container.querySelector("[data-testid=friends-empty]")).not.toBeNull());
-    expect(document.title).toBe("牌友 · 随时掼掼蛋");
+    expect(document.title).toBe(`牌友 · ${APP_NAME}`);
   });
 
   it("路由切换时重设 document.title", async () => {
@@ -102,7 +103,7 @@ afterEach(() => {
 
     window.history.pushState(null, "", "/");
     window.dispatchEvent(new PopStateEvent("popstate"));
-    await vi.waitFor(() => expect(document.title).toBe("随时掼掼蛋"));
+    await vi.waitFor(() => expect(document.title).toBe(APP_NAME));
   });
 
   it("首页把牌局列出来，带上座位圆点和「差 N 人」", async () => {
@@ -208,7 +209,7 @@ afterEach(() => {
   it("点底部「我的」进我的页，能看到两项设置", async () => {
     stubFetch(anonymous);
     const container = renderApp();
-    await vi.waitFor(() => expect(container.textContent).toContain("随时掼掼蛋"));
+    await vi.waitFor(() => expect(container.textContent).toContain(APP_NAME));
 
     const meTab = [...container.querySelectorAll(".tabbar button")].find(
       (b) => b.textContent?.includes("我的"),
@@ -262,7 +263,7 @@ afterEach(() => {
     games.click();
 
     await vi.waitFor(() => expect(window.location.pathname).toBe("/"));
-    await vi.waitFor(() => expect(container.textContent).toContain("随时掼掼蛋"));
+    await vi.waitFor(() => expect(container.textContent).toContain(APP_NAME));
   });
 
   it("详情页、开局表单这类非 tab 页不挂 Tab 栏", async () => {
@@ -328,7 +329,7 @@ afterEach(() => {
   it("界面上没有任何通往蛋蛋页的链接", async () => {
     stubFetch(anonymous);
     const container = renderApp();
-    await vi.waitFor(() => expect(container.textContent).toContain("随时掼掼蛋"));
+    await vi.waitFor(() => expect(container.textContent).toContain(APP_NAME));
 
     const html = container.innerHTML;
     expect(html).not.toContain("/agent");

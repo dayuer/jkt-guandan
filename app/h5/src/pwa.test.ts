@@ -244,3 +244,21 @@ describe("把推送显示成通知（用假事件真跑一遍 sw.js）", () => {
     expect(opened).toEqual(["/g/X1?a=1"]);
   });
 });
+
+describe("应用名只有一个来源（#273）", () => {
+  // 这三个静态文件不进模块图、编译不过去，所以名字在它们里是占位符，由
+  // app/h5/vite.config.ts 的 app-name 插件在构建（和 dev server）时换成
+  // app/shared/src/appName.ts 里的常量。这里钉住「别再写死回去」——写死的那天，
+  // 改名的人只改了共享层那一个常量，这三个文件会悄悄留着旧名字。
+  it("index.html、manifest.json、sw.js 里写的都是占位符", () => {
+    for (const path of ["index.html", "public/manifest.json", "public/sw.js"]) {
+      expect(read(path), path).toContain("%APP_NAME%");
+    }
+  });
+
+  it("sw.js 里通知的兜底标题也走占位符", () => {
+    // 推送没带 title 时才用它；写死的话，改了名推送还是旧名字。
+    expect(swSource).toMatch(/title:\s*"%APP_NAME%"/);
+    expect(swSource).toMatch(/data\.title \|\| "%APP_NAME%"/);
+  });
+});

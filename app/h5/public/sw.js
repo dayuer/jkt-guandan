@@ -28,10 +28,11 @@ async function showPush(event) {
     data = event.data ? event.data.json() : {};
   } catch {
     // 不是 JSON 就当纯文本处理，别把整条通知丢掉。
-    data = { title: "随时掼掼蛋", body: event.data ? event.data.text() : "" };
+    data = { title: "%APP_NAME%", body: event.data ? event.data.text() : "" };
   }
 
-  const title = data.title || "随时掼掼蛋";
+  // 应用名只有一个来源（#273）：这两个字符串是构建时由 vite.config.ts 的 app-name 插件换掉的。
+  const title = data.title || "%APP_NAME%";
   const url = data.url || "/";
 
   await self.registration.showNotification(title, {
