@@ -1,6 +1,6 @@
 # 多 agent 协作协议（GitHub 中转）
 
-> 来源：[dayuer/nibwire 的 COORDINATION.md](https://github.com/dayuer/nibwire/blob/0c72b4d7550cf0aba5228924e69ae553304ac220/docs/agents/COORDINATION.md)。本仓库在原协议基础上做了三处调整：
+> 来源：[dayuer/nibwire 的 COORDINATION.md](https://github.com/dayuer/nibwire/blob/0c72b4d7550cf0aba5228924e69ae553304ac220/docs/agents/COORDINATION.md)。本仓库在原协议基础上做了四处调整：
 > 1. 角色 `biz` 换成 `design`，负责设计稿和文案；
 > 2. 增加阶段标签 `phase:*`；
 > 3. 增加第 8 节「同步体系」，由脚本维护看板；
@@ -169,10 +169,13 @@ impl、auditor、design 会话之间不直接互相派活，也不互相干等�
 - worktree、分支或端口被别的会话占着；
 - 大约 15 分钟没有进展。
 
-**怎么问**：本机会话用 SendMessage 发给 coord 会话（名字见派活消息和看板）；远程会话在对应 issue 或 PR 下评论 `BLOCKED: <原因>`。都要写清楚：哪个 issue / PR、卡在哪、已经试过什么、需要谁做什么。
+**怎么问**：本机会话用 SendMessage 发给 coord 会话（名字见派活消息和看板）；远程会话在对应 issue 或 PR 下评论 `BLOCKED: <原因>`。都要写清楚：哪个 issue / PR、卡在哪、已经试过什么、需要谁做什么。本机会话如果一轮之内没解决，也要在 issue / PR 下补一条 `BLOCKED:`，让 GitHub 上留痕。
+
+**同一时间只有一个 coord 会话**负责派活和合并，会话名写在看板上。别的会话发现自己也在做 coord 的事（派复审、合并、改 base），先停下来问这个 coord，不要两边各派一份复审、抢着合。
 
 - 问完可以先做手上不受影响的部分。不要因为怕打扰就不问，也不要绕过去替别的角色做：作者自审、自己合并、改别人的分支都不行。
-- **coord 收到后尽快处理**：能直接答的当场答；要别的会话动手的，转过去并说明先后；要仓库所有者决定的，汇总给他。处理结果回写到对应 issue / PR，并回复提问的会话。
+- **coord 收到后尽快处理**：能直接答的当场答；要别的会话动手的，转过去并说明先后；要仓库所有者决定的，在对应 issue 加 `needs-user` 并汇总给他。处理结果回写到对应 issue / PR，并回复提问的会话。
+- **远程会话怎么拿到回复**：不另起轮询，下一轮跑 `sync.sh` 时到对应 issue / PR 下看 coord 的回复；转给远程会话的事同样按 §6 每轮读一次。阻塞解除后，由提出 `BLOCKED` 的一方用 `scripts/agents/status.sh` 把 `status:blocked` 改回去。
 - **coord 派活时**，消息里必须写明「遇到问题不要等，直接 SendMessage 问 coord（会话名 <名字>）」。
 - coord 自己起的子代理（比如 auditor）也一样：拿不准的地方在回报里写明，不要猜。
 
