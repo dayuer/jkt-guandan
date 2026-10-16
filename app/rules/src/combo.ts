@@ -130,6 +130,9 @@ export type Order =
  */
 export function compare(a: Combo, b: Combo): Order {
   if (!isBomb(a) && !isBomb(b)) {
+    // 张数这一半是**防守**：非炸弹牌型的张数由牌型定死（单张 1、对子 2、三同张 3、三带对 5、
+    // 三连对／三同连张 6、顺子 5），所以它现在等价于「只比牌型」—— 把这一半删掉，201 条测试
+    // 一条都不会红（变异测试试过）。留着是为了以后真出现张数可变的普通牌型时不用回头补。
     if (a.type !== b.type || a.cards.length !== b.cards.length) return "incomparable";
     return orderOf(a.value, b.value);
   }
