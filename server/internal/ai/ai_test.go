@@ -655,6 +655,31 @@ func TestBombsPartnerStatisticExcludesFinish(t *testing.T) {
 	}
 }
 
+// 跟牌①：普通炸弹之间**张数不同也按引擎的规则**比（张数多的大）——
+// 打 7、对手出 8888，手里 5 张 3 和 4 张 A：两个都压得住（4 张 A 的牌点大、5 张 3 的档次高），
+// 该出的是**张数少的那个**（4 张 A），而不是点数看着更小的 5 张 3。
+func TestAIFollowsWithSmallestBombBySize(t *testing.T) {
+	level := rules.Seven
+	v := View{
+		Level: level, Seat: 1,
+		Hand:      mustCards(t, "♠3/0 ♥3/0 ♣3/0 ♦3/0 ♠3/1 ♠A/0 ♥A/0 ♣A/0 ♦A/0"),
+		Counts:    [rules.Seats + 1]int{0, 9, 20, 20, 1}, // 4 号座（对手）只剩 1 张 → 到该炸的时候
+		Leading:   false,
+		LastSeat:  2, // 对手
+		LastCombo: comboOf(t, level, rules.TypeBomb, "♠8/0 ♥8/0 ♣8/0 ♦8/0"),
+	}
+	d, err := Decide(v, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Pass {
+		t.Fatal("手里有两个炸弹压得住，不该过牌")
+	}
+	if d.Combo.Type != rules.TypeBomb || len(d.Combo.Cards) != 4 || d.Combo.Cards[0].Rank != rules.Ace {
+		t.Fatalf("炸弹之间按档次比（四张 < 五张），该出 4 张 A 的炸弹，它出了 %s", d.Combo)
+	}
+}
+
 // 纯函数：同一个局面给同样的答案。
 func TestAIDecideIsDeterministic(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
