@@ -4,6 +4,32 @@
 
 import { C, Ctx, Scroller, ease, ellipsize, fillRR, font, text, wrap } from "./ui";
 
+/**
+ * 点输入框时该怎么动键盘。
+ *
+ * `wx.showKeyboard` 在**键盘已经开着**的时候再调会失败（真机报 `showKeyboard:fail`）。
+ * 点第一个字段、再点第二个，或者同一个字段点两下，都会走到那条 —— 原来每次都重新
+ * `showKeyboard`，于是必现一个「键盘没拉起来」的错误提示，第二个字段也没换成。
+ *
+ * 抽成纯函数是为了**能测**：真机上 showKeyboard 的成败没法在单测里造。
+ *   none   同一个字段再点：键盘本来就在，什么都不用做
+ *   update 换字段、键盘开着：换内容就行（`wx.updateKeyboard`）
+ *   show   键盘没开：正常拉起来
+ */
+export function keyboardAction(
+  st: { open: boolean; sameKey: boolean },
+  hasUpdateKeyboard: boolean,
+): "none" | "update" | "show" {
+  if (st.open && st.sameKey) return "none";
+  if (st.open && hasUpdateKeyboard) return "update";
+  return "show";
+}
+
+/** `showKeyboard` 的失败信息里，哪些是「键盘本来开着」这种**不是错误**的情况。 */
+export function benignKeyboardFail(errMsg: string): boolean {
+  return /already|已经/i.test(errMsg || "");
+}
+
 const TAP_SLOP = 8;
 /** 微信原生输入条的高度。先按 56 预留；#141 真机核对 onKeyboardHeightChange 的高度是否已经包含它，包含就改成 0。 */
 export const INPUT_BAR_H = 56;
@@ -92,6 +118,8 @@ export class App {
   private touch: Touch0 | null = null;
   private dirty = true;
   kbHeight = 0;
+  /** 键盘是不是开着。`onKeyboardHeightChange` 不一定有，所以自己记一份。 */
+  private kbOpen = false;
   editing: EditOptions | null = null;
   /** 当帧画出来的激活字段（屏幕坐标），由 widgets.field 填；用来把它滚进可视区 */
   focusRect: { y: number; h: number } | null = null;
@@ -200,14 +228,30 @@ export class App {
 
   // ── 键盘：拉起微信原生输入条，文字从回调里拿 ──
   edit(opts: EditOptions) {
+    const action = keyboardAction({ open: this.kbOpen, sameKey: !!this.editing && this.editing.key === opts.key }, !!wx.updateKeyboard);
     this.editing = opts;
+    if (action === "update") {
+      // 键盘开着、换了个字段：**只换内容**。这里重新 showKeyboard 真机会失败
+      //（`showKeyboard:fail`），原来就弹一个「键盘没拉起来」的错误 —— 点第二个字段必现。
+      try { wx.updateKeyboard!({ value: opts.value || "" }) } catch { /* 换不了就算了，下面照样能用 */ }
+      this.redraw();
+      return;
+    }
+    if (action === "none") { this.redraw(); return } // 同一个字段再点一下：键盘本来就在
     wx.showKeyboard({
       defaultValue: opts.value || "",
       maxLength: opts.maxLength || 40,
       multiple: !!opts.multiple,
       confirmHold: false,
       confirmType: opts.confirmType || "done",
-      fail: (e: any) => this.toast("键盘没拉起来：" + (e && e.errMsg)),
+      success: () => { this.kbOpen = true; },
+      fail: (e: any) => {
+        const msg = String((e && e.errMsg) || "");
+        // 「已经开着」不算错误：没有 updateKeyboard 的旧基础库会走到这里，不该吓用户
+        if (benignKeyboardFail(msg)) { this.kbOpen = true; return }
+        this.kbOpen = false;
+        this.toast("键盘没拉起来：" + msg);
+      },
     });
     this.redraw();
   }
@@ -223,6 +267,7 @@ export class App {
     wx.onKeyboardComplete((res: any) => {
       const ed = this.editing;
       this.editing = null;
+      this.kbOpen = false;
       this.kbHeight = 0;
       if (ed) { ed.onInput(res.value); ed.onDone?.(res.value); }
       this.redraw();
