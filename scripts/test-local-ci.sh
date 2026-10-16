@@ -59,6 +59,17 @@ eq '小游戏自己的改动只跑小游戏' \
   'local-ci/minigame' \
   "$(printf 'app/minigame/src/main.ts\napp/minigame/package.json\n' | scope_contexts)"
 
+# #87：规则引擎是独立的包、自己的 vitest，不跟 app/h5、app/minigame 共用依赖。
+eq '规则引擎自己的改动只跑 rules' \
+  'local-ci/rules' \
+  "$(printf 'app/rules/src/card.ts\napp/rules/package.json\n' | scope_contexts)"
+
+# 两端共用的牌例（#87 的 TS 版和 #204 的 Go 版读同一批文件）。它在 server/ 和 app/ 之外 ——
+# 不单独列出来的话，只改牌例的 PR 一条检查都不跑（静默漏检）。
+eq '共用牌例改动：两端都要跑' \
+  "$(lines local-ci/test local-ci/rules)" \
+  "$(printf 'testdata/rules/deck.json\n' | scope_contexts)"
+
 eq 'nginx 模板只跑 nginx 检查' \
   'local-ci/nginx' \
   "$(printf 'deploy/nginx/guandan.synon.ai.conf\n' | scope_contexts)"
@@ -106,7 +117,7 @@ eq '末行不带换行的输入也要读到' \
 
 # CONTEXT_ORDER 必须列全：漏一个的话 scope_contexts 会把它**静默丢掉**。
 missing=''
-for c in local-ci/test local-ci/vuln local-ci/h5-audit local-ci/minigame local-ci/nginx local-ci/docker local-ci/e2e local-ci/meta; do
+for c in local-ci/test local-ci/vuln local-ci/h5-audit local-ci/minigame local-ci/rules local-ci/nginx local-ci/docker local-ci/e2e local-ci/meta; do
   case " $CONTEXT_ORDER " in *" $c "*) : ;; *) missing="$missing $c" ;; esac
 done
 eq 'CONTEXT_ORDER 列全了每个 context' '' "$missing"
@@ -118,11 +129,21 @@ for c in $CONTEXT_ORDER; do
   else bad "context_command 认识 $c" '非空' '空'; fi
 done
 
+# context_tools 漏写是**静默**跳过工具检查（require_tools '' 直接返回 0），加检查项时最容易漏这一处。
+missing_tools=''
+for c in $CONTEXT_ORDER; do
+  [ -n "$(context_tools "$c")" ] || missing_tools="$missing_tools $c"
+done
+eq 'CONTEXT_ORDER 里每个 context 都声明了 context_tools' '' "$missing_tools"
+
 eq 'test 就是 make test' 'make test  # go vet + 前端构建 + go test -race + 前端测试' "$(context_command local-ci/test)"
 eq 'minigame 与原 ci.yml 一致' \
   'cd app/minigame && npm ci && npm run typecheck && npm test && npm run build' \
   "$(context_command local-ci/minigame)"
 eq 'meta 跑 CI 自己的自测' 'bash scripts/test-local-ci.sh' "$(context_command local-ci/meta)"
+eq 'rules 跑规则引擎自己的 typecheck + vitest' \
+  'cd app/rules && npm ci && npm run typecheck && npm test' \
+  "$(context_command local-ci/rules)"
 
 # 断言**精确的**返回码 1：函数不存在时 shell 给的是 127，只判"非 0"会当成通过。
 context_command local-ci/不存在 >/dev/null 2>&1; rc=$?
@@ -149,6 +170,7 @@ echo '--- 环境前置检查：环境问题返回 2，不是 1 ---'
 eq 'test 要的 node 目录' 'app/h5' "$(node_dirs_for_context local-ci/test)"
 eq 'e2e 要的 node 目录' 'app/h5' "$(node_dirs_for_context local-ci/e2e)"
 eq 'minigame 要的 node 目录' 'app/minigame' "$(node_dirs_for_context local-ci/minigame)"
+eq 'rules 要的 node 目录' 'app/rules' "$(node_dirs_for_context local-ci/rules)"
 eq 'nginx 不是 node 侧' '' "$(node_dirs_for_context local-ci/nginx)"
 
 eq 'node_modules 是软链 → unreachable' 'unreachable' "$(node_modules_action 1)"

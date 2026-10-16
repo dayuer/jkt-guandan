@@ -30,6 +30,8 @@
 #   local-ci/minigame 小游戏 typecheck + test + build。小游戏复用 app/h5/src 的纯逻辑，
 #                     所以 app/h5/src 改了也要跑（原 ci.yml 里那条注释说的就是这个）；
 #                     vitest 还读 server/internal/scoring/testdata/vectors.json，规则改了也跑
+#   local-ci/rules    规则引擎（#87，app/rules）自己的 typecheck + vitest。它有独立的依赖，
+#                     和 app/h5、app/minigame 都不共用；牌例读仓库根 testdata/rules/
 #   local-ci/nginx    nginx 模板检查
 #   local-ci/docker   docker build + 容器冒烟 + 发布回滚测试 + 恢复演练
 #   local-ci/e2e      浏览器端到端冒烟（= make e2e）
@@ -55,6 +57,15 @@ _path_to_context() {
       echo 'local-ci/test'; echo 'local-ci/e2e' ;;
     app/minigame/*)
       echo 'local-ci/minigame' ;;
+    # 规则引擎（#87）自己一个包、自己的 vitest，不跟 app/h5、app/minigame 共用依赖。
+    # ⚠️ 小游戏一旦 `import "../../rules/src"`（第 2 步起会用到），这里要一起加上
+    # `local-ci/minigame` —— 道理同下面 `app/h5/src/*` 那条：改了规则引擎，小游戏的包也会变。
+    app/rules/*)
+      echo 'local-ci/rules' ;;
+    # 两端共用的牌例（#87 的 TS 版和 #204 的 Go 版读同一批文件）。它不在 server/ 也不在
+    # app/ 下 —— 不单独列出来的话，只改牌例的 PR 一条检查都不跑（静默漏检）。
+    testdata/rules/*)
+      echo 'local-ci/test'; echo 'local-ci/rules' ;;
     .nvmrc)
       echo 'local-ci/test'; echo 'local-ci/minigame'; echo 'local-ci/e2e' ;;
     Makefile)
@@ -111,7 +122,7 @@ scope_contexts() {
 }"
 }
 
-CONTEXT_ORDER='local-ci/meta local-ci/nginx local-ci/test local-ci/h5-audit local-ci/minigame local-ci/vuln local-ci/docker local-ci/e2e'
+CONTEXT_ORDER='local-ci/meta local-ci/nginx local-ci/test local-ci/rules local-ci/h5-audit local-ci/minigame local-ci/vuln local-ci/docker local-ci/e2e'
 
 # context → 跑什么（一行，供打印、status 描述与自测断言）
 # 未知 context 返回 1。注意 **run_context 的未知返回码有意不同（3）**。
@@ -122,6 +133,7 @@ context_command() {
     local-ci/vuln)     echo 'make vuln  # govulncheck' ;;
     local-ci/h5-audit) echo 'cd app/h5 && npm audit --omit=dev --registry=https://registry.npmjs.org' ;;
     local-ci/minigame) echo 'cd app/minigame && npm ci && npm run typecheck && npm test && npm run build' ;;
+    local-ci/rules)    echo 'cd app/rules && npm ci && npm run typecheck && npm test' ;;
     local-ci/nginx)    echo 'scripts/check-nginx.sh deploy/nginx/guandan.synon.ai.conf' ;;
     local-ci/docker)   echo 'docker build + scripts/container-smoke.sh + scripts/test-deploy.sh + scripts/restore-drill.sh' ;;
     local-ci/e2e)      echo 'make e2e  # Playwright + 无头 Chromium' ;;
@@ -143,6 +155,10 @@ context_tools() {
     local-ci/vuln)     echo 'make go' ;;
     local-ci/h5-audit) echo 'npm' ;;
     local-ci/minigame) echo 'npm' ;;
+    local-ci/rules)    echo 'npm' ;;
+    # 自测脚本只要 bash（就是正在跑它的这个）。写出来是为了让「CONTEXT_ORDER 里每一项都声明了
+    # 工具」这条不变式成立 —— context_tools 漏写是静默跳过检查（require_tools '' 直接返回 0）。
+    local-ci/meta)     echo 'bash' ;;
     local-ci/nginx)    echo 'awk' ;;
     local-ci/docker)   echo 'docker curl python3' ;;
     local-ci/e2e)      echo 'make go npm npx' ;;
@@ -155,6 +171,7 @@ node_dirs_for_context() {
   case "${1:-}" in
     local-ci/test|local-ci/e2e|local-ci/h5-audit) echo app/h5 ;;
     local-ci/minigame) echo app/minigame ;;
+    local-ci/rules) echo app/rules ;;
     *) : ;;
   esac
 }
@@ -405,7 +422,7 @@ run_context() {
   # 跑在 capture_to_log 的子壳里时，原因要靠这个文件带出去 —— 先把上一轮的清掉。
   [ -n "${LOCAL_CI_ENV_REASON_FILE:-}" ] && : > "$LOCAL_CI_ENV_REASON_FILE"
   case "$ctx" in
-    local-ci/test|local-ci/vuln|local-ci/h5-audit|local-ci/minigame|local-ci/nginx|local-ci/docker|local-ci/e2e|local-ci/meta)
+    local-ci/test|local-ci/vuln|local-ci/h5-audit|local-ci/minigame|local-ci/rules|local-ci/nginx|local-ci/docker|local-ci/e2e|local-ci/meta)
       context_ready "$ctx" || return 2 ;;
   esac
   case "$ctx" in
@@ -418,6 +435,8 @@ run_context() {
       ( cd app/h5 && npm audit --omit=dev --registry=https://registry.npmjs.org ) || return 1 ;;
     local-ci/minigame)
       ( cd app/minigame && npm ci && npm run typecheck && npm test && npm run build ) || return 1 ;;
+    local-ci/rules)
+      ( cd app/rules && npm ci && npm run typecheck && npm test ) || return 1 ;;
     local-ci/nginx)    scripts/check-nginx.sh deploy/nginx/guandan.synon.ai.conf || return 1 ;;
     local-ci/docker)
       local sha="${LOCAL_CI_SHA:-$(git rev-parse HEAD)}" image rc log
