@@ -100,6 +100,22 @@ func writeWxLogin(w http.ResponseWriter, ident Identity, token string) {
 	})
 }
 
+// writeUnsafeError 处理内容安全检测没过：422 + field，和地点、备注的敏感词同一个错误码（#146），
+// 小游戏的表单和称呼弹层已经按它显示提示。不是这个错就返回 false，交给调用处继续判。
+//
+// 「新建身份」（writeWxError）和「改称呼」（putNickname）共用，免得两边的错误体走样。
+func writeUnsafeError(w http.ResponseWriter, err error) bool {
+	if !errors.Is(err, secheck.ErrUnsafe) {
+		return false
+	}
+	var unsafe *secheck.UnsafeError
+	errors.As(err, &unsafe)
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+		"error": map[string]any{"code": "sensitive_word", "message": secheck.Message, "field": unsafe.Field},
+	})
+	return true
+}
+
 func writeWxError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrWxDisabled):
@@ -107,12 +123,7 @@ func writeWxError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrNicknameInvalid):
 		writeError(w, http.StatusBadRequest, "nickname_invalid", "称呼需要 1–12 个字符")
 	case errors.Is(err, secheck.ErrUnsafe):
-		// 422 + field，和地点、备注的敏感词同一个错误码（#146）：小游戏的表单和称呼弹层已经按它显示提示。
-		var unsafe *secheck.UnsafeError
-		errors.As(err, &unsafe)
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"error": map[string]any{"code": "sensitive_word", "message": secheck.Message, "field": unsafe.Field},
-		})
+		writeUnsafeError(w, err)
 	case errors.Is(err, ErrWxCodeInvalid):
 		writeError(w, http.StatusBadRequest, "wx_code_invalid", "微信登录凭证无效，请重新登录")
 	case errors.Is(err, ErrWxUnavailable):

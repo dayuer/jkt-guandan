@@ -24,6 +24,8 @@ func Routes(svc *Service) []route.Route {
 		{Method: http.MethodDelete, Pattern: "/api/me", Access: route.User, Handler: http.HandlerFunc(h.deleteMe)},
 		// 绑定 WhatsApp（#116）：号码只给自己看。
 		{Method: http.MethodPut, Pattern: "/api/me/wa", Access: route.User, Handler: http.HandlerFunc(h.putWA)},
+		// 改称呼（#210，「我的」页顶部那张卡片）。
+		{Method: http.MethodPut, Pattern: "/api/me/nickname", Access: route.User, Handler: http.HandlerFunc(h.putNickname)},
 		{Method: http.MethodDelete, Pattern: "/api/me/wa", Access: route.User, Handler: http.HandlerFunc(h.deleteWA)},
 		{Method: http.MethodPost, Pattern: "/api/claim", Access: route.User, Handler: http.HandlerFunc(h.issueClaim)},
 		// 两种身份都能进来：有身份的人凭 token 兑换时会先拿到 409，确认后才切换。

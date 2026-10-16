@@ -236,6 +236,8 @@ export const deleteMe = () => request<void>("DELETE", "/api/me");
 export const issueClaim = () => request<ClaimTicket>("POST", "/api/claim");
 export const setWaPhone = (phone: string) => request<{ wa_phone: string }>("PUT", "/api/me/wa", { body: { phone } });
 export const clearWaPhone = () => request<void>("DELETE", "/api/me/wa");
+/** 改称呼（#210）。返回的是改完之后的 user，直接拿去刷缓存。 */
+export const setNickname = (nickname: string) => request<{ user: UserRef }>("PUT", "/api/me/nickname", { body: { nickname } });
 
 export async function signOutOtherDevices(): Promise<number> {
   const me = await getMe();

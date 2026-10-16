@@ -509,6 +509,7 @@ GET  /api/push/key                    VAPID 公钥
 GET  /api/config                      前端用的公开配置（09 牌友的群信息，#108）
 POST /api/me                          首次填称呼
 GET  /api/me                          当前身份
+PUT  /api/me/nickname                 改称呼（#210）：{"nickname":"新名字"} → 200 {"user":{…}}
 POST /api/claim                       签发 claim token 和认领码
 POST /api/claim/redeem                凭 {token, confirm?} 或 {code} 兑换身份；设备已有别的身份时返回 409 claim_conflict（§5.2）
 DELETE /api/me/devices/{id}           退出这台以外的某个设备（§10.3「退出其他设备」）
@@ -570,6 +571,16 @@ GET  /*                               内嵌的前端页面（单页应用，未
   - 不猜国家区号：「0812…」这种本地写法不合法。不合法时返回 `400 invalid_input`，`message` 提示要带区号。
 - `DELETE /api/me/wa`（`route.User`）：解绑，`204`，没绑定也是 `204`。
 - 限流：绑定和解绑合计每个用户每小时 10 次，超出返回 `429 rate_limited`。
+
+**改称呼**（#210，「我的」页顶部那张卡片）。用户原话：「名称，我现在不能改，应该允许我修改」。
+
+- `PUT /api/me/nickname`（`route.User`）：请求 `{"nickname":"新名字"}`，成功返回 `200 {"user":{"id","nickname","created_at"}}`（和 `POST /api/me` 同一个 `user` 外形，前端拿到直接刷新缓存，不用再 GET 一次）。
+  - 校验和首次填称呼**是同一个函数**（`identity.NormalizeNickname`）：去掉首尾空白、控制字符和零宽/BiDi 格式字符，按**字符数**算 1–12 个（一个汉字算一个）。不合法返回 `400 nickname_invalid`。
+  - 小游戏用户照样送微信内容安全检测（场景 1 资料，§14 同 `POST /api/wx/login`）；`risky` 时返回 `422 sensitive_word`，带 `field: "nickname"`。H5 测试用户没有 openid，跳过。
+  - 保留名：`已注销牌友` 是注销之后座位上显示的名字（§14），不许有人把自己的称呼改成它，返回 `400 nickname_reserved`。
+  - 已注销的人不能改：`UPDATE … WHERE id = ? AND deleted_at IS NULL`，匹配不到行时返回 `403 user_deleted`。注销会删掉设备和微信关联，正常认不出身份；这一步是防「设备上还留着 cookie」。
+  - 限流：每个用户每小时 10 次（和改 WhatsApp 号码同量级），超出返回 `429 rate_limited`。
+- **称呼没有快照**：座位、候补、牌友列表、每局记录的「谁记的」都只存 user id，读的时候 JOIN `users`。所以改完一处，各处都是新称呼（`games` 包里有用例钉住这一点）。`outbox` 里的提醒也按 user id 取称呼，不存渲染好的名字。
 
 **09 牌友**（#108，设计稿 F1）。三个接口都要有身份（`route.User`），访客 401，被封禁 403：
 

@@ -10,6 +10,7 @@ function send(kind: string, data: unknown) {
   } catch { /* ignore */ }
 }
 import { runAccept165 } from "./accept165";
+import { runAccept210 } from "./accept210";
 
 const g: any = typeof GameGlobal !== "undefined" ? GameGlobal : globalThis;
 
@@ -33,6 +34,13 @@ export function installSelftest() {
     send("touchstart", { x: t?.clientX, y: t?.clientY, keys: t ? Object.keys(t) : [], hit });
     try { fn(e); } catch (err: any) { send("touchstart-throw", { message: err?.message, stack: err?.stack }); throw err; }
   });
+  // 键盘：小游戏里没法直接改画布上的输入框，只能像真机那样派发输入事件。
+  // 回调记在 GameGlobal.__kb 上（installSelftest 在 new App() 之前跑，所以先包住、后注册）。
+  const kb: any = {};
+  g.__kb = kb;
+  const origKbInput = wx.onKeyboardInput, origKbConfirm = wx.onKeyboardConfirm;
+  if (origKbInput) wx.onKeyboardInput = (fn: any) => { kb.input = fn; origKbInput(fn) };
+  if (origKbConfirm) wx.onKeyboardConfirm = (fn: any) => { kb.confirm = fn; origKbConfirm(fn) };
   wx.onTouchEnd = (fn: any) => origEnd((e: any) => {
     try { fn(e); } catch (err: any) { send("touchend-throw", { message: err?.message, stack: err?.stack }); throw err; }
   });
@@ -41,15 +49,19 @@ export function installSelftest() {
 declare const __SELFTEST_SCENARIO__: string;
 
 export function runSelftest() {
-  // 走查场景（#165 验收 S1–S12）：`SELFTEST_SCENARIO=165` 构建时编进来，否则跑原来的切 Tab 自检。
-  if (typeof __SELFTEST_SCENARIO__ !== "undefined" && __SELFTEST_SCENARIO__ === "165") {
-    const shot165 = (label: string) => {
+  // 走查场景：`SELFTEST_SCENARIO=165`（#165 验收 S1–S12）、`=210`（#210 改称呼）构建时编进来，
+  // 否则跑原来的切 Tab 自检。截图都从游戏自己导，文件名带场景号，两个场景可以共用同一个接收端。
+  if (typeof __SELFTEST_SCENARIO__ !== "undefined" && __SELFTEST_SCENARIO__ !== "") {
+    const scene = __SELFTEST_SCENARIO__;
+    const shotOf = (label: string) => {
       try {
         const path = g.__app.canvas.toTempFilePathSync({ fileType: "png" });
-        wx.uploadFile({ url: SINK + "?name=" + encodeURIComponent("165-" + label.replace(/\W+/g, "-")), filePath: path, name: "f" });
+        wx.uploadFile({ url: SINK + "?name=" + encodeURIComponent(scene + "-" + label.replace(/\W+/g, "-")), filePath: path, name: "f" });
       } catch (err: any) { send("shot-throw", { label, message: err?.message }); }
     };
-    runAccept165({ send, shot: shot165, sink: SINK });
+    if (scene === "165") { runAccept165({ send, shot: shotOf, sink: SINK }); return }
+    if (scene === "210") { runAccept210({ send, shot: shotOf }); return }
+    send("scenario-unknown", { scene });
     return;
   }
   const app = g.__app, nav = g.__nav;

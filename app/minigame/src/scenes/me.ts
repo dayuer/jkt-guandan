@@ -3,9 +3,9 @@
 import type { App, Scene, Sheet } from "../core/app";
 import { C, Ctx, Scroller, fillRR, font, initial, text } from "../core/ui";
 import { PAD, avatar, button, copy, disclaimer, emptyState, errorLine, field, list, nav, sheetButtons, sheetHeader, simpleSheet } from "../core/widgets";
-import { ApiError, API_BASE, clearWaPhone, deleteMe, getMe, issueClaim, setWaPhone, signOutDevice, signOutOtherDevices, type ClaimTicket, type Device } from "../lib/api";
+import { ApiError, API_BASE, clearWaPhone, deleteMe, getMe, issueClaim, setNickname, setWaPhone, signOutDevice, signOutOtherDevices, type ClaimTicket, type Device } from "../lib/api";
 import { lastSeenLabel, timeHM } from "../lib/fmt";
-import { currentUser, signOutHere } from "../lib/session";
+import { currentUser, signOutHere, updateNickname } from "../lib/session";
 import { maskWaPhone, normalizeWaPhone } from "../../../h5/src/wa";
 import { TAB_H } from "./home";
 import type { Nav } from "./nav";
@@ -38,11 +38,16 @@ export class Me implements Scene {
     let y = top + 4 - this.scroll.pos;
 
     if (me) {
+      const nickId = "edit-nick";
       fillRR(ctx, PAD, y + 2, fw, 76, 18, C.line);
-      fillRR(ctx, PAD, y, fw, 76, 18, C.card);
+      fillRR(ctx, PAD, y, fw, 76, 18, a.isPressed(nickId) ? C.paper : C.card);
       avatar(ctx, PAD + 40, y + 38, 24, initial(me.nickname), "me");
+      // 「改」比箭头直白：这里点进去就是改称呼（#210）
       text(ctx, me.nickname, PAD + 76, y + 28, font(18, "900", true), C.ink);
       text(ctx, "这个称呼就是你在牌局里的名字", PAD + 76, y + 52, font(12), C.ink3);
+      fillRR(ctx, PAD + fw - 62, y + 26, 46, 24, 12, C.paper);
+      text(ctx, "改", PAD + fw - 39, y + 38, font(13, "700"), C.red, "center");
+      a.hit(nickId, PAD, y, fw, 76, () => nickSheet(a));
       y += 92;
       y += list(a, ctx, PAD, y, fw, [
         { id: "claim", title: "在别的设备上登录", sub: "换手机、在浏览器里打开网页版时找回自己：给你一串认领码", chevron: true, onTap: () => claimSheet(a) },
@@ -110,6 +115,50 @@ export class Me implements Scene {
     };
     app.openSheet(s);
   }
+}
+
+// 改称呼（#210）：点「我的」页顶部那张卡片进来。校验、检测、限频都在服务端（和首次填称呼同一套）。
+function nickSheet(app: App) {
+  const me = currentUser();
+  if (!me) return;
+  let value = me.nickname, busy = false, error = "";
+  const save = async () => {
+    const name = value.trim();
+    if (busy || !name) return;
+    if (name === me.nickname) { app.closeSheet(s); return; } // 没改，别白跑一次（也算一次限频）
+    busy = true; error = ""; app.redraw();
+    try {
+      const r = await setNickname(name);
+      updateNickname(r.user.nickname); // 「我的」页、牌局里都是读这份缓存
+      app.closeSheet(s);
+      app.toast("改好了");
+    } catch (err) {
+      // 服务端的说明已经够用户看懂（「称呼需要 1–12 个字符」「这个称呼不能用」）；
+      // 内容安全那条回的是 422，把原文写成自己的话。
+      error = err instanceof ApiError
+        ? (err.code === "sensitive_word" ? "这个名字过不了微信的内容检测，换一个吧"
+          : err.code === "rate_limited" ? "这一小时改得太多次了，过一会儿再来"
+          : err.message)
+        : "没改成，稍后再试";
+    } finally {
+      busy = false; app.redraw();
+    }
+  };
+  const s: Sheet = {
+    draw: (ctx, y, w) => {
+      let cy = sheetHeader(ctx, y, w, "改称呼", "牌局里的座位、牌友列表都会跟着变。改动会发给微信做内容检测。");
+      cy += field(app, ctx, 20, cy, w - 40, {
+        key: "nick", value, placeholder: "比如：老王", maxLength: 12, error,
+        onChange: (v) => { value = v; error = ""; }, onConfirm: () => void save(),
+      }) + 14;
+      cy = sheetButtons(app, ctx, cy, w, [
+        { label: busy ? "正在保存…" : "保存", style: "primary", disabled: busy || !value.trim(), onTap: () => void save() },
+        { label: "算了", style: "link", onTap: () => app.closeSheet(s) },
+      ]);
+      return cy - y + 8;
+    },
+  };
+  app.openSheet(s);
 }
 
 /** 在别的设备上登录：认领码（主路径）和登录链接（次要，明说别外发）。 */
