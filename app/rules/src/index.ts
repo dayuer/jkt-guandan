@@ -15,3 +15,4 @@ export * from "./power";
 export * from "./deal";
 export * from "./combo";
 export * from "./moves";
+export * from "./play";

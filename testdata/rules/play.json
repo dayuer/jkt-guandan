@@ -1,0 +1,204 @@
+{
+ "_comment": [
+  "出牌状态机（#204 / #87 第 5 步）：初始局面 + 动作序列 → 走完之后的局面。",
+  "首圈谁领出（leader）由调用方给 —— 和进贡有关（第十条），不在这一步。",
+  "hands 下标 0–3 就是座位 1–4（和 deal.json 不一样：那里是按首抓者起逆时针第 k 家）。",
+  "允许残局：四家不必各 27 张，每家至少一张（几个回合就能走完的用例才看得清是哪一步错的）。",
+  "每条 steps[k] 是这一步**成功之后**的局面：turn / leading / last_seat / finished。",
+  "某一步不合法时，那一步写 reject 而不是 after —— 两个字段互斥。",
+  "reject 的取值是封闭的七个（见 README「play.json」那一节的表）：game-over / not-your-turn /",
+  "leading-cannot-pass / no-cards / cards-not-in-hand / bad-combo / does-not-beat。",
+  "牌例只比这个取值，不比对给人看的错误句子（句子会随措辞变，逐字比会天天红）。",
+  "结果（这一副结束时的 result）口径同 scoring.Round：order 是出完先后，双下时没出完的两家按座位号排在后面。"
+ ],
+ "vectors": [
+  {
+   "name": "领出、跟牌、过牌，一圈结束由最后出牌的人领出（第八条 一、3）",
+   "rule": ["第八条 一、1", "第八条 一、2", "第八条 一、3"],
+   "level": "7",
+   "leader": 1,
+   "hands": [
+    ["♠9/0"],
+    ["♠K/0", "♥3/0"],
+    ["♥9/0", "♣4/0"],
+    ["♣5/0", "♦6/0"]
+   ],
+   "steps": [
+    {"seat": 1, "cards": ["♠9/0"], "kind": "single", "rank": "9",
+     "after": {"turn": 2, "leading": false, "last_seat": 1, "finished": [1]}},
+    {"seat": 2, "cards": ["♠K/0"], "kind": "single", "rank": "K",
+     "after": {"turn": 3, "last_seat": 2, "finished": [1]}},
+    {"seat": 3, "pass": true, "after": {"turn": 4}},
+    {"seat": 4, "pass": true, "after": {"turn": 2, "leading": true, "last_seat": null}}
+   ],
+   "expect": {"turn": 2, "leading": true, "last_seat": null, "finished": [1]}
+  },
+  {
+   "name": "出完的人跳过；上游出完最后一手、余下都过，由搭档领出（第九条借风）",
+   "rule": ["第八条 一、3", "第九条"],
+   "level": "7",
+   "leader": 1,
+   "hands": [
+    ["♠9/0", "♣3/0"],
+    ["♠K/0"],
+    ["♥8/0", "♣4/0"],
+    ["♣5/0", "♦6/0"]
+   ],
+   "steps": [
+    {"seat": 1, "cards": ["♠9/0"], "kind": "single", "rank": "9",
+     "after": {"turn": 2, "last_seat": 1, "finished": []}},
+    {"seat": 2, "cards": ["♠K/0"], "kind": "single", "rank": "K",
+     "after": {"turn": 3, "last_seat": 2, "finished": [2]}},
+    {"seat": 3, "pass": true, "after": {"turn": 4}},
+    {"seat": 4, "pass": true, "after": {"turn": 1}},
+    {"seat": 1, "pass": true, "after": {"turn": 4, "leading": true, "last_seat": null}}
+   ],
+   "expect": {"turn": 4, "leading": true, "last_seat": null, "finished": [2]}
+  },
+  {
+   "name": "同一方拿了上游和二游 → 对方双下，这一副结束（第八条 一、4）",
+   "rule": ["第八条 一、4", "第二条 10"],
+   "level": "7",
+   "leader": 1,
+   "hands": [
+    ["♠9/0"],
+    ["♠10/0", "♥3/0"],
+    ["♠J/0"],
+    ["♣5/0", "♦6/0"]
+   ],
+   "steps": [
+    {"seat": 1, "cards": ["♠9/0"], "kind": "single", "rank": "9", "after": {"turn": 2, "finished": [1]}},
+    {"seat": 2, "cards": ["♠10/0"], "kind": "single", "rank": "10", "after": {"turn": 3, "finished": [1]}},
+    {"seat": 3, "cards": ["♠J/0"], "kind": "single", "rank": "J", "after": {"turn": 0, "finished": [1, 3]}}
+   ],
+   "expect": {
+    "turn": 0,
+    "finished": [1, 3],
+    "result": {"order": [1, 3, 2, 4], "head_seat": 1, "partner_place": 2}
+   }
+  },
+  {
+   "name": "三人出完，这一副结束（第八条 一、4）",
+   "rule": ["第八条 一、4", "第二条 10"],
+   "level": "7",
+   "leader": 1,
+   "hands": [
+    ["♠9/0"],
+    ["♠10/0"],
+    ["♠J/0"],
+    ["♣2/0", "♦3/0"]
+   ],
+   "steps": [
+    {"seat": 1, "cards": ["♠9/0"], "kind": "single", "rank": "9", "after": {"turn": 2, "finished": [1]}},
+    {"seat": 2, "cards": ["♠10/0"], "kind": "single", "rank": "10", "after": {"turn": 3, "finished": [1, 2]}},
+    {"seat": 3, "cards": ["♠J/0"], "kind": "single", "rank": "J", "after": {"turn": 0, "finished": [1, 2, 3]}}
+   ],
+   "expect": {
+    "turn": 0,
+    "finished": [1, 2, 3],
+    "result": {"order": [1, 2, 3, 4], "head_seat": 1, "partner_place": 3}
+   }
+  },
+  {
+   "name": "同一手牌声明成顺子跟不上对子 K，声明成同花顺就压得住（第三条 9：同花顺是炸弹）",
+   "rule": ["第三条 7", "第三条 9", "第四条 二、（二）"],
+   "level": "9",
+   "leader": 2,
+   "hands": [
+    ["♠3/0", "♠4/0", "♠5/0", "♠6/0", "♠7/0"],
+    ["♠K/0", "♥K/0"],
+    ["♣2/0"],
+    ["♦2/0"]
+   ],
+   "steps": [
+    {"seat": 2, "cards": ["♠K/0", "♥K/0"], "kind": "pair", "rank": "K",
+     "after": {"turn": 3, "last_seat": 2, "leading": false}},
+    {"seat": 3, "pass": true, "after": {"turn": 4}},
+    {"seat": 4, "pass": true, "after": {"turn": 1}},
+    {"seat": 1, "cards": ["♠3/0", "♠4/0", "♠5/0", "♠6/0", "♠7/0"], "kind": "straight", "rank": "7",
+     "reject": "does-not-beat"},
+    {"seat": 1, "cards": ["♠3/0", "♠4/0", "♠5/0", "♠6/0", "♠7/0"], "kind": "straight-flush", "rank": "7",
+     "after": {"turn": 3, "leading": false, "last_seat": 1, "finished": [2, 1]}}
+   ],
+   "expect": {"turn": 3, "leading": false, "last_seat": 1, "finished": [2, 1]}
+  },
+  {
+   "name": "拒绝：不是你的回合（第八条 一、1）",
+   "rule": ["第八条 一、1"],
+   "level": "7",
+   "leader": 1,
+   "hands": [["♠9/0"], ["♠K/0"], ["♥8/0"], ["♣5/0"]],
+   "steps": [
+    {"seat": 3, "cards": ["♥8/0"], "kind": "single", "rank": "8", "reject": "not-your-turn"}
+   ],
+   "expect": {"turn": 1, "leading": true, "last_seat": null, "finished": []}
+  },
+  {
+   "name": "拒绝：领出的人不能过牌（第八条 一、1）",
+   "rule": ["第八条 一、1"],
+   "level": "7",
+   "leader": 1,
+   "hands": [["♠9/0"], ["♠K/0"], ["♥8/0"], ["♣5/0"]],
+   "steps": [
+    {"seat": 1, "pass": true, "reject": "leading-cannot-pass"}
+   ],
+   "expect": {"turn": 1, "leading": true, "last_seat": null, "finished": []}
+  },
+  {
+   "name": "拒绝：出牌时一张牌都没给 —— 不出牌就该过牌（第八条 一、1、2）",
+   "rule": ["第八条 一、1", "第八条 一、2"],
+   "level": "7",
+   "leader": 1,
+   "hands": [["♠9/0"], ["♠K/0"], ["♥8/0"], ["♣5/0"]],
+   "steps": [
+    {"seat": 1, "cards": [], "kind": "single", "reject": "no-cards"},
+    {"seat": 1, "cards": ["♠9/0"], "kind": "single", "rank": "9",
+     "after": {"turn": 2, "leading": false, "last_seat": 1, "finished": [1]}}
+   ],
+   "expect": {"turn": 2, "leading": false, "last_seat": 1, "finished": [1]}
+  },
+  {
+   "name": "拒绝：压不住上一手（第八条 一、1）",
+   "rule": ["第八条 一、1"],
+   "level": "7",
+   "leader": 1,
+   "hands": [["♠9/0"], ["♠3/0", "♥4/0"], ["♥8/0"], ["♣5/0"]],
+   "steps": [
+    {"seat": 1, "cards": ["♠9/0"], "kind": "single", "rank": "9", "after": {"turn": 2, "finished": [1]}},
+    {"seat": 2, "cards": ["♠3/0"], "kind": "single", "rank": "3", "reject": "does-not-beat"}
+   ],
+   "expect": {"turn": 2, "leading": false, "last_seat": 1, "finished": [1]}
+  },
+  {
+   "name": "拒绝：打了手里没有的牌 / 声明的那一种解读不成立",
+   "rule": ["第三条 2"],
+   "level": "7",
+   "leader": 1,
+   "hands": [["♠9/0", "♥8/0"], ["♠K/0"], ["♥Q/0"], ["♣5/0"]],
+   "steps": [
+    {"seat": 1, "cards": ["♠J/0"], "kind": "single", "rank": "J", "reject": "cards-not-in-hand"},
+    {"seat": 1, "cards": ["♠9/0", "♥8/0"], "kind": "pair", "rank": "9", "reject": "bad-combo"},
+    {"seat": 1, "cards": ["♠9/0"], "kind": "single", "rank": "9", "after": {"turn": 2, "last_seat": 1}}
+   ],
+   "expect": {"turn": 2, "leading": false, "last_seat": 1, "finished": []}
+  },
+  {
+   "name": "拒绝：这一副已经结束了还要出牌",
+   "rule": ["第八条 一、4"],
+   "level": "7",
+   "leader": 1,
+   "hands": [["♠9/0"], ["♠10/0"], ["♠J/0"], ["♣5/0", "♦6/0"]],
+   "steps": [
+    {"seat": 1, "cards": ["♠9/0"], "kind": "single", "rank": "9", "after": {"turn": 2, "finished": [1]}},
+    {"seat": 2, "cards": ["♠10/0"], "kind": "single", "rank": "10", "after": {"turn": 3, "finished": [1, 2]}},
+    {"seat": 3, "cards": ["♠J/0"], "kind": "single", "rank": "J", "after": {"turn": 0, "finished": [1, 2, 3]}},
+    {"seat": 4, "cards": ["♣5/0"], "kind": "single", "rank": "5", "reject": "game-over"}
+   ],
+   "expect": {
+    "turn": 0,
+    "finished": [1, 2, 3],
+    "result": {"order": [1, 2, 3, 4], "head_seat": 1, "partner_place": 3}
+   }
+  }
+ ]
+}
