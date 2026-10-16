@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { SEVEN, TWO, type Card, type Rank } from "./card";
 import { comboRankName, compare, recognize, sortCards, type Combo, type ComboType } from "./combo";
+import { deal, permShuffler } from "./deal";
 import { comboKey, moves } from "./moves";
 import { handOf } from "./testing/cards";
 import { sampleHands } from "./testing/random";
@@ -302,6 +303,29 @@ const EDGE_HANDS: { name: string; cards: string[]; level: Rank }[] = [
   { name: "级牌自己：打 2 时的 A 当 1", cards: ["♠A/0", "♠2/0", "♠3/0", "♠4/0", "♠5/0"], level: TWO },
   { name: "单花色 34567：是顺子也是同花顺", cards: ["♠3/0", "♠4/0", "♠5/0", "♠6/0", "♠7/0"], level: SEVEN },
 ];
+
+describe("性质：耗时上限（守「不能退化成枚举子集」，不抠毫秒）", () => {
+  // 和 Go 那边同样的用意：上限取得比实测宽一个量级。它守的是「万一有人改成枚举子集」——
+  // 那会从毫秒掉到秒级；至于两台机器差 1.5 倍，不在它管的范围里。
+  const hand = deal(permShuffler(Array.from({ length: 108 }, (_, i) => i)))[0]; // 满手 27 张，最坏一档
+
+  it("27 张领出 / 跟一对，都在宽松上限内", () => {
+    const pair = comboOf(["♠9/0", "♥9/0"], "pair");
+
+    const leadStart = Date.now();
+    const leads = moves(hand, SEVEN);
+    const leadMs = Date.now() - leadStart;
+
+    const followStart = Date.now();
+    const follows = moves(hand, SEVEN, pair);
+    const followMs = Date.now() - followStart;
+
+    expect(leads.length, "领出不该是空的").toBeGreaterThan(0);
+    expect(follows.length, "跟一对不该是空的").toBeGreaterThan(0);
+    expect(leadMs, `领出 ${leads.length} 手用了 ${leadMs}ms`).toBeLessThan(2000);
+    expect(followMs, `跟一对用了 ${followMs}ms`).toBeLessThan(500);
+  });
+});
 
 describe("性质：边界手牌和暴力枚举对拍（照搬 Go 的 EdgeHands）", () => {
   it("领出一致；再把手里每一种解读当上一手，跟牌也要一致", () => {
