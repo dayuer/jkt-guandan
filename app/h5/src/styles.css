@@ -1279,7 +1279,7 @@ html.lock-overscroll body {
   color: var(--ink-2);
 }
 
-/* 底部 Tab：中间是「蛋」 */
+/* 底部 Tab：中间是红球「雅」 */
 .tabbar {
   /* 固定在视口底部，而不是跟在内容后面——内容少时停在屏幕中间、内容多时被滚走，
      都是线上报过的问题（#53）。 */
@@ -1326,11 +1326,11 @@ html.lock-overscroll body {
   color: var(--red);
 }
 
-.tab.egg {
+.tab.ball {
   margin-top: -26px;
 }
 
-.tab.egg .g {
+.tab.ball .g {
   width: 54px;
   height: 54px;
   border-radius: 50%;
