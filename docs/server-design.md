@@ -236,6 +236,14 @@ CREATE TABLE score_seat_leavers (
 -- 0012（#205）删掉 score_matches.a_fail_limit：2022《竞技掼蛋竞赛规则（试行）》没有「打 A 几次不过回到 2」，
 -- 第二条 13「A 级必打」，打不过就一直打 A。是 breaking 迁移（删列），按 runbook §2.3 走。
 
+-- 0013（#211）：「我的牌局」历史里删掉的局。只影响这个人自己的列表，不动牌局、计分和牌友关系。
+CREATE TABLE hidden_games (
+  user_id   TEXT NOT NULL REFERENCES users(id),
+  game_id   TEXT NOT NULL REFERENCES games(id),
+  hidden_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, game_id)
+);
+
 ```
 
 连接设置和并发规则见 §11。
@@ -512,6 +520,9 @@ GET  /api/config                      前端用的公开配置（09 牌友的群
 POST /api/me                          首次填称呼
 GET  /api/me                          当前身份
 PUT  /api/me/nickname                 改称呼（#210）：{"nickname":"新名字"} → 200 {"user":{…}}
+GET  /api/me/games                    我的牌局·要打的（#211）：我开的 / 坐下的 / 候补中、还没开始的局
+GET  /api/me/games/history?before=&before_code=&limit=  我的牌局·历史（#211）：开过或坐过、已开始或已取消的局，分页
+DELETE /api/me/games/history/{code}   从我自己的历史里删掉一局（#211），204
 POST /api/claim                       签发 claim token 和认领码
 POST /api/claim/redeem                凭 {token, confirm?} 或 {code} 兑换身份；设备已有别的身份时返回 409 claim_conflict（§5.2）
 DELETE /api/me/devices/{id}           退出这台以外的某个设备（§10.3「退出其他设备」）
@@ -583,6 +594,13 @@ GET  /*                               内嵌的前端页面（单页应用，未
   - 已注销的人不能改：`UPDATE … WHERE id = ? AND deleted_at IS NULL`，匹配不到行时返回 `403 user_deleted`。注销会删掉设备和微信关联，正常认不出身份；这一步是防「设备上还留着 cookie」。
   - 限流：每个用户每小时 10 次（和改 WhatsApp 号码同量级），超出返回 `429 rate_limited`。
 - **称呼没有快照**：座位、候补、牌友列表、每局记录的「谁记的」都只存 user id，读的时候 JOIN `users`。所以改完一处，各处都是新称呼（`games` 包里有用例钉住这一点）。`outbox` 里的提醒也按 user id 取称呼，不存渲染好的名字。
+
+**我的牌局**（#211，「我的」页）。用户原话：「把我开的，我参与的，这些还没有开始的牌局列出来，时间地点，让我能看清凑局的状态」「历史局也要放进去，可以删」。三个接口都是 `route.User`，访客 401。
+
+- `GET /api/me/games`：**要打的**。条件：`status IN ('open','full')`、`starts_at > now`，并且我是局头、坐在座位上或在候补里。按开始时间从近到远，不分页（一个人同时挂着的局不多，开局本身有配额）。返回 `{"games":[…]}`，每项和首页「列表条目」同一个外形，带 `my_role` / `waitlist_pos`。
+- `GET /api/me/games/history`：**历史**。条件：我是局头或坐过座位（候补没轮上的不算「参与过」），并且已经开始（`starts_at <= now`）或者已取消 / 已结束；我删掉的不出现。按开始时间从近到远、同一时间按短码倒序，一页最多 20 条。返回 `{"games":[…],"has_more":bool}`；翻下一页把上一页最后一条的 `starts_at`、`short_code` 作为 `before`、`before_code` 带回来（游标用短码，不往外露内部 id）。记过分的局多一个 `score`：`{kind, rounds, winner?, red_level, black_level, red_double_ups, black_double_ups, red_wins, black_wins}`（不升级玩法只看赢了几局），和计分页同一个 `loadScore` 算出来。
+- `DELETE /api/me/games/history/{code}`：从**我自己的**历史里删掉，写一行 `hidden_games`，`204`，重复删也是 `204`。不删牌局、不动同局别人的列表、计分记录和牌友关系，删了不能恢复。还没开始的局返回 `409 not_history`（那是退出或取消，在详情页做）；不是我开过或坐过的局一律 `404 game_not_found`，不透露它存在。
+- 注销时删掉这个人的 `hidden_games`（§14）；合并身份时搬到保留的身份上，两边删过的都算删过。
 
 **09 牌友**（#108，设计稿 F1）。三个接口都要有身份（`route.User`），访客 401，被封禁 403：
 
@@ -1111,7 +1129,7 @@ guandan restore <快照>                    从备份恢复（§13.3）
 - **个人数据保护法（UU PDP，2024 年 10 月起全面执行）**：
   - 采集的个人数据只有称呼、可选的 WhatsApp 号码、设备信息、埋点数据，以及小游戏用户的微信标识（openid / unionid，只用来识别同一个人，#84），不额外收集其他信息；
   - 提供隐私说明页面 `/privacy`，写明收集什么、用来做什么、保存多久、怎样删除；
-  - `DELETE /api/me` 用于注销：删除称呼、WhatsApp 号码、设备、推送订阅、微信关联（`user_links`）和订阅消息次数（`wx_subscribe_quota`）；座位记录改成「已注销牌友」，这样历史局的人数统计不会出错；
+  - `DELETE /api/me` 用于注销：删除称呼、WhatsApp 号码、设备、推送订阅、微信关联（`user_links`）和订阅消息次数（`wx_subscribe_quota`）、「我的牌局」里删掉的历史记录（`hidden_games`）；座位记录改成「已注销牌友」，这样历史局的人数统计不会出错；
   - 保留期限：设备 180 天未活跃就删除（§13.1）；埋点数据 1 年后删除；备份 30 天。
 - **赌博监管**：页面上已经写明「不涉及金钱输赢」。服务端对牌局备注和地点做敏感词过滤（赌、钱、筹码、judi、taruhan……），命中就拒绝提交，并提示「请勿涉及金钱」。词表放在仓库里，可以随时更新。
 - **微信内容安全检测（#146，`internal/secheck`）**：微信要求有用户生成内容的小游戏接入内容安全检测。

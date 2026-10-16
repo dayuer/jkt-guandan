@@ -247,6 +247,37 @@ export async function signOutOtherDevices(): Promise<number> {
   return others.length;
 }
 
+// ── 我的牌局（#211）──
+
+/** 历史里记过分的局带的比分摘要（和计分页同一套算法）。 */
+export interface ScoreBrief {
+  kind: string;
+  rounds: number;
+  /** 过了 A 的那一队；没打完没有。 */
+  winner?: "red" | "black";
+  red_level: number;
+  black_level: number;
+  red_double_ups: number;
+  black_double_ups: number;
+  red_wins: number;
+  black_wins: number;
+}
+export type HistoryGame = GameSummary & { score?: ScoreBrief };
+export interface HistoryPage { games: HistoryGame[]; has_more: boolean }
+
+/** 要打的：我开的 / 已报名 / 候补中，还没开始的局，从近到远。 */
+export async function listMyGames(): Promise<GameSummary[]> {
+  return (await request<{ games: GameSummary[] }>("GET", "/api/me/games"))?.games ?? [];
+}
+/** 历史：开过或坐过、已开始或已取消的局，从近到远。after 是上一页最后一条，翻下一页时传。 */
+export async function listMyHistory(after?: HistoryGame): Promise<HistoryPage> {
+  const q = after ? `?before=${after.starts_at}&before_code=${enc(after.short_code)}` : "";
+  const body = await request<HistoryPage>("GET", `/api/me/games/history${q}`);
+  return { games: body?.games ?? [], has_more: !!body?.has_more };
+}
+/** 从我自己的历史里删掉一局：牌局本身和同局别人都不受影响。 */
+export const hideFromHistory = (code: string) => request<void>("DELETE", `/api/me/games/history/${enc(code)}`);
+
 // ── 牌友 ──
 
 export async function listFriends(): Promise<Friend[]> {
