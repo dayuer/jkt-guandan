@@ -235,6 +235,24 @@ export function runAccept165(ctx: AcceptCtx) {
   step("s12-submit", () => { tap("rs-ok") }, "cf-theirs");
   step("s12-use-theirs", () => { tap("cf-theirs") });
 
+  // ── S6 的「打本队的 A」分支（7.4 里最关键的一条）：先把红方推到 A，再走一遍记一局 ──
+  // 这一条不能靠 fastforward 顺带：那样的「过 A」从来没在界面上出现过。
+  step("reach-a", async () => {
+    for (let i = 0; i < 20; i++) {
+      const cur = await req("GET", `/api/games/${g.__accept165Code}/score`, null, tokens.me);
+      const st = cur.body?.state;
+      if (!st || st.match_over || st.red.level >= 14) break; // 红方到 A 就停，留着界面来展示
+      const no = cur.body.rounds.length + 1;
+      const r = await req("POST", `/api/games/${g.__accept165Code}/score/rounds`, { expected_round_no: no, head_seat: 1, partner_place: 2 }, tokens.me);
+      if (r.status !== 200) { report("reach-a-stop", { no, status: r.status }); break }
+    }
+  });
+  step("s6b-at-a", () => { nav.detail(g.__accept165Code); nav.score(g.__accept165Code) }, "bar:record");
+  step("s6b-open", () => { tap("bar:record") }, "rs-head:1");
+  step("s6b-head", () => { tap("rs-head:1") }, "rs-place:2");
+  step("s6b-passA-preview", () => { tap("rs-place:2") }, "rs-ok");
+  step("s6b-cancel", () => { tap("scrim") });
+
   // ── 快进到过 A（本场结束 S8），再导出战报（S15）──
   // 红方一路双上：2→5→8→10→K→A→过 A。直接走 API，模拟的就是四个人的每局事实。
   step("fastforward", async () => {
