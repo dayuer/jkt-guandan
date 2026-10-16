@@ -23,7 +23,9 @@
 
 ### 1.1 环境变量文件
 
-容器的配置写在服务器上的 `/etc/guandan/guandan.env`（文件 600、目录 700、属主 root，coord 已经建好），`scripts/deploy-remote.sh` 启动容器时会用 `--env-file` 读它。目前的内容：
+容器的配置写在服务器上的 `/etc/guandan/guandan.env`（文件 600、目录 700、属主 root，coord 已经建好），`scripts/deploy-remote.sh` 启动容器时会用 `--env-file` 读它。
+
+本机可以把要改的变量写进 `deploy/guandan.env`（从 `deploy/guandan.env.example` 复制，已在 `.gitignore` 里），`scripts/deploy.sh` 每次发布前把里面写了值的变量合并进服务器上的这个文件：只替换这些键，其余保留，值不打印。`GUANDAN_WX_SECRET` 不是 32 位或以 `wx` 开头时发布直接停下。目前的内容：
 
 ```bash
 GUANDAN_PUBLIC_URL=https://guandan.synon.ai
