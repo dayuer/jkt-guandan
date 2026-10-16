@@ -82,4 +82,63 @@ describe("Me 刷新", () => {
     expect(state(m).hasMore).toBe(false);
     expect(state(m).loadingMore).toBe(false);
   });
+
+  it("刷新还没回来时点「看更早的」：刷新先回、这一页后回，不能拼出漏掉一段的列表", async () => {
+    const m = new Me(app, {} as any);
+    // 已经翻了两页：A B | C D，游标在 D
+    api.listMyHistory.mockResolvedValueOnce({ games: [game("A"), game("B")], has_more: true });
+    m.onEnter(); await flush();
+    api.listMyHistory.mockResolvedValueOnce({ games: [game("C"), game("D")], has_more: true });
+    await state(m).more();
+    expect(state(m).history.map((g: HistoryGame) => g.short_code)).toEqual(["A", "B", "C", "D"]);
+
+    // 回到页面触发刷新（还没回来），这时点「看更早的」，还拿着旧游标 D
+    const refreshed = deferred<{ games: HistoryGame[]; has_more: boolean }>();
+    const older = deferred<{ games: HistoryGame[]; has_more: boolean }>();
+    api.listMyHistory.mockReturnValueOnce(refreshed.p).mockReturnValueOnce(older.p);
+    m.onResume();
+    const loading = state(m).more();
+    expect(api.listMyHistory).toHaveBeenLastCalledWith(game("D"));
+
+    refreshed.resolve({ games: [game("A"), game("B")], has_more: true }); await flush();
+    older.resolve({ games: [game("E"), game("F")], has_more: false }); await loading;
+    expect(state(m).history.map((g: HistoryGame) => g.short_code)).toEqual(["A", "B"]);
+    expect(state(m).hasMore).toBe(true);
+  });
+
+  it("两次刷新交错：先发的后回来，不能盖掉后发的结果", async () => {
+    const m = new Me(app, {} as any);
+    const first = deferred<{ games: HistoryGame[]; has_more: boolean }>();
+    api.listMyHistory.mockReturnValueOnce(first.p).mockResolvedValueOnce({ games: [game("NEW")], has_more: false });
+    m.onEnter();
+    m.onResume(); await flush();
+    first.resolve({ games: [game("OLD")], has_more: true }); await flush();
+    expect(state(m).history.map((g: HistoryGame) => g.short_code)).toEqual(["NEW"]);
+    expect(state(m).hasMore).toBe(false);
+  });
+
+  it("旧的一页回来时不能把新一轮「看更早的」的加载状态复位", async () => {
+    const m = new Me(app, {} as any);
+    api.listMyHistory.mockResolvedValueOnce({ games: [game("A")], has_more: true });
+    m.onEnter(); await flush();
+
+    const oldPage = deferred<{ games: HistoryGame[]; has_more: boolean }>();
+    api.listMyHistory.mockReturnValueOnce(oldPage.p);
+    const oldLoading = state(m).more();
+
+    api.listMyHistory.mockResolvedValueOnce({ games: [game("N")], has_more: true });
+    m.onResume(); await flush();
+
+    const newPage = deferred<{ games: HistoryGame[]; has_more: boolean }>();
+    api.listMyHistory.mockReturnValueOnce(newPage.p);
+    const newLoading = state(m).more();
+    expect(state(m).loadingMore).toBe(true);
+
+    oldPage.resolve({ games: [game("OLD")], has_more: true }); await oldLoading;
+    expect(state(m).loadingMore).toBe(true); // 新一轮还在读，不能被旧的复位（复位了用户能再点一次，发重复请求）
+
+    newPage.resolve({ games: [game("O")], has_more: false }); await newLoading;
+    expect(state(m).loadingMore).toBe(false);
+    expect(state(m).history.map((g: HistoryGame) => g.short_code)).toEqual(["N", "O"]);
+  });
 });

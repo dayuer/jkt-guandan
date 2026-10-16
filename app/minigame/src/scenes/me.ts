@@ -60,7 +60,9 @@ export class Me implements Scene {
     this.loadingMore = true; this.app.redraw();
     try {
       const page = await listMyHistory(last);
-      if (gen !== this.gen) return;
+      // 代数变了，或者游标已经被刷新换掉了（刷新先回来、这一页后回来）：这一页接不上现在的列表，丢掉。
+      // 不然会漏一段：已翻到 D，刷新回来是 A B，这一页从 D 往后读到 E F，拼起来就是 A B E F。
+      if (gen !== this.gen || this.cursor !== last) return;
       const seen = new Set((this.history ?? []).map((g) => g.short_code));
       this.history = [...(this.history ?? []), ...page.games.filter((g) => !seen.has(g.short_code))];
       this.hasMore = page.has_more;
