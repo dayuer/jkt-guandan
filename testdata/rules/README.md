@@ -37,6 +37,7 @@ TS 版（`app/rules`，#87）读同一批文件，任何一边改规则都要先
 | `deal.json` | 给定发牌顺序（随机源）→ 四手牌（`第七条 一、5`） | `Deal` / TS 的 `deal` | `{_comment, vectors}` |
 | `combos.json` | 一手牌 + 级数 → 全部合法解读（含逢人配） | `Recognize` / TS 的同一函数 | `{_comment, vectors}` |
 | `compare.json` | 两手牌 + 级数 → 谁大（`第四条 二`） | `Combo.Compare` / TS 的同一函数 | `{_comment, vectors}` |
+| `moves.json` | 一手牌 + 级数（+ 上一手）→ 这一手能打出去的**全部**打法（`Moves`） | `Moves` / TS 的同一函数 | `{_comment, vectors}` |
 
 后面的步骤（合法出法、出牌流程、进贡）还会加：
 
@@ -102,6 +103,27 @@ TS 版（`app/rules`，#87）读同一批文件，任何一边改规则都要先
 | `vectors[].level` | string | 是 | 级数 |
 | `vectors[].a` / `vectors[].b` | object | 是 | 两边各一个 `{kind, cards, rank?}`；`kind` 是**声明的**牌型，`rank` 是声明的牌面（同一手牌有多种解读、点数也不同时必须写：比如带逢人配的那几张。写法同 `combos.json` 的 `rank`） |
 | `vectors[].result` | string | 是 | `a`（a 大）、`b`（b 大）、`equal`（一样大）、`incomparable`（牌型不同，没得比）。**两个方向都会断言**：`a` 那条同时也要求 b 比 a 小，以此类推 |
+
+### `moves.json`
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `vectors[].name` | string | 是 | 给人看的说明 |
+| `vectors[].rule` | string[] | 是 | 条款号 |
+| `vectors[].level` | string | 是 | 级数 |
+| `vectors[].hand` | string[] | 是 | 手里这 n 张牌（最多 27 张） |
+| `vectors[].lead` | object | 否 | **上一手**：`{kind, cards, rank?}`，写法同 `compare.json` 的 `a`／`b`（同一手牌有多种解读时用 `rank` 声明是哪一种）。**不写就是领出** |
+| `vectors[].moves` | object[] | 是 | 能打出去的全部打法，**排好序**（先按 `kind` 在那张表里从上到下，再按 `rank`，再按 `size`，再按 `wilds`）；跟牌时只列能压住 `lead` 的。空数组表示这手牌要不起 |
+| `vectors[].moves[].kind` | string | 是 | 牌型名，取值见下面那张表 |
+| `vectors[].moves[].rank` | string | 是 | 牌面，写法同 `combos.json` 的 `rank`（四大天王是空串） |
+| `vectors[].moves[].size` | number | 是 | 这一手打出去几张。**炸弹 4–10 张不固定，其余牌型的 size 是定死的**（单张 1、对子 2、三同张 3、三带对 5、三连对/三同连张 6、顺子/同花顺 5、四大天王 4） |
+| `vectors[].moves[].wilds` | object[] | 否 | 同 `combos.json`：这一手用了哪张逢人配、顶成什么；顶法唯一时可以不写 |
+
+两条和别处不一样的约定：
+
+- **不比「用哪几张牌」**：同一个（牌型、牌面、张数、顶法）只要列一次，具体挑哪几张由实现定
+  （两端都取牌 ID 最小的那一套）—— 同点数的牌在规则上等价，凑出来的牌不同不该算两种打法。
+- **过牌不在这个集合里**：跟牌时「要不起就过」永远合法，由调用方自己加。
 
 ## 牌型的名字（`combos.json` 的 `kind`、`compare.json` 的 `a.kind`／`b.kind`）
 
