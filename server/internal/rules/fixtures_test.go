@@ -781,7 +781,9 @@ type playSnap struct {
 	passes    int
 	finished  []int
 	moves     int
-	hands     []int
+	// hands 存的是**牌本身**（按 Key 写），不是张数：只存张数的话，
+	// 两张牌在两家之间换了个位置这种坏法看不出来（#247 复审）。
+	hands [][]string
 }
 
 func playSnapOf(g *Game) playSnap {
@@ -792,10 +794,10 @@ func playSnapOf(g *Game) playSnap {
 		passes:    g.passes,
 		finished:  append([]int{}, g.finished...),
 		moves:     len(g.moves),
-		hands:     make([]int, Seats+1),
+		hands:     make([][]string, Seats+1),
 	}
 	for seat := 1; seat <= Seats; seat++ {
-		s.hands[seat] = len(g.hands[seat])
+		s.hands[seat] = keys(g.hands[seat])
 	}
 	return s
 }

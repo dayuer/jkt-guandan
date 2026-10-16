@@ -215,3 +215,18 @@ export function newDeck(): Card[] {
   }
   return deck;
 }
+
+/**
+ * 整副牌，按 ID 索引 —— `newDeck()` 建一次就够，后面拿它核「一张牌的 ID 和字段对不对得上」。
+ *
+ * `Card` 的四个字段是能**各自单独写出来**的：ID 由 `newDeck()` 按位置发，字段却不受它约束，
+ * 所以 `{ id: 手里那张 ♠3 的 id, rank: ACE, suit: ♠, deck: 0 }` 这种牌造得出来。
+ * Go 端 `server/internal/rules/deck.go` 的 `canonicalIndex` 是同一张表（那边是 Key → ID）。
+ */
+const CANONICAL_DECK: readonly Card[] = newDeck();
+
+/** 这张牌的 ID 和它的字段对不对得上；对不上就「不是整副牌里的那一张」。 */
+export function isCanonicalCard(card: Card): boolean {
+  const canonical = CANONICAL_DECK[card.id];
+  return canonical !== undefined && cardKey(canonical) === cardKey(card);
+}

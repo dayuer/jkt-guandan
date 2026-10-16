@@ -93,13 +93,39 @@ describe("出牌的校验", () => {
     expect(rejectReason(() => game().play(1, handOf(["♠9/0"]), "pair"))).toBe("bad-combo");
   });
 
-  it("没轮到、领出时过牌、已经结束：各是各的原因", () => {
+  it("没轮到、领出时过牌：各是各的原因", () => {
     expect(rejectReason(() => game().play(2, handOf(["♠10/0"]), "single", 10))).toBe("not-your-turn");
     expect(rejectReason(() => game().pass(1))).toBe("leading-cannot-pass");
 
-    const over = game();
-    over.play(1, handOf(["♠9/0"]), "single", 9);
-    expect(rejectReason(() => over.play(1, handOf(["♠9/0"]), "single", 9))).toBe("not-your-turn");
+    // 上面这条是「出完之后没轮到我」，**不是** game-over —— 原来这条用例的标题写成「已经结束」，
+    // 名不副实（#247 复审顺手指出）。真正的 game-over 在下面。
+    const played = game();
+    played.play(1, handOf(["♠9/0"]), "single", 9);
+    expect(played.over()).toBe(false); // 只出完一家，牌局还在走
+    expect(rejectReason(() => played.play(1, handOf(["♠9/0"]), "single", 9))).toBe("not-your-turn");
+  });
+
+  it("这一副结束之后还出牌：game-over（第八条 一、4）", () => {
+    // 三人出完这一副就结束了（坐 4 的那家手里还留着两张）。
+    const g = new Game(SEVEN, [handOf(["♠9/0"]), handOf(["♠10/0"]), handOf(["♠J/0"]), handOf(["♣5/0", "♦6/0"])], 1);
+    g.play(1, handOf(["♠9/0"]), "single", 9);
+    g.play(2, handOf(["♠10/0"]), "single", 10);
+    g.play(3, handOf(["♠J/0"]), "single", 11);
+    expect(g.over()).toBe(true);
+
+    const before = [g.turn(), g.hand(4).map(cardKey), g.moves().length];
+    expect(rejectReason(() => g.play(4, handOf(["♣5/0"]), "single", 5))).toBe("game-over");
+    expect([g.turn(), g.hand(4).map(cardKey), g.moves().length]).toStrictEqual(before);
+  });
+
+  // 和 Go 的 TestNewGameRejectsMismatchedCard 对着：`Card` 的四个字段能各自单独写出来，
+  // 所以「ID 和字段对不上」的手牌造得出来。不核的话 play() 按 ID 认牌就会认错。
+  it("开局就拦住 ID 和字段对不上的手牌", () => {
+    const stolen = handOf(["♠3/0"])[0]!;
+    const imposter: Card = { ...handOf(["♠A/0"])[0]!, id: stolen.id };
+    expect(() =>
+      new Game(SEVEN, [[imposter], handOf(["♠4/0"]), handOf(["♠5/0"]), handOf(["♠6/0"])], 1),
+    ).toThrow(/对不上/);
   });
 
   it("拒绝之后局面一点没变（第八条 一、1）", () => {

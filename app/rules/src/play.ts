@@ -17,7 +17,7 @@
 // **不读时间、不读随机数**：同样的初始局面和同样的动作序列，一定走到同样的局面（复盘、断线恢复）。
 //
 // 和服务端的 server/internal/rules/play.go 是同一套语义，两边对着改。
-import { ACE, TWO, cardKey, type Card, type Rank } from "./card";
+import { ACE, TWO, cardKey, isCanonicalCard, type Card, type Rank } from "./card";
 import { compare, pick, recognize, type Combo, type ComboType } from "./combo";
 // 桌子是四家 —— 座位数只定义一处（发牌那边也是同一个常量），别各写各的。
 import { SEATS } from "./deal";
@@ -114,6 +114,12 @@ export class Game {
       const seat = i + 1;
       if (hand.length === 0) throw new Error(`开局：${seat} 号座没有牌`);
       for (const card of hand) {
+        // ID 是这张牌的身份证、字段却是能单独写出来的，所以要先核这两样对不对得上。
+        // 不核的话 `play()` 按 ID 认牌就会认错 —— 那是 B1 那个洞的另一面（和 Go 的
+        // `NewGame` 一样：堵一头没用）。
+        if (!isCanonicalCard(card)) {
+          throw new Error(`开局：${cardKey(card)} 的 ID（${card.id}）和它的字段对不上，不是整副牌里的那一张`);
+        }
         const other = seen.get(card.id);
         if (other !== undefined) throw new Error(`开局：${card.id} 同时在 ${other} 号座和 ${seat} 号座手里`);
         seen.set(card.id, seat);

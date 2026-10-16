@@ -175,6 +175,24 @@ describe("play.json：出牌状态机（第八条、第九条）", () => {
     return state;
   };
 
+  /**
+   * 局面快照：**被拒之后必须一点没变**。和 Go 的 `playSnapOf` 对着来。
+   *
+   * 为什么不拿 `stateOf`（公开读法）当快照：`passes` 没有公开读法，而它正是「先记一笔再报错」
+   * 这种坏法最藏身的地方 —— 存档里也没有它，所以只看可观测状态会漏。Go 那边同包直接读
+   * `g.passes`，这里只能从私有字段里取：是测试，不是生产代码。
+   */
+  const snapOf = (game: Game): unknown => ({
+    turn: game.turn(),
+    leading: game.leading(),
+    lastSeat: (game as unknown as { lastSeat: number }).lastSeat,
+    last: game.lastPlay() ?? null,
+    passes: (game as unknown as { passes: number }).passes,
+    finished: game.finished(),
+    moves: game.moves(),
+    hands: Array.from({ length: SEATS }, (_, i) => keys(game.hand(i + 1))),
+  });
+
   /** 走一步。出牌时按牌例里的写法去整副牌里取那一张（ID 才和手里的对得上）。 */
   const applyStep = (game: Game, step: PlayStep): void => {
     if (step.pass) {
@@ -202,14 +220,28 @@ describe("play.json：出牌状态机（第八条、第九条）", () => {
 
       vector.steps.forEach((step, i) => {
         const what = `第 ${i + 1} 步`;
+        const before = snapOf(game);
+
         if (step.reject !== undefined) {
           expect(rejectReasonOf(() => applyStep(game, step)), what).toBe(step.reject);
+          // 「被拒」的全部含义就是局面没动 —— 先记一笔再报错，存档就坏了。
+          // 没有这一条，七个取值里只有会改可观测状态的那几个测得出（#247 复审 B1）。
+          expect(snapOf(game), `${what}：被拒之后局面不该变`).toStrictEqual(before);
         } else {
           applyStep(game, step);
+          // 成功的那一步要写 after，不然这一步过了什么都没查（Go 的 TestPlayFixture 一样）。
+          expect(step.after, `${what}：成功的那一步要写 after`).toBeDefined();
         }
         if (step.after) expect(stateOf(game), what).toMatchObject(step.after);
       });
 
+      // 和 Go 同一对检查：turn: 0 和 result 是一对，写了一个就得写另一个。
+      if (vector.expect.turn === 0) {
+        expect(vector.expect.result, "expect 说这一副结束了（turn: 0），却没写 result").toBeDefined();
+      }
+      if (vector.expect.result) {
+        expect(vector.expect.turn, "expect 写了 result，却没写 turn: 0").toBe(0);
+      }
       expect(stateOf(game)).toMatchObject(vector.expect);
     });
   }
