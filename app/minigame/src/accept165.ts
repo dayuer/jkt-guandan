@@ -28,10 +28,14 @@ export interface AcceptCtx {
 //
 // 改用固定账号之后，每轮开头要**把他们手里的座位退掉**：一个人同时最多占 5 个位置，
 // 不退的话跑几轮一样会 409 quota_exceeded（现象是「四人局只进来两个」）。
+// 座位号按**报名顺序**定，不是名字：老王开局（1 号），下面三个 join 的顺序是
+// 我 → Lily → 小周，所以 **我=2 号、Lily=3 号、小周=4 号**。分队是 1/3 红方、2/4 黑方，
+// 于是 红方 = 老王 + Lily，黑方 = 阿杰（我）+ 小周。
+//（原来这里的注释把 Lily 写成黑方、我写成红方 —— 和实际正好反过来。）
 const OPENID = {
   host: "acc-laoWang", // 1 号 · 红方
-  lily: "acc-lily", // 2 号 · 黑方
-  me: "acc-me", // 3 号 · 红方（本机身份）
+  me: "acc-me", // 2 号 · 黑方（本机身份）
+  lily: "acc-lily", // 3 号 · 红方
   zhou: "acc-xiaoZhou", // 4 号 · 黑方
   guest: "acc-guest", // 不在座位上的旁观者
 };
@@ -235,6 +239,24 @@ export function runAccept165(ctx: AcceptCtx) {
   step("s12-submit", () => { tap("rs-ok") }, "cf-theirs");
   step("s12-use-theirs", () => { tap("cf-theirs") });
 
+  // ── S6 的「打本队的 A」分支（7.4 里最关键的一条）：先把红方推到 A，再走一遍记一局 ──
+  // 这一条不能靠 fastforward 顺带：那样的「过 A」从来没在界面上出现过。
+  step("reach-a", async () => {
+    for (let i = 0; i < 20; i++) {
+      const cur = await req("GET", `/api/games/${g.__accept165Code}/score`, null, tokens.me);
+      const st = cur.body?.state;
+      if (!st || st.match_over || st.red.level >= 14) break; // 红方到 A 就停，留着界面来展示
+      const no = cur.body.rounds.length + 1;
+      const r = await req("POST", `/api/games/${g.__accept165Code}/score/rounds`, { expected_round_no: no, head_seat: 1, partner_place: 2 }, tokens.me);
+      if (r.status !== 200) { report("reach-a-stop", { no, status: r.status }); break }
+    }
+  });
+  step("s6b-at-a", () => { nav.detail(g.__accept165Code); nav.score(g.__accept165Code) }, "bar:record");
+  step("s6b-open", () => { tap("bar:record") }, "rs-head:1");
+  step("s6b-head", () => { tap("rs-head:1") }, "rs-place:2");
+  step("s6b-passA-preview", () => { tap("rs-place:2") }, "rs-ok");
+  step("s6b-cancel", () => { tap("scrim") });
+
   // ── 快进到过 A（本场结束 S8），再导出战报（S15）──
   // 红方一路双上：2→5→8→10→K→A→过 A。直接走 API，模拟的就是四个人的每局事实。
   step("fastforward", async () => {
@@ -248,6 +270,34 @@ export function runAccept165(ctx: AcceptCtx) {
   });
   step("s8-ended", async () => { await closeSheetIfOpen(); nav.detail(g.__accept165Code); nav.score(g.__accept165Code) }, "bar:report");
   step("s15-report", () => { tap("bar:report") });
+
+  // ── S13：不升级玩法（`kind = no-level`）──
+  // 两张牌换成胜局数、中间冒号，下面「双上」次数卡；记一局只要第一步。
+  step("s13-make", async () => {
+    const starts = Math.floor(Date.now() / 1000) + 20 * 60;
+    const made = await req("POST", "/api/games", { starts_at: starts, area: "SCBD", venue: "Pacific Place · 鼎泰丰包间", kind: "no-level" }, tokens.host);
+    g.__noLevelCode = made.body?.game?.short_code || "";
+    for (const t of [tokens.me, tokens.lily, tokens.zhou]) await req("POST", `/api/games/${g.__noLevelCode}/seat`, null, t);
+  });
+  step("s13-detail", () => { if (g.__noLevelCode) nav.detail(g.__noLevelCode) }, "score-entry");
+  step("s13-start-sheet", () => { tap("score-entry") }, "start:0");
+  step("s13-score", () => { tap("start:0") }, "bar:record");
+  step("s13-record-sheet", () => { tap("bar:record") }, "rs-head:1");
+  step("s13-head-picked", () => { tap("rs-head:1") }, "rs-ok");
+  // 不升级玩法只要第一步 —— 选了头游主按钮就该能点（第二步只影响「双上」统计）
+  step("s13-recorded", () => { tap("rs-ok") }, "bar:record");
+
+  // ── S14：旁观视角（站在座位外的人看同一个记分页）──
+  // 底栏只剩「分享」+「只有座位上的四个人能记分」，没有记分按钮。
+  step("s14-spectator", async () => {
+    setToken("");
+    wx.setStorageSync("gd_dev_openid", OPENID.guest);
+    await boot();
+    // ⚠️ 要看的是**还在记分**的那一局：原来那一局已经「本场结束」，底栏走的是
+    // `bar:report`（整条「分享战报」），不是 S14 的旁观分支。改用刚开的那个不升级局
+    // —— 它满座、开着，我又不在座位上，才会出「分享 + 只有座位上的四个人能记分」。
+    nav.score(g.__noLevelCode);
+  }, "bar:share");
 
   let i = 0;
   const next = () => {
