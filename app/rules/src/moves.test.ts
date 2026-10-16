@@ -81,6 +81,31 @@ describe("列合法出法：领出", () => {
         .map((c) => c.cards.length),
     ).toEqual([4, 5, 6, 7]);
   });
+
+  // #238 复审发现的：排序是 牌型 → 牌面 → **张数** → 顶法，张数漏了的话「用了几张逢人配」
+  // 会插到张数前面，把 4 张和 5 张交错开（变成 4、5、4w、5w，而应该是 4、4w、5、5w）。
+  it("炸弹按张数排，同张数的再按用了几张逢人配", () => {
+    const hand = ["♠3/0", "♥3/0", "♣3/0", "♦3/0", "♠3/1", "♥3/1", "♣3/1", "♥7/0"];
+    const bombs = moves(handOf(hand), SEVEN).filter((c) => c.type === "bomb");
+    expect(bombs.map((c) => `${c.cards.length}张${c.wilds.length}配`)).toEqual([
+      "4张0配",
+      "4张1配",
+      "5张0配",
+      "5张1配",
+      "6张0配",
+      "6张1配",
+      "7张0配",
+      "7张1配",
+      "8张1配",
+    ]);
+  });
+
+  it("四大天王的牌面是空串（README：它没有点数）", () => {
+    const jokers = moves(handOf(["大王/0", "大王/1", "小王/0", "小王/1"]), SEVEN);
+    const jokerBomb = jokers.find((c) => c.type === "joker-bomb");
+    expect(jokerBomb).toBeDefined();
+    expect(comboRankName(jokerBomb!)).toBe("");
+  });
 });
 
 describe("列合法出法：跟牌", () => {

@@ -341,14 +341,19 @@ function idsAsc(cards: readonly Card[]): number[] {
 }
 
 /**
- * 排出确定的顺序：先牌型（README 那张表从上到下）、再牌面、再顶法、最后按牌 ID。
- * 两端比对不能靠 `Map` 的遍历顺序。
+ * 排出确定的顺序（README「moves.json」那节定的）：先牌型（README 那张表从上到下）、
+ * 再牌面、**再张数**、再顶法、最后按牌 ID。两端比对不能靠 `Map` 的遍历顺序。
+ *
+ * ⚠️ **张数在顶法前面**，顺序是有讲究的：手里七个 3 时，四条炸弹要按
+ * `4、4 张带逢人配、5、5 张带逢人配…` 排，而不是「先没有逢人配的、再带逢人配的」——
+ * 后一种会把 4 张和 5 张交错开（#238 复审发现的）。
  */
 function sortMoves(combos: Combo[]): Combo[] {
   return combos.sort((a, b) => {
     const byType = COMBO_TYPES.indexOf(a.type) - COMBO_TYPES.indexOf(b.type);
     if (byType !== 0) return byType;
     if (a.rank !== b.rank) return a.rank - b.rank;
+    if (a.cards.length !== b.cards.length) return a.cards.length - b.cards.length;
     if (a.wilds.length !== b.wilds.length) return a.wilds.length - b.wilds.length;
     for (let k = 0; k < a.wilds.length; k++) {
       const [wa, wb] = [a.wilds[k], b.wilds[k]];
