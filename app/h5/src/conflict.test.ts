@@ -86,4 +86,15 @@ describe("版本冲突的判断（K4 / K5）", () => {
       { field: "venue", label: "地点", mine: "Grand Indonesia", theirs: "PIK Avenue" },
     ]);
   });
+
+  it("时间那一栏：标签是「时间」，两侧的值按 H5 的写法渲染（共享层只收拼好的文字）", () => {
+    // 用很久以后的绝对时间：`dayLabel` 会给「今天/明天」加前缀，挑远一点，断言才能钉死。
+    const patch = { starts_at: 1810000000 };
+    const baseline = detail();
+    const latest = detail({ version: 2, starts_at: 1810086400 });
+
+    expect(describeConflict(patch, baseline, latest)).toEqual([
+      { field: "starts_at", label: "时间", mine: "05/11 周二 08:46", theirs: "05/12 周三 08:46" },
+    ]);
+  });
 });
