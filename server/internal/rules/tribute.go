@@ -75,8 +75,8 @@ func NewTribute(level Rank, hands [Seats][]Card, prev Result) (*Tribute, error) 
 	if level < Two || level > Ace {
 		return nil, fmt.Errorf("贡牌：级数 %d 超出 2–A", level)
 	}
-	if !validSeat(prev.HeadSeat) || prev.PartnerPlace < 2 || prev.PartnerPlace > 4 || len(prev.Order) != Seats {
-		return nil, fmt.Errorf("贡牌：上副牌的结果不完整：%+v", prev)
+	if err := checkPrevResult(prev); err != nil {
+		return nil, fmt.Errorf("贡牌：上副牌的结果不对：%w", err)
 	}
 	t := &Tribute{
 		level: level, head: prev.HeadSeat,
@@ -111,6 +111,42 @@ func NewTribute(level Rank, hands [Seats][]Card, prev Result) (*Tribute, error) 
 		t.kind, t.leader = TributeResisted, prev.HeadSeat
 	}
 	return t, nil
+}
+
+// checkPrevResult 查上副牌的结果自洽：名次是 1–4 的一个排列、头游就是第一个出完的、
+// 搭档的名次和 PartnerPlace 对得上。
+//
+// 为什么查这么细：贡牌完全按这三样推算「谁该贡、贡给谁、谁领出」（下游的座位、双下是哪两家、
+// 上游是谁），结果不自洽的话轻则算出「上游贡给自己」，重则下标越界 panic。
+// auditor-249 的三个探针：Order=[1 2 3 7]、Order=[1 2 3 0]、Order=[2 3 4 1] 配 HeadSeat=1。
+//
+// 正常来源（Game.Result()）天然满足这三条：名次就是出完的先后接上没出完的、头游取第一个、
+// 搭档名次是扫出来的。
+func checkPrevResult(prev Result) error {
+	if len(prev.Order) != Seats {
+		return fmt.Errorf("名次该有 %d 家，得到 %v", Seats, prev.Order)
+	}
+	seen := map[int]bool{}
+	for _, s := range prev.Order {
+		if !validSeat(s) {
+			return fmt.Errorf("名次里出现了 %d，座位号该是 1–%d：%v", s, Seats, prev.Order)
+		}
+		if seen[s] {
+			return fmt.Errorf("名次里 %d 出现了两次：%v", s, prev.Order)
+		}
+		seen[s] = true
+	}
+	if !validSeat(prev.HeadSeat) || prev.Order[0] != prev.HeadSeat {
+		return fmt.Errorf("头游该是第一个出完的：HeadSeat=%d，名次 %v", prev.HeadSeat, prev.Order)
+	}
+	if prev.PartnerPlace < 2 || prev.PartnerPlace > Seats {
+		return fmt.Errorf("搭档的名次该在 2–%d 之间，得到 %d", Seats, prev.PartnerPlace)
+	}
+	if got := prev.Order[prev.PartnerPlace-1]; got != PartnerSeat(prev.HeadSeat) {
+		return fmt.Errorf("搭档的名次对不上：%d 号座的搭档是 %d 号座，可名次表第 %d 名是 %d 号座",
+			prev.HeadSeat, PartnerSeat(prev.HeadSeat), prev.PartnerPlace, got)
+	}
+	return nil
 }
 
 // Kind 是贡牌的情形。
@@ -323,6 +359,9 @@ type NextHand struct {
 
 // Next 按本场到现在为止每一副的结果，算下一副打几、要不要进贡。升级、到 A 封顶、过 A、
 // 打谁的级全由 scoring 算（第二条 12–14、第十二条），这里不另写一份。
+//
+// 玩法现在写死经典（scoring.KindClassic）；以后接不升级之类的玩法时，把 scoring.Settings
+// 当参数传进来就行 —— 这里只透传，没有别的判断。
 //
 // results 是从第一副起的全部结果（跨场接着排，scoring 自己会在过 A 之后开新一场）。
 func Next(results []Result) (NextHand, error) {

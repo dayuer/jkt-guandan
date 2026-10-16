@@ -15,8 +15,8 @@ import (
 //   - **被拒的动作不许改局面**：进贡/还牌和出牌一样是玩家给的牌，引擎只校验 —— 校验失败必须
 //     哪都没动（和 #246 复审给随机对局加的那条一个道理）。
 //
-// 「不超过 10」按**牌面数字**算（读法 A，仓库所有者还没拍板，见 testdata/rules/tribute.json
-// 顶部与 README 的「待确认」一节）：打 7 时 ♠7、♥7 牌面是 7，能还。
+// 「不超过 10」按**牌面数字**算（读法 A，仓库所有者还没拍板，见 #204 里那条 needs-user 评论
+// 以及下面单列的 TestTributeReturnUnderTenPending）：打 7 时 ♦7/♠7、♥7 牌面是 7，能还。
 
 // prevResult 造一个「上副牌的结果」：order 是出完的先后、按座位号写。
 func prevResult(order ...int) Result {
@@ -324,6 +324,43 @@ func TestTributeDoubleGiveAndReturn(t *testing.T) {
 	}
 }
 
+func TestTributeDoubleFirstGiverIsBigger(t *testing.T) {
+	// 双贡里 **givers[0]（2 号座）贡的更大** 那一支：大的给上游、小的给搭档。
+	// 上面那条用例是 4 号座贡的更大，走的是另一支 —— auditor-249 指出这条分支没被走到。
+	prev := prevResult(1, 3, 2, 4)
+	hands := tributeHands(t,
+		"♠3/0 ♦4/0",
+		"♠A/0 ♦6/0", // 2 号座：贡 ♠A（大）
+		"♠5/0 ♦7/0",
+		"♠K/0 ♦8/0", // 4 号座：贡 ♠K（小）
+	)
+	tr, err := NewTribute(Seven, hands, prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Give(2, cardIn(t, hands[1], "♠A/0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Give(4, cardIn(t, hands[3], "♠K/0")); err != nil {
+		t.Fatal(err)
+	}
+	if seat, ok := tr.Receiver(2); !ok || seat != 1 {
+		t.Fatalf("♠A 大，该贡给上游 1 号座，得到 %d", seat)
+	}
+	if seat, ok := tr.Receiver(4); !ok || seat != 3 {
+		t.Fatalf("♠K 小，该贡给上游的搭档 3 号座，得到 %d", seat)
+	}
+	if err := tr.Return(1, cardIn(t, hands[0], "♠3/0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Return(3, cardIn(t, hands[2], "♠5/0")); err != nil {
+		t.Fatal(err)
+	}
+	if seat, ok := tr.Leader(); !ok || seat != 2 {
+		t.Fatalf("该由贡给上游的 2 号座领出，得到 %d（ok=%v）", seat, ok)
+	}
+}
+
 func TestTributeDoubleEqualCardsGoClockwise(t *testing.T) {
 	// 双贡、两张贡牌一样大：各给自己顺时针的邻座（第十条 三）。
 	prev := prevResult(1, 3, 2, 4)
@@ -423,6 +460,37 @@ func TestTributeDoubleResistedCountsBoth(t *testing.T) {
 	}
 	if tr.Kind() != TributeResisted {
 		t.Fatalf("一个人有两个大王也该抗贡（双下两家合计），得到 %v", tr.Kind())
+	}
+}
+
+// TestTributeRejectsInconsistentPrevResult 钉「上副牌的结果必须自洽」（auditor-249 的三条探针）：
+// 不自洽的话贡牌会算出荒唐结果 —— 上游贡给自己、0 号座进贡、甚至下标越界。
+func TestTributeRejectsInconsistentPrevResult(t *testing.T) {
+	hands := tributeHands(t, "♠3/0", "♠2/0", "♠4/0", "♠5/0")
+	for _, tc := range []struct {
+		name string
+		prev Result
+	}{
+		{"名次里有 7 号座", Result{Order: []int{1, 2, 3, 7}, HeadSeat: 1, PartnerPlace: 3}},
+		{"名次里有 0 号座", Result{Order: []int{1, 2, 3, 0}, HeadSeat: 1, PartnerPlace: 3}},
+		{"名次里有重复", Result{Order: []int{1, 2, 2, 4}, HeadSeat: 1, PartnerPlace: 3}},
+		// PartnerPlace 写成 2（3 号座确实在第 2 名），所以只有「头游就是第一个出完的」这一条
+		// 能拦住它 —— 不然后面会按 HeadSeat=1 算出「上游自己贡给自己」（auditor-249 的探针）。
+		{"头游不是第一个出完的", Result{Order: []int{2, 3, 4, 1}, HeadSeat: 1, PartnerPlace: 2}},
+		{"搭档名次和名次表对不上", Result{Order: []int{1, 2, 3, 4}, HeadSeat: 1, PartnerPlace: 4}},
+		{"头游越界", Result{Order: []int{1, 2, 3, 4}, HeadSeat: 7, PartnerPlace: 3}},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("该返回错误，却 panic 了：%v", r)
+				}
+			}()
+			if _, err := NewTribute(Seven, hands, tc.prev); err == nil {
+				t.Fatalf("结果不自洽该报错：%+v", tc.prev)
+			}
+		})
 	}
 }
 
@@ -553,6 +621,42 @@ func TestTributeReturnUnderTenPending(t *testing.T) {
 			t.Fatalf("手里 %s、还 %s：不该能还（%s），却被接受了", tc.hand, tc.card, tc.why)
 		}
 	}
+}
+
+func TestTributeNextFirstDealNeedsNoTribute(t *testing.T) {
+	// 一场的第一副牌不进贡（第十条 二「从第二副牌开始」），从 2 打起。
+	next, err := Next(nil)
+	if err != nil {
+		t.Fatalf("算第一副：%v", err)
+	}
+	if next.Tribute {
+		t.Fatal("第一副不该进贡")
+	}
+	if next.Level != Two {
+		t.Fatalf("一场从打 2 开始，得到 %d", next.Level)
+	}
+}
+
+func TestTributeNextAfterMatchOverNeedsNoTribute(t *testing.T) {
+	// 一直双下（升 3 级）打到过 A：本场结束，再开的是**新一场的第一副** —— 也不进贡。
+	for i := 1; i <= 12; i++ {
+		results := make([]Result, i)
+		for k := range results {
+			results[k] = prevResult(1, 3, 2, 4)
+		}
+		next, err := Next(results)
+		if err != nil {
+			t.Fatalf("第 %d 副之后：%v", i, err)
+		}
+		if !next.Score.MatchOver {
+			continue
+		}
+		if next.Tribute {
+			t.Fatalf("第 %d 副之后本场结束（过了 A），下一副是新一场第一副，不该进贡", i)
+		}
+		return
+	}
+	t.Fatal("连打 12 副双下都没过 A —— scoring 那边的进度和这里对不上")
 }
 
 func hasCard(hand []Card, key string) bool {
