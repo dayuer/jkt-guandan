@@ -212,7 +212,7 @@ func TestTributeWildIsNeverTributeEvenIfBiggest(t *testing.T) {
 
 func TestTributeSingleReturnUnderTenAndLeader(t *testing.T) {
 	prev := prevResult(1, 2, 3, 4)
-	hands := tributeHands(t, "♠K/0 ♠3/0 ♥7/0", "♠2/0", "♠4/0", "♠A/0 ♦9/0")
+	hands := tributeHands(t, "♠K/0 ♠3/0 ♥7/0", "♠2/0 ♥A/0", "♠4/0", "♠A/0 ♦9/0")
 	tr, err := NewTribute(Seven, hands, prev)
 	if err != nil {
 		t.Fatal(err)
@@ -237,6 +237,13 @@ func TestTributeSingleReturnUnderTenAndLeader(t *testing.T) {
 	// 拿它试会落到下面「不能还」那一条上 —— 这是写这条用例时自己绊的一次）。
 	if err := reject("还手里没有的牌", ErrTributeCardNotInHand, before, tr, func() error {
 		return tr.Return(1, cardIn(t, hands[1], "♠2/0"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 再来一张**手里没有、而且按 canReturn 也不该还**的大牌：这样「手里有没有」这一段
+	// 就是唯一拦得住它的规则 —— 少了 holds，报出来的会是 cannot-return 而不是 card-not-in-hand。
+	if err := reject("还手里没有的大牌", ErrTributeCardNotInHand, before, tr, func() error {
+		return tr.Return(1, cardIn(t, hands[1], "♥A/0"))
 	}); err != nil {
 		t.Fatal(err)
 	}
