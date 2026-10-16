@@ -367,11 +367,13 @@ func idemReplay(ctx context.Context, tx *store.Tx, userID, key, route, fingerpri
 	return true, nil
 }
 
-// idemFingerprint 把这次请求的参数按顺序拼成 sha256（用**解析后**的参数，JSON 字段序/空白不影响）。
+// idemFingerprint 把这次请求的参数按 `名=值` 的行拼成 sha256（用**解析后**的参数，
+// JSON 字段序/空白不影响）。参数是成对的 `名, 值, 名, 值…`，和 games 那边那份写法一致
+// （两边算出来的串不一样没关系：指纹只在自己这边做等值比较，跨接口靠 route 区分）。
 func idemFingerprint(kv ...any) string {
 	h := sha256.New()
-	for i, v := range kv {
-		fmt.Fprintf(h, "%d=%v\n", i, v)
+	for i := 0; i+1 < len(kv); i += 2 {
+		fmt.Fprintf(h, "%v=%v\n", kv[i], kv[i+1])
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
