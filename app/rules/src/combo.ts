@@ -470,7 +470,7 @@ function eachSubstitution(n: number, visit: (as: WildFace[]) => void): void {
   const chosen: WildFace[] = [];
   const walk = (start: number): void => {
     if (chosen.length === n) {
-      visit(chosen.slice()); // 给副本：调用方留住它也不会被下一轮改到
+      visit(chosen.slice()); // 给副本：调用方留住它也不会被下一轮改到（实测这点拷贝不是瓶颈）
       return;
     }
     for (let i = start; i < WILD_CARDS.length; i++) {

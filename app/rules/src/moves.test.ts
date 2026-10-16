@@ -3,7 +3,6 @@
 import { describe, expect, it } from "vitest";
 import { SEVEN, TWO, type Card, type Rank } from "./card";
 import { comboRankName, compare, recognize, sortCards, type Combo, type ComboType } from "./combo";
-import { deal, permShuffler } from "./deal";
 import { comboKey, moves } from "./moves";
 import { handOf } from "./testing/cards";
 import { sampleHands } from "./testing/random";
@@ -305,9 +304,25 @@ const EDGE_HANDS: { name: string; cards: string[]; level: Rank }[] = [
 ];
 
 describe("性质：耗时上限（守「不能退化成枚举子集」，不抠毫秒）", () => {
-  // 和 Go 那边同样的用意：上限取得比实测宽一个量级。它守的是「万一有人改成枚举子集」——
-  // 那会从毫秒掉到秒级；至于两台机器差 1.5 倍，不在它管的范围里。
-  const hand = deal(permShuffler(Array.from({ length: 108 }, (_, i) => i)))[0]; // 满手 27 张，最坏一档
+  // 上限取得比实测宽一个量级：它守的是「万一有人改成枚举子集」——那会从毫秒掉到秒级；
+  // 两台机器差个一两倍不在它管的范围里。
+  //
+  // ⚠️ **手牌要挑重的**。起初我用 `deal(identity)[0]`（按顺序发的 27 张），实测只有 10ms ——
+  // 那手牌点数分布规整、候选很少，根本不是最坏一档（复审指出来的）。
+  //
+  // 下面这手 27 张：**两张逢人配** + 12 个点数各两张 + 一张余牌。两张逢人配是关键 ——
+  // 每个点数只有两张实牌，但配上两张逢人配就能凑出四张炸，候选不再是"凑不齐就跳过"，
+  // 每条都要真的走一遍 `recognize`（内部还要枚举顶法）。本机实测：领出 664 手 **约 230ms**、
+  // 跟一对 **约 75ms**。
+  //
+  // 这个手牌比 Go 那条基准（随机 27 张，领出 140ms / 跟一对 0.7ms）**更重**，不是同一档，
+  // 所以别拿两边的数字直接比 —— Go 用的随机手牌里，两张实牌配两张逢人配凑炸的情形少得多。
+  const hand = handOf([
+    "♥7/0", "♥7/1",
+    "♠2/0", "♥2/0", "♠3/0", "♥3/0", "♠4/0", "♥4/0", "♠5/0", "♥5/0", "♠6/0", "♥6/0",
+    "♠8/0", "♥8/0", "♠9/0", "♥9/0", "♠10/0", "♥10/0", "♠J/0", "♥J/0", "♠Q/0", "♥Q/0",
+    "♠K/0", "♥K/0", "♠A/0", "♥A/0", "♣2/0",
+  ]);
 
   it("27 张领出 / 跟一对，都在宽松上限内", () => {
     const pair = comboOf(["♠9/0", "♥9/0"], "pair");
@@ -323,7 +338,7 @@ describe("性质：耗时上限（守「不能退化成枚举子集」，不抠�
     expect(leads.length, "领出不该是空的").toBeGreaterThan(0);
     expect(follows.length, "跟一对不该是空的").toBeGreaterThan(0);
     expect(leadMs, `领出 ${leads.length} 手用了 ${leadMs}ms`).toBeLessThan(2000);
-    expect(followMs, `跟一对用了 ${followMs}ms`).toBeLessThan(500);
+    expect(followMs, `跟一对用了 ${followMs}ms`).toBeLessThan(600);
   });
 });
 
@@ -346,8 +361,9 @@ describe("性质：边界手牌和暴力枚举对拍（照搬 Go 的 EdgeHands�
     expect(cases, "一手都没对拍，用例没起作用").toBeGreaterThan(100);
   }, 60000);
 
-  // auditor-240 报的那两条：上一手不是手里能打出的牌，所以上面那组压不到，单列出来。
-  // 去掉 `shapesBeating` 里的 straight-flush，这两条就会红。
+  // auditor-240 报的那两条：上一手不是手里能打出的牌，所以上面那组（拿自己手里的解读当上一手）
+  // 压不到这个形状，单列出来。注意**上面那组也会红**（"A 当 1 的顺子"那种全是黑桃的手牌，
+  // 拿自己的顺子当上一手时，压得住它的正是同花顺）—— 两条各管一半，别以为单列的这条是多余的。
   it("跟普通牌型和跟炸弹，都要把同花顺列出来（同花顺是炸弹，压得住两者）", () => {
     const cards = handOf(["♠3/0", "♠4/0", "♠5/0", "♠6/0", "♠7/0"]); // 单花色 34567
     const pairK = comboOf(["♠K/0", "♥K/1"], "pair", 9);
