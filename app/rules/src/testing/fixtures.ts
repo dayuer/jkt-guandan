@@ -207,3 +207,128 @@ export function readDeal(raw: Json): DealVector[] {
     };
   });
 }
+
+/** 牌例里声明的一种顶法：哪张逢人配顶成了什么。`as` 不带副号（README「逢人配」第 3 条）。 */
+export interface WildSpec {
+  card: string;
+  as: string;
+}
+
+/** 一种解读：牌型名 + 当这个牌型打时的牌面 + （可选）哪张逢人配顶成了什么。 */
+export interface ComboSpec {
+  kind: string;
+  rank: string;
+  /**
+   * 可选。写了就要求实现挑的**正是这一种顶法**（README「逢人配」第 1 条）：
+   * 同一种（牌型 + 牌面）有好几种顶法时两端要给出同一个答案，所以留一种、按顶成的牌
+   * 「点数、花色」最小那种。大多数用例的顶法是唯一的，没必要每条都写。
+   */
+  wilds?: WildSpec[];
+}
+
+export interface CombosVector {
+  name: string;
+  rule: string[];
+  /** 级数，同 power.json。 */
+  level: string;
+  /** 这一手牌（顺序无所谓）。 */
+  cards: string[];
+  /** **全部**合法解读，**排好序**（先按 kind 在 README 那张表里从上到下，再按 rank 从小到大）。空数组表示什么牌型都不是。 */
+  combos: ComboSpec[];
+}
+
+function readWildSpec(value: Json, what: string): WildSpec {
+  const spec = asObject(value, what);
+  rejectUnknownKeys(spec, ["card", "as"], what);
+  return {
+    card: asString(required(spec, "card", what), `${what}.card`),
+    as: asString(required(spec, "as", what), `${what}.as`),
+  };
+}
+
+function readComboSpec(value: Json, what: string): ComboSpec {
+  const spec = asObject(value, what);
+  rejectUnknownKeys(spec, ["kind", "rank", "wilds"], what);
+  const out: ComboSpec = {
+    kind: asString(required(spec, "kind", what), `${what}.kind`),
+    rank: asString(required(spec, "rank", what), `${what}.rank`),
+  };
+  if (spec.wilds !== undefined) {
+    const wilds = asArray(spec.wilds, `${what}.wilds`).map((item, i) => readWildSpec(item, `${what}.wilds[${i}]`));
+    if (wilds.length > 0) out.wilds = wilds; // 空数组等于没写
+  }
+  return out;
+}
+
+export function readCombos(raw: Json): CombosVector[] {
+  const what = "combos.json";
+  const obj = asObject(raw, what);
+  rejectUnknownKeys(obj, ["_comment", "vectors"], what);
+  checkComment(obj, what);
+  return requiredVectors(obj, what).map((item, i) => {
+    const at = `${what}.vectors[${i}]`;
+    const vector = asObject(item, at);
+    rejectUnknownKeys(vector, ["name", "rule", "level", "cards", "combos"], at);
+    return {
+      name: asString(required(vector, "name", at), `${at}.name`),
+      rule: requiredRule(vector, at),
+      level: asString(required(vector, "level", at), `${at}.level`),
+      cards: asStringList(required(vector, "cards", at), `${at}.cards`),
+      combos: asArray(required(vector, "combos", at), `${at}.combos`).map((spec, j) =>
+        readComboSpec(spec, `${at}.combos[${j}]`),
+      ),
+    };
+  });
+}
+
+/** 比较的一边：声明的牌型 + 完整的一手牌。 */
+export interface CompareSide {
+  kind: string;
+  cards: string[];
+  /**
+   * 可选：声明的牌面。同一种牌型有好几种牌面时必须写（比如带逢人配的那几张，顶法不同点数不同）；
+   * 不写就表示这一手牌在那个牌型下只有一种解读。
+   */
+  rank?: string;
+}
+
+export interface CompareVector {
+  name: string;
+  rule: string[];
+  level: string;
+  a: CompareSide;
+  b: CompareSide;
+  /** `a` / `b` / `equal` / `incomparable`。两个方向都会断言。 */
+  result: string;
+}
+
+function readCompareSide(value: Json, what: string): CompareSide {
+  const side = asObject(value, what);
+  rejectUnknownKeys(side, ["kind", "cards", "rank"], what);
+  const out: CompareSide = {
+    kind: asString(required(side, "kind", what), `${what}.kind`),
+    cards: asStringList(required(side, "cards", what), `${what}.cards`),
+  };
+  if (side.rank !== undefined) out.rank = asString(side.rank, `${what}.rank`);
+  return out;
+}
+
+export function readCompare(raw: Json): CompareVector[] {
+  const what = "compare.json";
+  const obj = asObject(raw, what);
+  rejectUnknownKeys(obj, ["_comment", "vectors"], what);
+  checkComment(obj, what);
+  return requiredVectors(obj, what).map((item, i) => {
+    const at = `${what}.vectors[${i}]`;
+    const vector = asObject(item, at);
+    rejectUnknownKeys(vector, ["name", "rule", "level", "a", "b", "result"], at);
+    return {
+      name: asString(required(vector, "name", at), `${at}.name`),
+      rule: requiredRule(vector, at),
+      level: asString(required(vector, "level", at), `${at}.level`),
+      a: readCompareSide(required(vector, "a", at), `${at}.a`),
+      b: readCompareSide(required(vector, "b", at), `${at}.b`),
+      result: asString(required(vector, "result", at), `${at}.result`),
+    };
+  });
+}

@@ -9,7 +9,7 @@
 ## 两端读同一批牌例
 
 对照用例在仓库根 [`testdata/rules/`](../../testdata/rules/)，**格式见那里的 README.md ——
-那是两端的接口说明**。这里的 `src/fixtures.ts` 和服务端的 `server/internal/rules/fixtures_test.go`
+那是两端的接口说明**。这里的 `src/testing/fixtures.ts` 和服务端的 `server/internal/rules/fixtures_test.go`
 读同一批文件：
 
 - 改规则先改牌例，两端一起跑；改字段名/加字段是**破坏性改动**（两端都拒绝未知字段）。
@@ -33,11 +33,12 @@
 | `src/card.ts` | `packages/core/src/card.ts`、`rank.ts` 的点数部分 | 牌改成 `{id,rank,suit,deck}` + `cardKey`/`parseKey`；牌堆顺序按 `testdata/rules/deck.json` 锁定 |
 | `src/power.ts` | `packages/core/src/card.ts` 的 `orderKey`、`isWildCard` | 数值和 `orderKey` 不同（这里级牌 = 15、A = 14、原值兜底），只用来比大小 |
 | `src/deal.ts` | `packages/core/src/deck.ts` | 随机源改成注入一个**排列**（`shuffle[i]` 是第 i 张发出的牌的 ID），不是种子 RNG；不排序、不按摞切 |
-| — | `packages/core/src/recognizer.ts`、`enumerator.ts`、`engine/`、`rules.ts`、`rng.ts` | 第 2 步起再移植 |
+| `src/combo.ts` | —（**没有移植**） | 上游 `packages/core/src/recognizer.ts` 的连张窗口是「含级牌就整手非法」，和竞赛规则对不上：级牌在顺子类里按牌面原位置插带（第五条 1），A 可以当最小的 1（第四条 一、2）。所以这边是按服务端的 `server/internal/rules/combo.go` 写的 |
+| — | `packages/core/src/enumerator.ts`、`engine/`、`rules.ts`、`rng.ts` | 第 4 步起再看要不要移植 |
 
-**第 2 步起移植的代码会打进小游戏包**，而 `app/minigame/build.mjs` 现在是 `minify: true` 加
-`legalComments: "none"`，MIT 声明会被去掉。搬代码之前要先定好怎么带上声明（改 `legalComments`，
-或者在文件头加 `/*! ... */`），做法写进那一步的 PR。
+**被小游戏打包时要带上许可**：`app/minigame/build.mjs` 现在是 `minify: true` 加
+`legalComments: "none"`，MIT 声明会被去掉。现在小游戏还没 import 本包（第 4 步接界面时才用得上）；
+到那时要么把 `legalComments` 改成 `"eof"`，要么在被移植文件的头部加 `/*! ... */`，做法写进那一步的 PR。
 
 ## 怎么跑
 
@@ -65,9 +66,9 @@ import { deal, power } from "../../rules/src/index";
 
 | 步骤 | 状态 |
 |---|---|
-| 1. 牌、发牌、牌点大小 | 本 PR |
-| 2. 牌型识别和比较（不带逢人配） | |
-| 3. 逢人配（枚举全部顶法） | |
+| 1. 牌、发牌、牌点大小 | 已合入（#229） |
+| 2. 牌型识别和比较（不含逢人配） | 本 PR |
+| 3. 逢人配（枚举全部顶法） | 本 PR |
 | 4. 领出 / 跟牌的合法出法生成 | |
 | 5. 出牌状态机（过牌、接风、出完顺序） | |
 | 6. 结算、升级、过 A 配置 | |
