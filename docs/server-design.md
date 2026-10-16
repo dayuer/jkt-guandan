@@ -510,6 +510,31 @@ CREATE TABLE hidden_games (
 - **限流**：开始、记一局、改一局合计每个用户每分钟 30 次，超出 429 `rate_limited`。
 - **注销与合并**：计分记录是这一局的历史，注销时不删，记录人的称呼随 `users` 变成「已注销牌友」；admin 合并身份时 `started_by`、`recorded_by`、`edited_by`、每局的 `seat1_user`–`seat4_user` 搬到保留的身份上（每局 `seats` 里注销的人同样显示「已注销牌友」）。
 
+### 5.7 练习局（#88）
+
+一个人和三个 AI 打的一局（第 1 件：存储 + 建局/取局，还没有出牌和 AI 回合）。
+
+- **和「约局」不是一回事**：练习局没有座位、候补、报名、邀请、分享，也没有短码 —— 它是**单人**的、
+  只属于一个人的。所以**另开一张表** `practice_games`（`0014_practice.sql`），不塞进 `games`
+  （塞进去就得把 seats / waitlist / feed / invites 那一整套拖进来；`games.Kinds` 里的
+  `teaching` 是**约局**的标签，别复用）。
+- **一人同时只有一局**：建新局会把上一局收掉（`ended_at` 写上时间）。这一条是并发简化的地基 ——
+  练习局没有对手、没有跨人竞争。库里用**部分唯一索引**钉住（`user_id WHERE ended_at IS NULL`），
+  两个请求同时建局也不会漏出两局。**收掉的局还能取**（复盘要用，第 6 件），只是 `ended` 为真。
+- **存什么**：`state` 是 `rules.Game` 的 JSON —— 「**初始局面 + 动作序列**」，读回来把动作重放一遍
+  并核对「轮到谁」「谁出完了」。**不存「当前局面」快照**：两份数据迟早会打架，重放永远自洽，
+  坏存档读的一刻就报错，而且不用新写代码（`MarshalJSON`/`UnmarshalJSON` 就是它）。
+- **响应只给自己的牌**：`{id, revision, level, seat, hand, counts, turn, ended}` ——
+  `hand` 是**我自己**那 27 张（牌面 key，和客户端的 `app/rules` 同一套写法），
+  `counts` 是四家各剩几张（下标 0 是 1 号座）。**别家的手牌一律不出这个接口**（和 AI 那层同一条约定）。
+- **建局**：从打 2 起（第十三条 一），座位随机 1–4、**首圈由我领出**，牌用 `crypto/rand` 洗
+  （牌局必须不可预测）。
+- **不是自己的局返回 404**（不是 403）：id 是不透明的随机串，没必要让对方知道「这个 id 存在、
+  但不是你的」。「不存在」和「不是你的」的响应**一模一样**。
+- **限流**：建局每人每分钟 30 次，超出 429 `rate_limited`。
+- 还没做（后面的件）：出牌裁决、AI 回合与 `practice.played` 推送、进贡/跨副、断线恢复与复盘、
+  客户端牌桌。练习局**不算真人局战绩**（#88 的记录只在自己页面显示）。
+
 ## 6. HTTP 接口
 
 ```
@@ -543,6 +568,8 @@ POST /api/games/{code}/score/rounds   记一局 {expected_round_no, head_seat, p
 PUT  /api/games/{code}/score/rounds/{no}  改一局 {head_seat, partner_place, was?}
 PUT/DELETE /api/follows/{user_id}     星标牌友
 GET  /api/friends                     牌友列表（含一起打过几局）
+POST /api/practice                    开一局练习局（#88）：发牌、落库，返回局面（只含自己的手牌）
+GET  /api/practice/{id}              练习局局面：断线回来 / 刷新 / 复盘（§5.7）
 POST /api/events                      埋点批量上报（#117，见下面「埋点」）
 POST /api/client-errors               前端错误上报（#117）
 DELETE /api/me                        注销并删除个人数据（§14）

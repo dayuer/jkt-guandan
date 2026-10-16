@@ -36,6 +36,7 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/janitor"
 	"github.com/dayuer/jkt-guandan/server/internal/metrics"
 	"github.com/dayuer/jkt-guandan/server/internal/notify"
+	"github.com/dayuer/jkt-guandan/server/internal/practice"
 	"github.com/dayuer/jkt-guandan/server/internal/realtime"
 	"github.com/dayuer/jkt-guandan/server/internal/route"
 	"github.com/dayuer/jkt-guandan/server/internal/secheck"
@@ -217,6 +218,7 @@ func run() error {
 			Routes: appRoutes(appDeps{
 				identity: identitySvc, games: gamesSvc, notify: notifySvc, ws: wsHandler,
 				friends:   friends.NewService(st, clk),
+				practice:  practice.NewService(st, clk),
 				share:     share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()},
 				agent:     agent.Options{Model: agentModel(cfg), Clock: clk},
 				telemetry: telemetry.Options{Store: st, Clock: clk},
@@ -503,6 +505,7 @@ type appDeps struct {
 	games     *games.Service
 	notify    *notify.Service
 	friends   *friends.Service
+	practice  *practice.Service
 	ws        http.Handler
 	share     share.Options
 	agent     agent.Options
@@ -520,6 +523,7 @@ func appRoutes(d appDeps) []route.Route {
 		share.Routes(d.share),
 		notify.Routes(d.notify),
 		friends.Routes(d.friends),
+		practice.Routes(d.practice),
 		agent.Routes(d.agent),
 		telemetry.Routes(d.telemetry),
 	)
