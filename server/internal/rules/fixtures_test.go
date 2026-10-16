@@ -1088,95 +1088,99 @@ func TestTributeFixture(t *testing.T) {
 		t.Fatal("没有用例")
 	}
 	for _, v := range f.Vectors {
-		checkRules(t, v.Name, v.Rule)
-		if len(v.Hands) != Seats {
-			t.Fatalf("%s：要 %d 家手牌，牌例写了 %d 家", v.Name, Seats, len(v.Hands))
-		}
-		// 【待确认】的用例要带 pending（写清楚分歧在哪）；反过来带了 pending 的也要在名字里标出来 ——
-		// 免得标记和正文各走各的。
-		if marked := strings.HasPrefix(v.Name, "【待确认】"); marked != (v.Pending != "") {
-			t.Fatalf("%s：名字标了【待确认】=%v，pending=%q —— 两个要一致", v.Name, marked, v.Pending)
-		}
-		if v.Pending != "" {
-			t.Logf("%s：%s", v.Name, v.Pending) // 名字里已经带了【待确认】
-		}
-
-		level, err := ParseRank(v.Level)
-		if err != nil {
-			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
-		}
-		var hands [Seats][]Card
-		for i, h := range v.Hands {
-			if len(h) == 0 {
-				t.Fatalf("%s：%d 号座一张牌都没有", v.Name, i+1)
+		// 每条用例一个子测试：红的时候一眼看得出是哪一条，也不会因为前面一条 Fatalf 就整段停掉
+		// （进贡这边每条用例是一个独立局面，和别处「一串共用同一副牌」的读取器不一样）。
+		t.Run(v.Name, func(t *testing.T) {
+			checkRules(t, v.Name, v.Rule)
+			if len(v.Hands) != Seats {
+				t.Fatalf("%s：要 %d 家手牌，牌例写了 %d 家", v.Name, Seats, len(v.Hands))
 			}
-			hands[i] = cardsOf(t, h)
-		}
-
-		// prev：order 一定写全四家；head_seat / partner_place 由它推得，写了就核一致。
-		if len(v.Prev.Order) != Seats {
-			t.Fatalf("%s：prev.order 要写全 %d 家，写的是 %d 家", v.Name, Seats, len(v.Prev.Order))
-		}
-		prev := Result{Order: v.Prev.Order, HeadSeat: v.Prev.Order[0]}
-		for i, s := range v.Prev.Order {
-			if s == PartnerSeat(prev.HeadSeat) {
-				prev.PartnerPlace = i + 1
+			// 【待确认】的用例要带 pending（写清楚分歧在哪）；反过来带了 pending 的也要在名字里标出来 ——
+			// 免得标记和正文各走各的。
+			if marked := strings.HasPrefix(v.Name, "【待确认】"); marked != (v.Pending != "") {
+				t.Fatalf("%s：名字标了【待确认】=%v，pending=%q —— 两个要一致", v.Name, marked, v.Pending)
 			}
-		}
-		if v.Prev.HeadSeat != nil && *v.Prev.HeadSeat != prev.HeadSeat {
-			t.Errorf("%s：prev.head_seat 和 order 对不上", v.Name)
-		}
-		if v.Prev.PartnerPlace != nil && *v.Prev.PartnerPlace != prev.PartnerPlace {
-			t.Errorf("%s：prev.partner_place 和 order 对不上", v.Name)
-		}
-
-		tr, err := NewTribute(level, hands, prev)
-		if err != nil {
-			t.Fatalf("%s：开局：%v", v.Name, err)
-		}
-
-		for i, st := range v.Steps {
-			what := fmt.Sprintf("%s 第 %d 步", v.Name, i+1)
-			before := handsText4(handsNow(tr))
-
-			var stepErr error
-			switch {
-			case st.Give != "":
-				// 按写法取整副牌里的那一张 —— 它**可能不在这家手里**，那正是有些用例要试的
-				// （所以不能拿这家手里的牌去取，那样取不到就报错了）。
-				stepErr = tr.Give(st.Seat, cardsOf(t, []string{st.Give})[0])
-			case st.Return != "":
-				stepErr = tr.Return(st.Seat, cardsOf(t, []string{st.Return})[0])
-			default:
-				t.Fatalf("%s：既没写 give 也没写 return", what)
+			if v.Pending != "" {
+				t.Logf("%s：%s", v.Name, v.Pending) // 名字里已经带了【待确认】
 			}
 
-			if st.Reject != "" {
-				want, ok := tributeReasonSentinels[st.Reject]
-				if !ok {
-					t.Fatalf("%s：reject 的取值 %q 不在那十个里（见 testdata/rules/README.md 的表）", what, st.Reject)
+			level, err := ParseRank(v.Level)
+			if err != nil {
+				t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
+			}
+			var hands [Seats][]Card
+			for i, h := range v.Hands {
+				if len(h) == 0 {
+					t.Fatalf("%s：%d 号座一张牌都没有", v.Name, i+1)
 				}
-				if !errors.Is(stepErr, want) {
-					t.Errorf("%s：牌例说这一步要被拒（%s），实际 %v", what, st.Reject, stepErr)
-				}
-				// 「被拒」的全部含义就是局面没动。牌例也能用 after 把这一条写出来（见上面的注释），
-				// 但这一道不依赖牌例写没写。
-				if after := handsText4(handsNow(tr)); after != before {
-					t.Errorf("%s：被拒之后局面变了\n之前：%s\n之后：%s", what, before, after)
-				}
-			} else if stepErr != nil {
-				t.Errorf("%s：牌例说这一步会成功，实际 %v", what, stepErr)
+				hands[i] = cardsOf(t, h)
 			}
 
-			if st.After != nil {
-				checkTributeState(t, what+" 之后", *st.After, tr)
+			// prev：order 一定写全四家；head_seat / partner_place 由它推得，写了就核一致。
+			if len(v.Prev.Order) != Seats {
+				t.Fatalf("%s：prev.order 要写全 %d 家，写的是 %d 家", v.Name, Seats, len(v.Prev.Order))
 			}
-		}
+			prev := Result{Order: v.Prev.Order, HeadSeat: v.Prev.Order[0]}
+			for i, s := range v.Prev.Order {
+				if s == PartnerSeat(prev.HeadSeat) {
+					prev.PartnerPlace = i + 1
+				}
+			}
+			if v.Prev.HeadSeat != nil && *v.Prev.HeadSeat != prev.HeadSeat {
+				t.Errorf("%s：prev.head_seat 和 order 对不上", v.Name)
+			}
+			if v.Prev.PartnerPlace != nil && *v.Prev.PartnerPlace != prev.PartnerPlace {
+				t.Errorf("%s：prev.partner_place 和 order 对不上", v.Name)
+			}
 
-		// `leader` 只在贡完还完之后有意义：写了 leader 就必须写 done: true。
-		if v.Expect.Leader != nil && (v.Expect.Done == nil || !*v.Expect.Done) {
-			t.Errorf("%s：expect 写了 leader，就必须写 done: true", v.Name)
-		}
-		checkTributeState(t, v.Name+" 走完之后", v.Expect, tr)
+			tr, err := NewTribute(level, hands, prev)
+			if err != nil {
+				t.Fatalf("%s：开局：%v", v.Name, err)
+			}
+
+			for i, st := range v.Steps {
+				what := fmt.Sprintf("%s 第 %d 步", v.Name, i+1)
+				before := handsText4(handsNow(tr))
+
+				var stepErr error
+				switch {
+				case st.Give != "":
+					// 按写法取整副牌里的那一张 —— 它**可能不在这家手里**，那正是有些用例要试的
+					// （所以不能拿这家手里的牌去取，那样取不到就报错了）。
+					stepErr = tr.Give(st.Seat, cardsOf(t, []string{st.Give})[0])
+				case st.Return != "":
+					stepErr = tr.Return(st.Seat, cardsOf(t, []string{st.Return})[0])
+				default:
+					t.Fatalf("%s：既没写 give 也没写 return", what)
+				}
+
+				if st.Reject != "" {
+					want, ok := tributeReasonSentinels[st.Reject]
+					if !ok {
+						t.Fatalf("%s：reject 的取值 %q 不在那十个里（见 testdata/rules/README.md 的表）", what, st.Reject)
+					}
+					if !errors.Is(stepErr, want) {
+						t.Errorf("%s：牌例说这一步要被拒（%s），实际 %v", what, st.Reject, stepErr)
+					}
+					// 「被拒」的全部含义就是局面没动。牌例也能用 after 把这一条写出来（见上面的注释），
+					// 但这一道不依赖牌例写没写。
+					if after := handsText4(handsNow(tr)); after != before {
+						t.Errorf("%s：被拒之后局面变了\n之前：%s\n之后：%s", what, before, after)
+					}
+				} else if stepErr != nil {
+					t.Errorf("%s：牌例说这一步会成功，实际 %v", what, stepErr)
+				}
+
+				if st.After != nil {
+					checkTributeState(t, what+" 之后", *st.After, tr)
+				}
+			}
+
+			// `leader` 只在贡完还完之后有意义：写了 leader 就必须写 done: true。
+			if v.Expect.Leader != nil && (v.Expect.Done == nil || !*v.Expect.Done) {
+				t.Errorf("%s：expect 写了 leader，就必须写 done: true", v.Name)
+			}
+			checkTributeState(t, v.Name+" 走完之后", v.Expect, tr)
+		})
 	}
 }
