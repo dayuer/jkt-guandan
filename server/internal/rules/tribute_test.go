@@ -508,7 +508,11 @@ func TestTributeRejectsInconsistentPrevResult(t *testing.T) {
 	}{
 		{"名次里有 7 号座", Result{Order: []int{1, 2, 3, 7}, HeadSeat: 1, PartnerPlace: 3}},
 		{"名次里有 0 号座", Result{Order: []int{1, 2, 3, 0}, HeadSeat: 1, PartnerPlace: 3}},
+		// 这条 [1 2 2 4] 其实是被下面「搭档名次对不上」拦住的（Order[2]=3 才对得上）；
+		// 要**只**由「名次里有重复」那一段拦住，得用 [1 2 3 3]：它同时缺 4 号座，
+		// 但排列检查里 validSeat 那一半查不出来，只有查重那一半能拦。
 		{"名次里有重复", Result{Order: []int{1, 2, 2, 4}, HeadSeat: 1, PartnerPlace: 3}},
+		{"名次里有重复（只由查重拦得住）", Result{Order: []int{1, 2, 3, 3}, HeadSeat: 1, PartnerPlace: 3}},
 		// PartnerPlace 写成 2（3 号座确实在第 2 名），所以只有「头游就是第一个出完的」这一条
 		// 能拦住它 —— 不然后面会按 HeadSeat=1 算出「上游自己贡给自己」（auditor-249 的探针）。
 		{"头游不是第一个出完的", Result{Order: []int{2, 3, 4, 1}, HeadSeat: 1, PartnerPlace: 2}},
