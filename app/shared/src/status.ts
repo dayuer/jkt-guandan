@@ -17,7 +17,26 @@
  * 按身份分开存；只记我在里面的局，开局时间过了一天的自动清掉。不是凭证，存不下也只是少一次提示。
  */
 
-import type { GameDetail, GameSummary } from "./api";
+/**
+ * 「#253 起这一层住在 app/shared」：它只读下面这几个字段，所以**不依赖任何一端的 api 模块**
+ * （原来 import 的是 app/h5/src/api 的 `GameDetail` / `GameSummary`，那会让共享层反向依赖 H5）。
+ * 传整份 `GameDetail` / `GameSummary` 进来照样成立 —— TS 是结构化的，只要求这些字段在。
+ */
+export interface DetailLike {
+  game: { short_code: string; starts_at: number; venue: string };
+  me: { role: Role };
+  host: { id: string; nickname: string };
+}
+
+export interface SummaryLike {
+  short_code: string;
+  starts_at: number;
+  venue: string;
+  host: { id: string; nickname: string };
+  /** 服务端还没给时是 undefined：这时不判断和角色有关的提示。
+   *  ⚠️ 这里是接口给的那套取值（`seated`），不是本文件的 `Role`（`seat`）—— `fromSummary` 负责翻译。 */
+  my_role?: "seated" | "waitlist" | "none";
+}
 
 export type Role = "seat" | "waitlist" | "none";
 
@@ -56,7 +75,7 @@ export function snapshotKey(meID: string): string {
 }
 const KEEP_AFTER_START = 24 * 3600;
 
-export function fromDetail(d: GameDetail): GameView {
+export function fromDetail(d: DetailLike): GameView {
   return {
     code: d.game.short_code,
     startsAt: d.game.starts_at,
@@ -68,7 +87,7 @@ export function fromDetail(d: GameDetail): GameView {
 }
 
 /** 列表项（W4）：服务端的 my_role 是 seated / waitlist / none，这里换成和详情一样的写法。 */
-export function fromSummary(g: GameSummary): GameView {
+export function fromSummary(g: SummaryLike): GameView {
   const role: Role | undefined =
     g.my_role === "seated" ? "seat" : g.my_role === "waitlist" ? "waitlist" : g.my_role === "none" ? "none" : undefined;
   return { code: g.short_code, startsAt: g.starts_at, venue: g.venue, role, hostID: g.host.id, hostName: g.host.nickname };

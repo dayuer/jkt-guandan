@@ -13,7 +13,7 @@ import { realtime } from "../lib/realtime";
 import { currentUser } from "../lib/session";
 import { track } from "../lib/telemetry";
 import { conflictingFields, describeConflict, type FieldDiff } from "../../../h5/src/conflict";
-import type { Notice, NoticeKind } from "../../../h5/src/status";
+import type { Notice, NoticeKind } from "../../../shared/src/status";
 import { detailView, dismissNotice, observeNotices } from "../lib/notice";
 import { rescheduleText } from "./home";
 import type { Nav } from "./nav";

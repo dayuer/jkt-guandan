@@ -5,7 +5,7 @@ import { installFakeSocket, lastSocket } from "./fakeSocket";
 import { Detail } from "./pages/Detail";
 import { Home } from "./pages/Home";
 import { timeHM } from "./format";
-import { acknowledge, fromDetail, fromSummary, noticesFor, observe, snapshotKey } from "./status";
+import { acknowledge, fromDetail, fromSummary, noticesFor, observe, snapshotKey } from "../../shared/src/status";
 
 /** #114：改时间横幅（A3 / R1）、首页标签（W4）、候补转正（W3）、局头转交（K2）。 */
 

@@ -15,6 +15,9 @@ WORKDIR /src/app/h5
 COPY app/h5/package.json app/h5/package-lock.json ./
 RUN npm ci
 COPY app/h5/ ./
+# #253：两端共用的纯逻辑住在 app/shared，H5 用相对路径 import 它（../../../shared/…）。
+# 镜像里目录结构跟仓库保持一致，所以照搬一份到 /src/app/shared（不然 tsc 找不到模块）。
+COPY app/shared/ /src/app/shared/
 RUN npm run build
 
 # 2) Go：CGO_ENABLED=0，因为 modernc.org/sqlite 是纯 Go 驱动，所以运行时镜像能用 distroless/static

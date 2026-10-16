@@ -3,7 +3,7 @@ import { leaveGame, listGames, type GameSummary, type UserRef } from "../api";
 import { NoticeBanner, PromotedSheet } from "../components/StatusNotices";
 import { initial } from "../components/Table";
 import { kindLabel, missingLabel, slashDate, timeHM } from "../format";
-import { acknowledge, fromSummary, observe, type Notice } from "../status";
+import { acknowledge, fromSummary, observe, type Notice } from "../../../shared/src/status";
 import { OfflineDot, useRealtime } from "../useRealtime";
 
 type Day = "today" | "tomorrow" | "weekend" | "";

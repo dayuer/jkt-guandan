@@ -1,5 +1,5 @@
 import { dayShort, timeHM } from "../format";
-import type { Notice } from "../status";
+import type { Notice } from "../../../shared/src/status";
 import "../status.css";
 
 /** 横幅上「改到哪了」的说法：只改了时间就说时间，只改了地点就说地点。 */

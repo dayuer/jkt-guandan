@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { snapshotKey } from "../../../h5/src/status";
+import { snapshotKey } from "../../../shared/src/status";
 import type { GameDetail, GameSummary } from "./api";
 import { detailView, dismissNotice, fallbackKey, observeNotices, summaryView } from "./notice";
 
