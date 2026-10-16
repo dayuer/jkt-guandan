@@ -3,7 +3,8 @@
 //
 // 和服务端的 server/internal/rules/combo.go 是同一套语义，两边对着改。
 //
-// 这一步**不含逢人配**（红桃级牌顶替别的牌，第 3 步）：这里只认实打实的牌。
+// 第 2、3 步都在这个文件里：牌型识别、比较，以及**逢人配**（红桃级牌顶替别的牌）的顶法枚举
+// —— 顶替那条路见 `recognize`，`recognizeShapes` 是只认实打实的牌的内核。
 import {
   ACE,
   BIG_JOKER,
@@ -178,8 +179,8 @@ export type Order =
 export function compare(a: Combo, b: Combo): Order {
   if (!isBomb(a) && !isBomb(b)) {
     // 张数这一半是**防守**：非炸弹牌型的张数由牌型定死（单张 1、对子 2、三同张 3、三带对 5、
-    // 三连对／三同连张 6、顺子 5），所以它现在等价于「只比牌型」—— 把这一半删掉，201 条测试
-    // 一条都不会红（变异测试试过）。留着是为了以后真出现张数可变的普通牌型时不用回头补。
+    // 三连对／三同连张 6、顺子 5），所以它现在等价于「只比牌型」—— 把这一半删掉，全部测试
+    // 都不会红（变异测试验过）。留着是为了以后真出现张数可变的普通牌型时不用回头补。
     if (a.type !== b.type || a.cards.length !== b.cards.length) return "incomparable";
     return orderOf(a.value, b.value);
   }
@@ -389,7 +390,8 @@ export function describeCombo(combo: Combo): string {
 // 小工具
 // ---------------------------------------------------------------------------
 
-function checkDistinctCards(cards: readonly Card[]): void {
+/** 同一张牌写了两次是调用方的错。`moves` 也用它。 */
+export function checkDistinctCards(cards: readonly Card[]): void {
   const seen = new Set<number>();
   for (const card of cards) {
     if (seen.has(card.id)) throw new Error(`认牌型：${cardKey(card)} 出现了两次`);
@@ -397,8 +399,8 @@ function checkDistinctCards(cards: readonly Card[]): void {
   }
 }
 
-/** 按牌点、花色、副号从小到大。 */
-function sortCards(cards: readonly Card[]): Card[] {
+/** 按牌点、花色、副号从小到大。`moves` 也用它。 */
+export function sortCards(cards: readonly Card[]): Card[] {
   return cards.slice().sort((a, b) => a.rank - b.rank || a.suit - b.suit || a.deck - b.deck);
 }
 
@@ -484,7 +486,7 @@ function eachSubstitution(n: number, visit: (as: WildFace[]) => void): void {
  * 比两串顶法：点数、花色小的算小。同一种（牌型 + 牌面）有多种顶法时留下小的那一种，
  * 两端（Go、TS）才会给出同一个答案。
  *
- * ⚠️ 把这里改成「恒 false」（留第一次命中的那种），238 条测试**一条都不红** —— 变异测试验过。
+ * ⚠️ 把这里改成「恒 false」（留第一次命中的那种），**全部测试一条都不红** —— 变异测试验过。
  * 原因是 `eachSubstitution` 的枚举顺序（先花色、再点数：♠2、♠3……♠A、♥2……）在**能出现自由
  * 维度**的场合（三带对的那个对子可以取任何点数）恰好也给出最小的那一种。两端共用同一套枚举
  * 顺序，所以结果仍然是确定的；留着这条是为了以后换枚举顺序（比如改成按点数排）时不会悄悄变

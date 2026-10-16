@@ -34,7 +34,8 @@
 | `src/power.ts` | `packages/core/src/card.ts` 的 `orderKey`、`isWildCard` | 数值和 `orderKey` 不同（这里级牌 = 15、A = 14、原值兜底），只用来比大小 |
 | `src/deal.ts` | `packages/core/src/deck.ts` | 随机源改成注入一个**排列**（`shuffle[i]` 是第 i 张发出的牌的 ID），不是种子 RNG；不排序、不按摞切 |
 | `src/combo.ts` | —（**没有移植**） | 上游 `packages/core/src/recognizer.ts` 的连张窗口是「含级牌就整手非法」，和竞赛规则对不上：级牌在顺子类里按牌面原位置插带（第五条 1），A 可以当最小的 1（第四条 一、2）。所以这边是按服务端的 `server/internal/rules/combo.go` 写的 |
-| — | `packages/core/src/enumerator.ts`、`engine/`、`rules.ts`、`rng.ts` | 第 4 步起再看要不要移植 |
+| `src/moves.ts` | —（**没有移植**） | 上游 `packages/core/src/enumerator.ts` 是另一套枚举（先枚举连张窗口再填牌），这里的槽位式枚举和去重键是按服务端的 `server/internal/rules/{moves,moves_gen}.go` 写的 —— 两端要逐条比对，生成方式必须一样 |
+| — | `packages/core/src/engine/`、`rules.ts`、`rng.ts` | 第 5 步起再看要不要移植 |
 
 **被小游戏打包时要带上许可**：`app/minigame/build.mjs` 现在是 `minify: true` 加
 `legalComments: "none"`，MIT 声明会被去掉。现在小游戏还没 import 本包（第 4 步接界面时才用得上）；
@@ -69,7 +70,7 @@ import { deal, power } from "../../rules/src/index";
 | 1. 牌、发牌、牌点大小 | 已合入（#229） |
 | 2. 牌型识别和比较（不含逢人配） | 本 PR |
 | 3. 逢人配（枚举全部顶法） | 本 PR |
-| 4. 领出 / 跟牌的合法出法生成 | |
+| 4. 领出 / 跟牌的合法出法生成 | 本 PR |
 | 5. 出牌状态机（过牌、接风、出完顺序） | |
 | 6. 结算、升级、过 A 配置 | |
 | 7. 进贡、还贡、抗贡 | |
