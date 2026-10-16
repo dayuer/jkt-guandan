@@ -17,12 +17,35 @@ import { C, Ctx, Scroller, ease, ellipsize, fillRR, font, text, wrap } from "./u
  *   show   键盘没开：正常拉起来
  */
 export function keyboardAction(
-  st: { open: boolean; sameKey: boolean },
+  st: { open: boolean; sameKey: boolean; settingsMatch: boolean },
   hasUpdateKeyboard: boolean,
-): "none" | "update" | "show" {
+): "none" | "update" | "reshow" | "show" {
   if (st.open && st.sameKey) return "none";
-  if (st.open && hasUpdateKeyboard) return "update";
+  // ⚠️ `wx.updateKeyboard` **只换文字**，`maxLength` / `multiple` / `confirmType` 还是上一个
+  // 字段的。开一局页从「地点」（40 字、单行、下一项）切到「备注」（200 字、多行）时，
+  // 备注会被限成 40 字单行 —— 所以三项必须**完全一样**才敢走 update（复审抓到的）。
+  if (st.open && hasUpdateKeyboard && st.settingsMatch) return "update";
+  // 设置不一样：只能先收起键盘，等 onKeyboardComplete 之后再按新设置重新拉。
+  if (st.open) return "reshow";
   return "show";
+}
+
+/**
+ * 键盘现在是不是真开着。
+ *
+ * 光信自己记的 `kbOpen` 会卡住：切后台、安卓返回键、或者基础库收起键盘却没触发
+ * `onKeyboardComplete` 时它一直是 true，之后就**再也拉不起键盘**、还没有任何提示。
+ * 所以必须「自己记的那个」和「系统给的高度」都说开着才算。
+ */
+export function keyboardOpen(kbOpen: boolean, kbHeight: number): boolean {
+  return kbOpen && kbHeight > 0;
+}
+
+/** 两次编辑的键盘设置是不是一样（`updateKeyboard` 换不了这些，只能重新拉）。 */
+export function keyboardSettingsMatch(a: EditOptions, b: EditOptions): boolean {
+  return (a.maxLength ?? 40) === (b.maxLength ?? 40)
+    && !!a.multiple === !!b.multiple
+    && (a.confirmType || "done") === (b.confirmType || "done");
 }
 
 /** `showKeyboard` 的失败信息里，哪些是「键盘本来开着」这种**不是错误**的情况。 */
@@ -120,6 +143,8 @@ export class App {
   kbHeight = 0;
   /** 键盘是不是开着。`onKeyboardHeightChange` 不一定有，所以自己记一份。 */
   private kbOpen = false;
+  /** 「设置不一样、要收起再拉」时挂这儿，等 onKeyboardComplete / 高度归零再重新拉。 */
+  private pendingEdit: EditOptions | null = null;
   editing: EditOptions | null = null;
   /** 当帧画出来的激活字段（屏幕坐标），由 widgets.field 填；用来把它滚进可视区 */
   focusRect: { y: number; h: number } | null = null;
@@ -228,8 +253,27 @@ export class App {
 
   // ── 键盘：拉起微信原生输入条，文字从回调里拿 ──
   edit(opts: EditOptions) {
-    const action = keyboardAction({ open: this.kbOpen, sameKey: !!this.editing && this.editing.key === opts.key }, !!wx.updateKeyboard);
+    const prev = this.editing;
+    const action = keyboardAction(
+      {
+        // ⚠️ 光信自己记的 `kbOpen` 会卡住：切后台、安卓返回键、或者基础库收起键盘却没触发
+        // `onKeyboardComplete` 时，它一直是 true，之后就**再也拉不起键盘**、还没有任何提示
+        //（复审抓到的）。所以「开着」必须两个都说开着才算。
+        open: keyboardOpen(this.kbOpen, this.kbHeight),
+        sameKey: !!prev && prev.key === opts.key,
+        settingsMatch: !!prev && keyboardSettingsMatch(prev, opts),
+      },
+      !!wx.updateKeyboard,
+    );
     this.editing = opts;
+    if (action === "reshow") {
+      // 设置不一样，update 换不了：先收起，等 onKeyboardComplete 再按新设置重新拉。
+      // 不收就直接 show 会 fail —— 那正是这次要修的毛病。
+      this.pendingEdit = opts;
+      wx.hideKeyboard({});
+      this.redraw();
+      return;
+    }
     if (action === "update") {
       // 键盘开着、换了个字段：**只换内容**。这里重新 showKeyboard 真机会失败
       //（`showKeyboard:fail`），原来就弹一个「键盘没拉起来」的错误 —— 点第二个字段必现。
@@ -255,6 +299,13 @@ export class App {
     });
     this.redraw();
   }
+  /** 之前因为「设置不一样」挂起的那个字段：键盘确实收起了，现在按它的设置重新拉。 */
+  private resumePending() {
+    const next = this.pendingEdit;
+    this.pendingEdit = null;
+    if (next) this.edit(next);
+  }
+
   isEditing(key: string) { return !!this.editing && this.editing.key === key; }
 
   private bindKeyboard() {
@@ -270,9 +321,26 @@ export class App {
       this.kbOpen = false;
       this.kbHeight = 0;
       if (ed) { ed.onInput(res.value); ed.onDone?.(res.value); }
+      this.resumePending();
       this.redraw();
     });
-    if (wx.onKeyboardHeightChange) wx.onKeyboardHeightChange((res: any) => { this.kbHeight = res.height || 0; this.redraw(); });
+    if (wx.onKeyboardHeightChange) {
+      wx.onKeyboardHeightChange((res: any) => {
+        this.kbHeight = res.height || 0;
+        // 高度归零 = 键盘确实收起了。`onKeyboardComplete` 不一定来（切后台、安卓返回键），
+        // 所以这里也要清，否则 `kbOpen` 卡在 true 就再也拉不起来。
+        if (!this.kbHeight) { this.kbOpen = false; this.resumePending() }
+        this.redraw();
+      });
+    }
+    // 切后台：键盘状态一律作废。回来时用户再点字段会正常重拉。
+    wx.onHide(() => {
+      this.kbOpen = false;
+      this.editing = null;
+      this.kbHeight = 0;
+      this.pendingEdit = null;
+      this.redraw();
+    });
   }
 
   private pick(x: number, y: number): Hit | null {
