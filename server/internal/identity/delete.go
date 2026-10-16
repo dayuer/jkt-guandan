@@ -50,6 +50,8 @@ var deleteStatements = []struct {
 	{"被移出记录", `DELETE FROM game_bans WHERE user_id = ?`},
 	// 「这个座号最后是谁离开的」（#168）：他注销了，不会再回来。
 	{"记分离座记录", `DELETE FROM score_seat_leavers WHERE user_id = ?`},
+	// 「我的牌局」历史里删掉的局（#211）：只是他自己的列表偏好。
+	{"隐藏的历史局", `DELETE FROM hidden_games WHERE user_id = ?`},
 	// 他都不来了，别再推给他。
 	{"未发出的提醒", `DELETE FROM outbox WHERE user_id = ?`},
 	// 埋点留着做汇总，但不能再指回这个人（和 store.DeleteUserData 一致，§14）。

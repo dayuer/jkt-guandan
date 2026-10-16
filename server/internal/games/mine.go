@@ -87,11 +87,12 @@ func (s *Service) Mine(ctx context.Context, userID string) ([]Summary, error) {
 	return out, nil
 }
 
-// History 返回「历史」那一段。before/beforeID 是上一页最后一条的位置（同一个开始时间可能有
-// 好几条，所以还要 id 才算得准）；首次调用传 0 和 ""。hasMore 表示还有更早的。
+// History 返回「历史」那一段。before/beforeCode 是上一页最后一条的开始时间和短码（同一个开始时间
+// 可能有好几条，所以还要短码才排得准；用短码不用内部 id，接口不往外露内部 id）；
+// 首次调用传 0 和 ""。hasMore 表示还有更早的。
 //
 // 历史 = 我开过或坐过的局，并且已经开始了、或者已取消 / 已打完；我自己删掉的（hidden_games）不出现。
-func (s *Service) History(ctx context.Context, userID string, before int64, beforeID string, limit int) ([]HistoryItem, bool, error) {
+func (s *Service) History(ctx context.Context, userID string, before int64, beforeCode string, limit int) ([]HistoryItem, bool, error) {
 	if limit <= 0 || limit > HistoryLimit {
 		limit = HistoryLimit
 	}
@@ -104,8 +105,8 @@ func (s *Service) History(ctx context.Context, userID string, before int64, befo
 	}
 	page := ""
 	if before != 0 {
-		page = ` AND (g.starts_at < ? OR (g.starts_at = ? AND g.id < ?))`
-		args = append(args, before, before, beforeID)
+		page = ` AND (g.starts_at < ? OR (g.starts_at = ? AND g.short_code < ?))`
+		args = append(args, before, before, beforeCode)
 	}
 	// 多取一条：拿它判断还有没有下一批。返回时截掉。
 	args = append(args, limit+1)
@@ -113,7 +114,7 @@ func (s *Service) History(ctx context.Context, userID string, before int64, befo
 	rows, err := s.st.Read().QueryContext(ctx, summarySelect+`
 		 WHERE ( g.starts_at <= ? OR g.status IN (?, ?) ) AND `+historyWhere+`
 		   AND `+hiddenWhere+page+`
-		 ORDER BY g.starts_at DESC, g.id DESC LIMIT ?`, args...)
+		 ORDER BY g.starts_at DESC, g.short_code DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, false, fmt.Errorf("列出历史牌局: %w", err)
 	}
