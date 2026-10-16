@@ -89,7 +89,8 @@ func playWithAI(rng *rand.Rand, level rules.Rank, hands [rules.Seats][]rules.Car
 		if splitsBombIndependently(v.Hand, level, d.Combo) && hasOtherChoice(v, level) {
 			st.brokeBomb++
 		}
-		if isBomb(d.Combo) && v.LastFromPartner() {
+		// 见 bombsPartner：排除「这一手正好走完」那种（口径：能走完 > 不炸队友，头游最重要）。
+		if bombsPartner(v, d) {
 			st.bombedPartner++
 		}
 		if err := g.Play(seat, d.Combo.Cards, d.Combo.Type, d.Combo.Rank); err != nil {
@@ -142,6 +143,18 @@ func splitsBombIndependently(hand []rules.Card, level rules.Rank, c rules.Combo)
 		}
 	}
 	return false
+}
+
+// bombsPartner 判断这一手算不算整局统计里的「用炸弹压队友」。
+//
+// 三个条件：队友出的那一手、我出的也是炸弹、**而且不是「这一手正好走完」**。
+// 最后那条是口径（#259 复审定）：能一次走完 > 绝不炸队友（头游最重要）——
+// 手里正好一手走光时出炸弹不算「压队友」，见 ai.go 包里那段说明。
+//
+// 单拎出来是因为整局语料**碰不到**这一种组合（要正好「队友出的那一手 + 我这一手走光 + 是炸弹」），
+// 混在驱动器里就只能靠运气；单拎出来两个分支都能点着测（下面 TestBombsPartner...）。
+func bombsPartner(v View, d Decision) bool {
+	return isBomb(d.Combo) && v.LastFromPartner() && len(d.Combo.Cards) < len(v.Hand)
 }
 
 // hasOtherChoice 判断这个局面下还有「不拆炸弹」的候选。
@@ -227,7 +240,9 @@ func comboOf(t *testing.T, level rules.Rank, kind rules.ComboType, keys string) 
 	return c
 }
 
-// 队友领先，**而且他那一手不小**（一对 K，牌力 13 ≥ YieldMinPower）—— 策略说让牌。
+// 让牌阈值（Config.YieldMinPower，默认 10）的第一个点：队友出一对 **10**，牌力**正好到阈值** —— 让。
+//
+// 「正好到」是有意的：`>=` 改成 `>`、或者默认值改成 11，这条就红（#259 复审 B2）。
 func TestAIYieldsToPartner(t *testing.T) {
 	level := rules.Seven
 	// 手里压得住（一对 A），但**走不光**（3 张）—— 不然「能一次走完」会先接走这一手。
@@ -237,18 +252,41 @@ func TestAIYieldsToPartner(t *testing.T) {
 		Counts:    [rules.Seats + 1]int{0, 3, 20, 20, 20},
 		Leading:   false,
 		LastSeat:  3, // 对家
-		LastCombo: comboOf(t, level, rules.TypePair, "♠K/0 ♥K/0"),
+		LastCombo: comboOf(t, level, rules.TypePair, "♠10/0 ♥10/0"),
 	}
 	d, err := Decide(v, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !d.Pass {
-		t.Fatalf("队友领先、那一手还不小，该让牌，它却出了 %s", d.Combo)
+		t.Fatalf("队友出的是一对 10（牌力正好到阈值 10），该让牌，它却出了 %s", d.Combo)
 	}
 }
 
-// 同一个局面，但队友那一手**小**（一对 5，牌力 5 < YieldMinPower）—— 策略说**不让**。
+// 阈值的第三个点：**按当前级数算大小**，不是按原始点数 —— 打 3 时一对 3 是级牌（牌力 15）—— 让。
+//
+// 这一条钉的是「按级数算」：改成按原始点数（3 < 10）它就红。
+func TestAIYieldsWhenPartnerPlaysTheLevelPair(t *testing.T) {
+	level := rules.Three
+	v := View{
+		Level: level, Seat: 1,
+		// 一对小王压得住任何对子（级牌对也压得住），而且**走不光**（3 张）。
+		Hand:      mustCards(t, "小王/0 小王/1 ♠A/0"),
+		Counts:    [rules.Seats + 1]int{0, 3, 20, 20, 20},
+		Leading:   false,
+		LastSeat:  3, // 对家
+		LastCombo: comboOf(t, level, rules.TypePair, "♠3/0 ♦3/0"),
+	}
+	d, err := Decide(v, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Pass {
+		t.Fatalf("打 3 时一对 3 是级牌（牌力 15，不小），该让牌，它却出了 %s", d.Combo)
+	}
+}
+
+// 阈值的第二个点：队友出一对 **9**（牌力 9，差一点）—— 策略说**不让**（阈值默认 10 的下侧）。
 //
 // 口径是审计 #259 定的：队友出一手小牌，对手随手就压过去了，让牌等于把这一圈白送，
 // 不如自己接过来。（阈值在 Config.YieldMinPower，默认 10。）
@@ -260,7 +298,7 @@ func TestAIDoesNotYieldToSmallPartnerPlay(t *testing.T) {
 		Counts:    [rules.Seats + 1]int{0, 3, 20, 20, 20},
 		Leading:   false,
 		LastSeat:  3, // 对家出的
-		LastCombo: comboOf(t, level, rules.TypePair, "♠5/0 ♥5/0"),
+		LastCombo: comboOf(t, level, rules.TypePair, "♠9/0 ♥9/0"),
 	}
 	d, err := Decide(v, DefaultConfig())
 	if err != nil {
@@ -271,6 +309,30 @@ func TestAIDoesNotYieldToSmallPartnerPlay(t *testing.T) {
 	}
 	if d.Combo.Type != rules.TypePair {
 		t.Fatalf("该用一对 A 接过来，它出了 %s", d.Combo)
+	}
+}
+
+// 口径（#259 复审定）：**能一次走完 > 绝不炸队友** —— 队友出一对 5，我手里正好 4 张 K，
+// 该出炸弹走完（头游最重要），这不是「用炸弹压队友」那种被禁的用法。
+func TestAIFinishesOverPartnerBombRule(t *testing.T) {
+	level := rules.Seven
+	v := View{
+		Level: level, Seat: 1,
+		Hand:      mustCards(t, "♠K/0 ♥K/0 ♣K/0 ♦K/0"), // 正好一手走光，而且是炸弹
+		Counts:    [rules.Seats + 1]int{0, 4, 20, 20, 20},
+		Leading:   false,
+		LastSeat:  3, // 队友出的
+		LastCombo: comboOf(t, level, rules.TypePair, "♠5/0 ♥5/0"),
+	}
+	d, err := Decide(v, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Pass {
+		t.Fatal("手里 4 张 K 能一次走完，走完优先于「绝不用炸弹压队友」，它却让了")
+	}
+	if !isBomb(d.Combo) || len(d.Combo.Cards) != 4 {
+		t.Fatalf("该出炸弹走完，它出了 %s", d.Combo)
 	}
 }
 
@@ -439,6 +501,23 @@ func TestAILeadsSmallWhenFewCards(t *testing.T) {
 		t.Fatalf("牌不多了该先出小的（打 7 时 7 是级牌、比 K 大），它出了 %s", d.Combo)
 	}
 
+	// 边界正好 6 张（≤6）：还生效 —— 打 7 时这一手牌里 7 是级牌（牌力最高），
+	// 所以「先出小的」出的是 8（牌力最小的单张），不是点数最小的 7。
+	// 这条把「≤6」这个数钉住：改成 5 就红。
+	v6 := View{
+		Level: level, Seat: 1,
+		Hand:    mustCards(t, "♠7/0 ♠8/0 ♠9/0 ♠10/0 ♠Q/0 ♠K/0"), // 6 张，没有对子也没有顺子（8-9-10-J-Q 缺 J）
+		Counts:  [rules.Seats + 1]int{0, 6, 20, 20, 20},
+		Leading: true,
+	}
+	d6, err := Decide(v6, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d6.Pass || d6.Combo.Type != rules.TypeSingle || d6.Combo.Cards[0].Rank != rules.Eight {
+		t.Fatalf("6 张时 ④ 还生效（先出牌力最小的单张 8），它出了 %s", d6.Combo)
+	}
+
 	// 张数一多（>6）这条就不生效：这时同分，保留 `Moves` 先给的那个 —— 这里先给的是对 7。
 	// 这条把「④ 只在 ≤6 张时生效」这个边界钉住（边界一改它就红的：那时会改出对 K）。
 	// 手牌里**不放红心**：打 7 时 ♥7 是逢人配，会把候选搅成一堆配出来的牌型，试不出想试的东西。
@@ -480,35 +559,99 @@ func TestAIFollowsWithSmallest(t *testing.T) {
 	}
 }
 
-// 跟牌①的后半句：牌力一样时**张数少的省牌**。
+// 跟牌①：**先在非炸弹里挑** —— 手里 3333 是个炸弹、AA 压得住一对 K，出的该是 AA。
 //
-// 局面：对手出一手三带对（JJJ+33）。手里 4 张 Q + 一对 8，能当「Q 的三带对（QQQ+88，5 张）」，
-// 也能当「Q 的炸弹（4 张）」—— 两者牌力都是 Q，`Moves` 先给的是三带对，该选的是**张数少的炸弹**
-// （这就是那条 tie-break 的意义：同样压得住，少出一张）。
-// 差分验算过：去掉这条 tie-break，2 万个随机局面里有 7 个会变 —— 少但不是没有。
-func TestAIFollowsWithFewerCardsOnTie(t *testing.T) {
+// #259 复审 B1 的实测反例：原来按点数比大小，3 的牌点最小，于是它会甩 3 炸。
+func TestAIFollowPrefersPlainPlayOverBomb(t *testing.T) {
 	level := rules.Seven
 	v := View{
 		Level: level, Seat: 1,
-		// 6 张（≤ BombWhenOwnLeft）—— 到该炸的时候了，不然会按「平时不炸」过牌。
-		Hand:      mustCards(t, "♠Q/0 ♥Q/0 ♣Q/0 ♦Q/0 ♠8/0 ♥8/0"),
+		Hand:      mustCards(t, "♠3/0 ♥3/0 ♣3/0 ♦3/0 ♠A/0 ♥A/0"),
 		Counts:    [rules.Seats + 1]int{0, 6, 20, 20, 20},
 		Leading:   false,
 		LastSeat:  2, // 对手
-		LastCombo: comboOf(t, level, rules.TypeTripleWithPair, "♠J/0 ♥J/0 ♣J/0 ♠3/0 ♥3/0"),
+		LastCombo: comboOf(t, level, rules.TypePair, "♠K/0 ♥K/0"),
 	}
 	d, err := Decide(v, DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if d.Pass {
-		t.Fatal("手里压得住（Q 的炸弹 / Q 的三带对），不该过牌")
+		t.Fatal("一对 A 压得住一对 K，不该过牌")
 	}
-	if !isBomb(d.Combo) || len(d.Combo.Cards) != 4 {
-		t.Fatalf("牌力一样时该用张数少的（4 张的炸弹，而不是 5 张的三带对），它出了 %s", d.Combo)
+	if isBomb(d.Combo) {
+		t.Fatalf("非炸弹压得住就别动炸弹（手里有一对 A），它出了 %s", d.Combo)
 	}
-	if d.Combo.Cards[0].Rank != rules.Queen {
-		t.Fatalf("该用 Q 的炸弹，它出了 %s", d.Combo)
+	if d.Combo.Type != rules.TypePair || d.Combo.Cards[0].Rank != rules.Ace {
+		t.Fatalf("该出一对 A，它出了 %s", d.Combo)
+	}
+}
+
+// 跟牌①：**炸弹之间按引擎的规则比**（第四条 二、（一）3 的档次），不是按点数 ——
+// 手里 4 张 K 的炸弹和一手同花顺（3-4-5-6-7），该出的是**四张的炸弹**（档次最小的那种），
+// 而不是点数看着更小的同花顺。按点数比的话会选同花顺（顶张 7 < K）。
+func TestAIFollowsWithSmallestBomb(t *testing.T) {
+	level := rules.Two
+	v := View{
+		Level: level, Seat: 1,
+		Hand:      mustCards(t, "♠K/0 ♥K/0 ♣K/0 ♦K/0 ♠3/0 ♠4/0 ♠5/0 ♠6/0 ♠7/0"),
+		Counts:    [rules.Seats + 1]int{0, 9, 20, 20, 1}, // 4 号座（对手）只剩 1 张 → 到该炸的时候
+		Leading:   false,
+		LastSeat:  2, // 对手
+		LastCombo: comboOf(t, level, rules.TypeBomb, "♠8/0 ♥8/0 ♣8/0 ♦8/0"),
+	}
+	d, err := Decide(v, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Pass {
+		t.Fatal("手里有两个炸弹压得住，不该过牌")
+	}
+	if d.Combo.Type != rules.TypeBomb || len(d.Combo.Cards) != 4 || d.Combo.Cards[0].Rank != rules.King {
+		t.Fatalf("炸弹之间按档次比（四张 < 同花顺），该出 4 张 K 的炸弹，它出了 %s", d.Combo)
+	}
+}
+
+// 整局统计那条口径的两个分支：同样「队友出的那一手 + 我出炸弹」——
+// **这一手走光**不算压队友，没走光才算。（见 bombsPartner 的注释。）
+func TestBombsPartnerStatisticExcludesFinish(t *testing.T) {
+	level := rules.Seven
+	partnerLead := comboOf(t, level, rules.TypePair, "♠5/0 ♥5/0")
+
+	// 走光：手里正好 4 张 K。
+	finish := View{
+		Level: level, Seat: 1,
+		Hand:      mustCards(t, "♠K/0 ♥K/0 ♣K/0 ♦K/0"),
+		Counts:    [rules.Seats + 1]int{0, 4, 20, 20, 20},
+		Leading:   false,
+		LastSeat:  3,
+		LastCombo: partnerLead,
+	}
+	d, err := Decide(finish, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bombsPartner(finish, d) {
+		t.Fatalf("这一手走光了，不算「用炸弹压队友」，它却被算进去了：%s", d.Combo)
+	}
+
+	// 没走光的炸弹压在队友那一手上：**直接喂一个合成的一手** —— 正确代码里这条分支走不到
+	// （队友出的那一手一律过牌，见 pickFollow），它只在「绝不用炸弹压队友」被改坏时才会亮，
+	// 是那条规则的哨兵；单独喂进来是要把这条判定的**两个分支**都钉住。
+	notFinish := finish
+	notFinish.Hand = mustCards(t, "♠10/0 ♥10/0 ♣10/0 ♦10/0 ♠3/0 ♠4/0")
+	overPartner := Decision{Combo: comboOf(t, level, rules.TypeBomb, "♠10/0 ♥10/0 ♣10/0 ♦10/0")}
+	if !bombsPartner(notFinish, overPartner) {
+		t.Fatal("没走光的炸弹压在队友那一手上，该算「用炸弹压队友」")
+	}
+	// 顺便把那条哨兵的另一半钉住：真跑一遍这个局面，它该过牌（队友出的那一手一律过牌），
+	// 所以统计里那个 0 次是**规则在起作用**，不是语料碰不到。
+	real, err := Decide(notFinish, DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !real.Pass {
+		t.Fatalf("队友出的那一手该过牌（除非能一次走完），它却出了 %s", real.Combo)
 	}
 }
 

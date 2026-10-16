@@ -32,7 +32,8 @@ var viewFields = []string{"Level", "Seat", "Hand", "Counts", "Done", "Leading", 
 //   - 其余的具名规则类型（`rules.Game`、`rules.Tribute`、`rules.Deck`……）一律拒 ——
 //     `Game.Hand(seat)` 谁的手牌都给得出来，`Tribute` 手里也攥着四家牌。
 //
-// 还有：map 一律拒（拆开看也说不清它装的是什么），指针、切片、数组、嵌套结构体一路走到底。
+// 还有：map 一律拒（拆开看也说不清它装的是什么），**func / interface / chan / 裸指针**也一律拒
+// （它们什么都装得下，静态看不出里面是什么），指针、切片、数组、嵌套结构体一路走到底。
 func complainAbout(t reflect.Type, path string, seen map[reflect.Type]bool) []string {
 	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
@@ -44,6 +45,8 @@ func complainAbout(t reflect.Type, path string, seen map[reflect.Type]bool) []st
 
 	var out []string
 	switch t.Kind() {
+	case reflect.Func, reflect.Interface, reflect.Chan, reflect.UnsafePointer:
+		out = append(out, fmt.Sprintf("%s 是 %s —— 这种类型什么都装得下（包括别家的手牌），不许出现在 AI 的输入里", path, t))
 	case reflect.Map:
 		out = append(out, fmt.Sprintf("%s 是 map（%s）—— 不许用映射装牌", path, t))
 		out = append(out, complainAbout(t.Elem(), path+"[值]", seen)...)
@@ -117,6 +120,9 @@ func TestViewCheckerCatchesDecoys(t *testing.T) {
 	type decoySliceOfHands struct{ Hands [][]rules.Card }
 	type decoyPtrToHands struct{ Hands *[]rules.Card }
 	type decoyTributeByValue struct{ T rules.Tribute }
+	type decoyFunc struct{ F func() []rules.Card }
+	type decoyIface struct{ X any }
+	type decoyChan struct{ C chan rules.Card }
 
 	for _, d := range []struct {
 		name string
@@ -129,6 +135,9 @@ func TestViewCheckerCatchesDecoys(t *testing.T) {
 		{"[][]rules.Card", reflect.TypeOf(decoySliceOfHands{})},
 		{"*[]rules.Card", reflect.TypeOf(decoyPtrToHands{})},
 		{"Tribute 按值放进来", reflect.TypeOf(decoyTributeByValue{})},
+		{"func() []rules.Card", reflect.TypeOf(decoyFunc{})},
+		{"any（接口什么都能装）", reflect.TypeOf(decoyIface{})},
+		{"chan rules.Card", reflect.TypeOf(decoyChan{})},
 	} {
 		if out := complainAbout(d.typ, "Decoy", map[reflect.Type]bool{}); len(out) == 0 {
 			t.Errorf("%s 都没被检查器认出来 —— 这台检查器是空转的", d.name)
