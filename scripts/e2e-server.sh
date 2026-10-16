@@ -3,6 +3,7 @@
 # 由 app/h5/playwright.config.ts 的 webServer 拉起，测试结束 Playwright 会把它停掉。
 set -eu
 cd "$(dirname "$0")/.."
+# 端口由 make e2e 分配后经 Playwright 传进来（#228）；18673 只是单独手动跑时的兜底。
 PORT="${E2E_PORT:-18673}"
 # 数据目录由 Playwright（playwright.config.ts / globalTeardown）建和删；手动单独跑本脚本时才自己建（不会自动删）。
 DATA="${E2E_DATA:-$(mktemp -d "${TMPDIR:-/tmp}/guandan-e2e.XXXXXX")}"

@@ -74,6 +74,9 @@ _path_to_context() {
       echo 'local-ci/meta'; echo 'local-ci/docker' ;;
     scripts/e2e-server.sh)
       echo 'local-ci/e2e' ;;
+    # e2e 的端口分配（#228）：e2e 靠它拿端口，meta 里有它的自测，两样都要跑。
+    scripts/e2e-port.sh)
+      echo 'local-ci/meta'; echo 'local-ci/e2e' ;;
     scripts/local-ci.sh|scripts/test-local-ci.sh|scripts/pre-merge-check.sh)
       echo 'local-ci/meta' ;;
   esac

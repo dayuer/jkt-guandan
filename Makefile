@@ -45,8 +45,11 @@ web-test: web-install
 test: vet web-build race-test web-test
 
 # 浏览器端到端冒烟（#72）。第一次跑之前装一次浏览器：cd app/h5 && npx playwright install chromium
+# 端口每次运行单独分配（#228），本机几个会话同时跑也不会撞；要固定端口就自己设 E2E_PORT。
 e2e: build
-	cd app/h5 && $(NPM) run e2e
+	@port=$${E2E_PORT:-$$(scripts/e2e-port.sh)} || exit 1; \
+	echo "e2e 服务端端口：$$port"; \
+	cd app/h5 && E2E_PORT=$$port $(NPM) run e2e
 
 run: build
 	GUANDAN_DEV=1 GUANDAN_DATA=./.data ./bin/guandan

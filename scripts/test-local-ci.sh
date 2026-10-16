@@ -966,6 +966,88 @@ eq '编排器：3 → error（脚本自身出错）' 'error' "$(status_state_for
 
 rm -rf "$DK" "$DB" "$DLOG"
 
+echo '--- e2e 端口按次分配（#228）---'
+
+eq 'e2e-port.sh 单独改动跑 meta + e2e' \
+  "$(lines local-ci/meta local-ci/e2e)" \
+  "$(printf 'scripts/e2e-port.sh\n' | scope_contexts)"
+
+# 相邻编号（并发起的两路 PID 就是相邻的）窗口不能重叠：只算起点，不探端口。
+W7=$(cd "$ROOT" && E2E_RUN=7 sh scripts/e2e-port.sh --window)
+W8=$(cd "$ROOT" && E2E_RUN=8 sh scripts/e2e-port.sh --window)
+eq 'e2e 窗口：编号 7 的起点' '40056' "$W7"
+eq 'e2e 窗口：相邻编号的窗口首尾相接、不重叠' '8' "$((W8 - W7))"
+eq 'e2e 窗口：最大编号 1099 停在 49152 以下（避开 macOS 临时端口）' '48792' \
+  "$(cd "$ROOT" && E2E_RUN=1099 sh scripts/e2e-port.sh --window)"
+eq 'e2e 窗口：编号 0 从 40000 起，不和 restore-drill 的 30000–39999 重叠' '40000' \
+  "$(cd "$ROOT" && E2E_RUN=0 sh scripts/e2e-port.sh --window)"
+
+X=$(cd "$ROOT" && E2E_RUN=1100 sh scripts/e2e-port.sh --window 2>&1); rc=$?
+eq 'e2e 编号 1100 越界被拒（不绕回窗口 0）' '2' "$rc"
+case "$X" in
+  *"超出范围"*) ok 'e2e 编号越界：说清了原因' ;;
+  *) bad 'e2e 编号越界：说清了原因' '含「超出范围」' "$X" ;;
+esac
+X=$(cd "$ROOT" && E2E_RUN=abc sh scripts/e2e-port.sh --window 2>&1); rc=$?
+eq 'e2e 编号不是数字被拒' '2' "$rc"
+
+# 真探端口的两条用**本次自测进程自己的编号**，不钉死编号 —— 钉死的话本机每次 meta 都去
+# 绑同一组口，并发跑时互相撞（#186 复审吃过这个亏）。
+# 占口的是一个后台 python：只占给定的口，写出 ready 文件后等着；结束时只杀这一个 PID。
+hold_ports() { # $1=ready 文件 $2...=端口；后台运行，调用方自己 kill $!
+  python3 - "$@" <<'PY' &
+import socket, sys, time
+ready, ports = sys.argv[1], [int(p) for p in sys.argv[2:]]
+held = []
+for p in ports:
+    s = socket.socket(); s.bind(("127.0.0.1", p)); s.listen(1); held.append(s)
+open(ready, "w").close()
+time.sleep(30)
+PY
+}
+wait_ready() { local i=0; while [ ! -e "$1" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done; [ -e "$1" ]; }
+
+ERUN=$(( $$ % 1100 ))
+ESTART=$(cd "$ROOT" && E2E_RUN=$ERUN sh scripts/e2e-port.sh --window)
+EP=$(mktemp -d)
+
+# 窗口前两个口被占：跳过它们，拿第三个（还在自己窗口里）。
+hold_ports "$EP/r1" "$ESTART" "$((ESTART + 1))"; HOLD=$!
+if wait_ready "$EP/r1"; then
+  got=$(cd "$ROOT" && E2E_RUN=$ERUN sh scripts/e2e-port.sh 2>&1); rc=$?
+  eq 'e2e 端口：跳过窗口里被占的口' "0 $((ESTART + 2))" "$rc $got"
+else
+  bad 'e2e 端口：跳过窗口里被占的口' '占口进程就绪' '占不上（这一段已经被别人占了？）'
+fi
+kill "$HOLD" 2>/dev/null; wait "$HOLD" 2>/dev/null
+
+# 整个窗口被占：报错退出，不越界去抢下一个编号的窗口。
+hold_ports "$EP/r2" $(seq "$ESTART" "$((ESTART + 7))"); HOLD=$!
+if wait_ready "$EP/r2"; then
+  got=$(cd "$ROOT" && E2E_RUN=$ERUN sh scripts/e2e-port.sh 2>&1); rc=$?
+  [ "$rc" -ne 0 ] && ok 'e2e 端口：窗口占满时报错退出' \
+    || bad 'e2e 端口：窗口占满时报错退出' '非 0' "退出码 ${rc}，输出 ${got}"
+  case "$got" in
+    *"${ESTART}–$((ESTART + 7))"*) ok 'e2e 端口：报错写清了是哪一段' ;;
+    *) bad 'e2e 端口：报错写清了是哪一段' "含 ${ESTART}–$((ESTART + 7))" "$got" ;;
+  esac
+else
+  bad 'e2e 端口：窗口占满时报错退出' '占口进程就绪' '占不上（这一段已经被别人占了？）'
+fi
+kill "$HOLD" 2>/dev/null; wait "$HOLD" 2>/dev/null
+rm -rf "$EP"
+
+# make e2e 真的把分到的端口交给 Playwright；显式给了 E2E_PORT 就不再分配。
+MK=$(cd "$ROOT" && make -n e2e 2>/dev/null)
+case "$MK" in
+  *'scripts/e2e-port.sh'*'E2E_PORT=$port'*) ok 'make e2e：没给 E2E_PORT 时用 e2e-port.sh 分配并传下去' ;;
+  *) bad 'make e2e：没给 E2E_PORT 时用 e2e-port.sh 分配并传下去' '含 scripts/e2e-port.sh 和 E2E_PORT=$port' "$MK" ;;
+esac
+case "$MK" in
+  *'${E2E_PORT:-'*) ok 'make e2e：显式给的 E2E_PORT 优先' ;;
+  *) bad 'make e2e：显式给的 E2E_PORT 优先' '含 ${E2E_PORT:-' "$MK" ;;
+esac
+
 echo
 if [ "$fails" -eq 0 ]; then echo "OK: $0 全过"; exit 0; fi
 echo "FAILED: $fails 条"; exit 1
