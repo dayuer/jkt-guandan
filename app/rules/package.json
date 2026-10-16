@@ -1,0 +1,15 @@
+{
+  "name": "jkt-guandan-rules",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "掼蛋规则引擎（纯逻辑，#87）：小游戏用相对路径 import",
+  "scripts": {
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.src.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^3.2.0"
+  }
+}
