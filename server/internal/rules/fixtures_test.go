@@ -966,3 +966,221 @@ func TestPlayFixture(t *testing.T) {
 		checkPlayState(t, v.Name+" 走完之后", v.Expect, g)
 	}
 }
+
+// 进贡 / 还贡 / 抗贡（#204 第 6 步、#87 第 6 步）：上一副的名次 + 这一副的手牌 → 贡哪张、还哪张、
+// 抗不抗贡、首圈谁领出。
+//
+// **不用 -update 生成期望值**（和 play.json 同理）：这里的 after / expect 是人算出来的。
+//
+// 两条和 play.json 不一样、#204 复核定的约定：
+//
+//   - **hands 按集合比**：一家里那几张牌**写成什么顺序不算数** —— 两端内部把贡进来 / 还回去的牌
+//     放在哪儿是实现细节，不该由牌例钉死（和 combos 的解读、moves 的顶法同一个口径）。
+//   - **被拒的步骤也可以写 after**：把「被拒不改局面」直接钉在共用牌例里，两端口径以它为准。
+//     不写也行 —— 下面每个 reject 步骤照样各自比一次「局面一个字都没动」。
+type tributePrev struct {
+	Order        []int `json:"order"`
+	HeadSeat     *int  `json:"head_seat"`
+	PartnerPlace *int  `json:"partner_place"`
+}
+
+// tributeState 是某一刻的贡牌局面；每个字段都可以不写，**只断言写了的那些**。
+type tributeState struct {
+	Kind     *string        `json:"kind"`
+	Givers   []int          `json:"givers"`
+	Receiver map[string]int `json:"receiver"`
+	Leader   *int           `json:"leader"`
+	Done     *bool          `json:"done"`
+	Hands    *[][]string    `json:"hands"`
+}
+
+type tributeStep struct {
+	Seat   int           `json:"seat"`
+	Give   string        `json:"give"`
+	Return string        `json:"return"`
+	After  *tributeState `json:"after"`
+	Reject string        `json:"reject"`
+}
+
+type tributeVector struct {
+	Name    string        `json:"name"`
+	Rule    []string      `json:"rule"`
+	Level   string        `json:"level"`
+	Pending string        `json:"pending"`
+	Hands   [][]string    `json:"hands"`
+	Prev    tributePrev   `json:"prev"`
+	Steps   []tributeStep `json:"steps"`
+	Expect  tributeState  `json:"expect"`
+}
+
+type tributeFixture struct {
+	Comment []string        `json:"_comment"`
+	Vectors []tributeVector `json:"vectors"`
+}
+
+// tributeReasonSentinels 把牌例里那个封闭取值映到哨兵（照 tribute.go 的十个常量列）。
+//
+// 和出牌那边一样：**判别用 errors.Is，不比句子**。牌例写错一个字、或者两端的取值对不上，
+// 都会在下面当场报出来。
+var tributeReasonSentinels = map[string]*TributeError{
+	string(ReasonTributeResisted):       ErrTributeResisted,
+	string(ReasonTributeNotAGiver):      ErrTributeNotAGiver,
+	string(ReasonTributeAlreadyGave):    ErrTributeAlreadyGave,
+	string(ReasonTributeNotBiggest):     ErrTributeNotBiggest,
+	string(ReasonTributeWildCannotGive): ErrTributeWildCannotGive,
+	string(ReasonTributeCardNotInHand):  ErrTributeCardNotInHand,
+	string(ReasonTributeNotAllGiven):    ErrTributeNotAllGiven,
+	string(ReasonTributeNotAReceiver):   ErrTributeNotAReceiver,
+	string(ReasonTributeAlreadyRet):     ErrTributeAlreadyReturned,
+	string(ReasonTributeCannotReturn):   ErrTributeCannotReturn,
+}
+
+// sameHandSet 比「这一家到底是哪几张」：**按集合**，不比顺序。
+func sameHandSet(got []Card, want []string) bool {
+	a, b := keys(got), append([]string{}, want...)
+	sort.Strings(a)
+	sort.Strings(b)
+	return reflect.DeepEqual(a, b)
+}
+
+func checkTributeState(t *testing.T, what string, want tributeState, tr *Tribute) {
+	t.Helper()
+
+	if want.Kind != nil && tr.Kind().String() != *want.Kind {
+		t.Errorf("%s：kind 是 %s，牌例写的是 %s", what, tr.Kind(), *want.Kind)
+	}
+	if want.Givers != nil && !reflect.DeepEqual(tr.Givers(), want.Givers) {
+		t.Errorf("%s：givers 是 %v，牌例写的是 %v", what, tr.Givers(), want.Givers)
+	}
+	for key, wantSeat := range want.Receiver {
+		g, err := strconv.Atoi(key)
+		if err != nil {
+			t.Fatalf("%s：receiver 的键 %q 不是座位号", what, key)
+		}
+		got, ok := tr.Receiver(g)
+		if !ok || got != wantSeat {
+			t.Errorf("%s：%d 号座贡给谁 —— 得到 %d（ok=%v），牌例写的是 %d", what, g, got, ok, wantSeat)
+		}
+	}
+	if want.Done != nil && tr.Done() != *want.Done {
+		t.Errorf("%s：done 是 %v，牌例写的是 %v", what, tr.Done(), *want.Done)
+	}
+	if want.Leader != nil {
+		got, ok := tr.Leader()
+		if !ok || got != *want.Leader {
+			t.Errorf("%s：leader 得到 %d（ok=%v），牌例写的是 %d", what, got, ok, *want.Leader)
+		}
+	}
+	if want.Hands != nil {
+		got := handsNow(tr)
+		for i, wantHand := range *want.Hands {
+			if !sameHandSet(got[i], wantHand) {
+				t.Errorf("%s：%d 号座手牌的**集合**不一样\n算出 %v\n牌例 %v", what, i+1, keys(got[i]), wantHand)
+			}
+		}
+	}
+}
+
+func TestTributeFixture(t *testing.T) {
+	var f tributeFixture
+	loadFixture(t, "tribute.json", &f)
+	if len(f.Vectors) == 0 {
+		t.Fatal("没有用例")
+	}
+	for _, v := range f.Vectors {
+		// 每条用例一个子测试：红的时候一眼看得出是哪一条，也不会因为前面一条 Fatalf 就整段停掉
+		// （进贡这边每条用例是一个独立局面，和别处「一串共用同一副牌」的读取器不一样）。
+		t.Run(v.Name, func(t *testing.T) {
+			checkRules(t, v.Name, v.Rule)
+			if len(v.Hands) != Seats {
+				t.Fatalf("%s：要 %d 家手牌，牌例写了 %d 家", v.Name, Seats, len(v.Hands))
+			}
+			// 【待确认】的用例要带 pending（写清楚分歧在哪）；反过来带了 pending 的也要在名字里标出来 ——
+			// 免得标记和正文各走各的。
+			if marked := strings.HasPrefix(v.Name, "【待确认】"); marked != (v.Pending != "") {
+				t.Fatalf("%s：名字标了【待确认】=%v，pending=%q —— 两个要一致", v.Name, marked, v.Pending)
+			}
+			if v.Pending != "" {
+				t.Logf("%s：%s", v.Name, v.Pending) // 名字里已经带了【待确认】
+			}
+
+			level, err := ParseRank(v.Level)
+			if err != nil {
+				t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
+			}
+			var hands [Seats][]Card
+			for i, h := range v.Hands {
+				if len(h) == 0 {
+					t.Fatalf("%s：%d 号座一张牌都没有", v.Name, i+1)
+				}
+				hands[i] = cardsOf(t, h)
+			}
+
+			// prev：order 一定写全四家；head_seat / partner_place 由它推得，写了就核一致。
+			if len(v.Prev.Order) != Seats {
+				t.Fatalf("%s：prev.order 要写全 %d 家，写的是 %d 家", v.Name, Seats, len(v.Prev.Order))
+			}
+			prev := Result{Order: v.Prev.Order, HeadSeat: v.Prev.Order[0]}
+			for i, s := range v.Prev.Order {
+				if s == PartnerSeat(prev.HeadSeat) {
+					prev.PartnerPlace = i + 1
+				}
+			}
+			if v.Prev.HeadSeat != nil && *v.Prev.HeadSeat != prev.HeadSeat {
+				t.Errorf("%s：prev.head_seat 和 order 对不上", v.Name)
+			}
+			if v.Prev.PartnerPlace != nil && *v.Prev.PartnerPlace != prev.PartnerPlace {
+				t.Errorf("%s：prev.partner_place 和 order 对不上", v.Name)
+			}
+
+			tr, err := NewTribute(level, hands, prev)
+			if err != nil {
+				t.Fatalf("%s：开局：%v", v.Name, err)
+			}
+
+			for i, st := range v.Steps {
+				what := fmt.Sprintf("%s 第 %d 步", v.Name, i+1)
+				before := handsText4(handsNow(tr))
+
+				var stepErr error
+				switch {
+				case st.Give != "":
+					// 按写法取整副牌里的那一张 —— 它**可能不在这家手里**，那正是有些用例要试的
+					// （所以不能拿这家手里的牌去取，那样取不到就报错了）。
+					stepErr = tr.Give(st.Seat, cardsOf(t, []string{st.Give})[0])
+				case st.Return != "":
+					stepErr = tr.Return(st.Seat, cardsOf(t, []string{st.Return})[0])
+				default:
+					t.Fatalf("%s：既没写 give 也没写 return", what)
+				}
+
+				if st.Reject != "" {
+					want, ok := tributeReasonSentinels[st.Reject]
+					if !ok {
+						t.Fatalf("%s：reject 的取值 %q 不在那十个里（见 testdata/rules/README.md 的表）", what, st.Reject)
+					}
+					if !errors.Is(stepErr, want) {
+						t.Errorf("%s：牌例说这一步要被拒（%s），实际 %v", what, st.Reject, stepErr)
+					}
+					// 「被拒」的全部含义就是局面没动。牌例也能用 after 把这一条写出来（见上面的注释），
+					// 但这一道不依赖牌例写没写。
+					if after := handsText4(handsNow(tr)); after != before {
+						t.Errorf("%s：被拒之后局面变了\n之前：%s\n之后：%s", what, before, after)
+					}
+				} else if stepErr != nil {
+					t.Errorf("%s：牌例说这一步会成功，实际 %v", what, stepErr)
+				}
+
+				if st.After != nil {
+					checkTributeState(t, what+" 之后", *st.After, tr)
+				}
+			}
+
+			// `leader` 只在贡完还完之后有意义：写了 leader 就必须写 done: true。
+			if v.Expect.Leader != nil && (v.Expect.Done == nil || !*v.Expect.Done) {
+				t.Errorf("%s：expect 写了 leader，就必须写 done: true", v.Name)
+			}
+			checkTributeState(t, v.Name+" 走完之后", v.Expect, tr)
+		})
+	}
+}
