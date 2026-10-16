@@ -1,4 +1,5 @@
 import { render } from "preact";
+import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { installFakeSocket } from "../fakeSocket";
@@ -41,7 +42,14 @@ function button(c: HTMLElement, text: string): HTMLButtonElement {
 beforeEach(() => installFakeSocket());
 
 afterEach(() => {
-  for (const c of mounted.splice(0)) render(null, c);
+  // `act` 包着卸，**不能省**：preact 的 useEffect 清理是**排队**跑的（jsdom 没有
+  // requestAnimationFrame，走的是 hooks.mjs 里 35ms 的 setTimeout 兜底）。afterEach 里
+  // 卸完这一条文件就结束了，清理会排在拆 jsdom **之后**才跑 —— 那时 `window` /
+  // `cancelAnimationFrame` 已经没了，报成 unhandled error（测试却全是绿的，#248）。
+  // `act` 把这次 flush 接住、当场同步跑完，什么都不留到文件外面。
+  act(() => {
+    for (const c of mounted.splice(0)) render(null, c);
+  });
   document.body.innerHTML = "";
   document.title = "";
   localStorage.clear();
