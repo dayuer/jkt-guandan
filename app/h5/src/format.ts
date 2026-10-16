@@ -61,11 +61,6 @@ export function weekday2(unixSeconds: number): string {
   return weekdayCompact(unixSeconds);
 }
 
-/** 「经典掼蛋」/「不升级」/「带新手」 */
-export function kindLabel(kind: string): string {
-  return { classic: "经典掼蛋", "no-level": "不升级", teaching: "带新手" }[kind] ?? kind;
-}
-
 /** 「10月18日」 */
 export function monthDay(unixSeconds: number): string {
   return md.format(new Date(unixSeconds * 1000));
@@ -108,7 +103,5 @@ export function dayShort(unixSeconds: number, now: number = Math.floor(Date.now(
   return monthDay(unixSeconds);
 }
 
-/** 「差 2 人」/「已满」 */
-export function missingLabel(missing: number): string {
-  return missing > 0 ? `差 ${missing} 人` : "已满";
-}
+// 这两个不碰时间，两端一样，#253 起住在 app/shared；这里转出去，format 的使用方不用动。
+export { kindLabel, missingLabel } from "../../shared/src/labels";
