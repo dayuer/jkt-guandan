@@ -2,13 +2,14 @@
 //   node build.mjs           正式版，连 https://guandan.synon.ai
 //   node build.mjs --dev     开发版，连本机 GUANDAN_DEV=1 的服务端，用 dev: 登录码
 //   加 --watch 改了自动重打
-// 复用 app/h5/src 里的纯逻辑；其中 format.ts 依赖 Intl 时区（安卓微信不一定有），换成 src/lib/fmt.ts。
+// 复用的纯逻辑已经全部搬进 app/shared（#253），小游戏对 app/h5 的 import 是 0 ——
+// 所以原来那个「打包时把 H5 模块里的 ./format 换成 src/lib/fmt.ts」的插件（安卓微信不一定有
+// Intl 时区）再也没有输入了，删掉；时间写法由 app/shared 的调用方注入，小游戏用 src/lib/fmt.ts。
 import * as esbuild from "esbuild";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const h5 = path.resolve(here, "../h5/src");
 const dev = process.argv.includes("--dev");
 const watch = process.argv.includes("--watch");
 const selftest = process.argv.includes("--selftest");
@@ -19,15 +20,6 @@ const sinkPort = Number(process.env.SELFTEST_SINK_PORT || 18675);
 // 走查场景：SELFTEST_SCENARIO=165 时编进 #165 验收的那套步骤（默认跑原来的切 Tab 自检）。
 const scenario = process.env.SELFTEST_SCENARIO || "";
 const apiBase = process.env.API_BASE || (dev ? "http://127.0.0.1:8080" : "https://guandan.synon.ai");
-
-const swapFormat = {
-  name: "swap-h5-format",
-  setup(b) {
-    b.onResolve({ filter: /^\.\/format$/ }, (args) =>
-      args.importer.startsWith(h5) ? { path: path.join(here, "src/lib/fmt.ts") } : undefined,
-    );
-  },
-};
 
 const ctx = await esbuild.context({
   entryPoints: [path.join(here, "src/main.ts")],
@@ -46,7 +38,6 @@ const ctx = await esbuild.context({
     __SELFTEST_SINK__: JSON.stringify(`http://127.0.0.1:${sinkPort}/`),
     __SELFTEST_SCENARIO__: JSON.stringify(scenario),
   },
-  plugins: [swapFormat],
   logLevel: "info",
 });
 if (watch) await ctx.watch();
