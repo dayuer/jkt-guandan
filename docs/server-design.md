@@ -544,6 +544,8 @@ CREATE TABLE hidden_games (
     「这一手不落两次」，不是「响应冻住」）；同一个键用在别的请求上 → 422 `idempotency_key_reused`；
   - 这一副打完了还出牌 → 409 `deal_over`（下一副是后面的事）；
   - **服务端不替 AI 走棋**：出完手 `turn` 可能落在 AI 座位上（AI 回合在下一件）。
+  - 局面里 `deal_over` 表示**这一副**打完了（和 `ended`＝这一局练习局收掉了不是一回事）——
+    客户端靠它决定弹结算还是继续出牌，不用猜 `turn == 0`。
 - **限流**：建局每人每分钟 30 次，超出 429 `rate_limited`。（出牌不限流：它的写量被
   `expected_revision` 卡着 —— 只有轮到自己、且 revision 对得上才写得进去。）
 - 还没做（后面的件）：出牌裁决、AI 回合与 `practice.played` 推送、进贡/跨副、断线恢复与复盘、

@@ -313,9 +313,20 @@ func TestPracticePlayRejectsFinishedDeal(t *testing.T) {
 	if got.status != http.StatusConflict || got.errCode() != "deal_over" {
 		t.Fatalf("这一副打完了还出牌该 409 deal_over，实际 %d %s", got.status, got.raw)
 	}
-	// 打完的那一副取回来还是能取（复盘要用），只是界面该收尾。
+	// 打完的那一副取回来还是能取（复盘要用），而且**明说这一副完了** ——
+	// 客户端靠 `deal_over` 决定弹结算还是继续出牌，不用自己去猜 `turn == 0`。
 	view := f.do(f.http, http.MethodGet, "/api/practice/"+id, nil, nil)
 	if view.status != http.StatusOK {
 		t.Fatalf("打完的局该还能取（复盘），实际 %d", view.status)
+	}
+	if !view.field("deal_over").(bool) {
+		t.Fatalf("这一副打完了，`deal_over` 该为真：%s", view.raw)
+	}
+	if view.field("ended").(bool) {
+		t.Fatalf("`ended` 是「这一局练习局收掉了」，打完一副不该置位：%s", view.raw)
+	}
+	// 建局时那一副没打完。
+	if created.field("deal_over").(bool) {
+		t.Fatal("刚建好的局不该是 deal_over")
 	}
 }

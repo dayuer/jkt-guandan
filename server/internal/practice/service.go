@@ -216,7 +216,12 @@ type View struct {
 	Hand     []string         `json:"hand"`
 	Counts   [rules.Seats]int `json:"counts"` // 四家各剩几张，下标 0 是 1 号座
 	Turn     int              `json:"turn"`
-	Ended    bool             `json:"ended"`
+	// DealOver：**这一副**打完了（四家出完）。和 `Ended` 不是一回事 ——
+	// `Ended` 是「这一局练习局收掉了」（#88 第 1 件的收局），而一副打完只是这一副完了，
+	// 下一副还在后头（第 5 件：进贡 / 跨副）。客户端靠这个决定是弹结算还是继续出牌，
+	// 而不是自己去猜 `turn == 0`（0 是「没人该出牌」的内部约定，不该当成接口契约）。
+	DealOver bool `json:"deal_over"`
+	Ended    bool `json:"ended"`
 }
 
 // Create 建一局：发牌、摆好座位、落库，返回局面。
@@ -400,6 +405,7 @@ func viewOf(g *rules.Game, id string, revision int64, seat int, ended bool) View
 		Seat:     seat,
 		Hand:     keysOf(g.Hand(seat)),
 		Turn:     g.Turn(),
+		DealOver: g.Over(),
 		Ended:    ended,
 	}
 	for s := 1; s <= rules.Seats; s++ {
