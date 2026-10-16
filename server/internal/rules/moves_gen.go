@@ -240,7 +240,8 @@ func assignments(n int, slots []slot) [][]int {
 func fillSlots(slots []slot, byRank map[Rank][]Card, wilds []Card, counts []int, suit *Suit) ([]Card, []Wildcard, bool) {
 	used := map[int]bool{}
 	out := make([]Card, 0, 10)
-	subs := make([]Wildcard, 0, len(wilds))
+	usedWilds := make([]Card, 0, len(wilds))
+	asList := make([]Card, 0, len(wilds))
 	next := 0 // 下一张还没用的逢人配
 	for i, sl := range slots {
 		need := sl.n
@@ -262,7 +263,8 @@ func fillSlots(slots []slot, byRank map[Rank][]Card, wilds []Card, counts []int,
 			if suit != nil {
 				as.Suit = *suit // 同花顺：顶出来的那张必须是这个花色
 			}
-			subs = append(subs, Wildcard{Card: w, As: as})
+			usedWilds = append(usedWilds, w)
+			asList = append(asList, as)
 			need--
 		}
 		for _, c := range byRank[sl.rank] {
@@ -286,9 +288,24 @@ func fillSlots(slots []slot, byRank map[Rank][]Card, wilds []Card, counts []int,
 	if next != len(wilds) {
 		return nil, nil, false // 还有逢人配没地方放
 	}
-	// 顶法按牌 ID 排：Recognize 给出的 Wilds 就是这个顺序（手里逢人配排好序的先后），
-	// 排序之后「同一个打法」的 Wilds 顺序两端一致，逐条比对不会出现同一条两种顺序。
-	sort.Slice(subs, func(i, j int) bool { return subs[i].Card.ID < subs[j].Card.ID })
+	// 顶法按「最小的那一种」配对：**顶成的牌升序**（点数、花色，和 Recognize 的 lessWilds
+	// 一个口径）配**逢人配按牌 ID 升序**。
+	//
+	// 为什么不是直接按槽位顺序记：同一个打法里几张逢人配互换顶法还是同一手（用的牌
+	// 一模一样），Recognize 会枚举全部顶法、留最小的那一种 —— 也就是顶成的牌升序的那种。
+	// 按槽位顺序记会得到「同一手、顶法排列不同」的另一种写法：牌例按集合比所以看不出来，
+	// 但把新老两份实现摆在一起逐行对拍会全都对不上（#241 就是这么发现的）。
+	sort.Slice(usedWilds, func(i, j int) bool { return usedWilds[i].ID < usedWilds[j].ID })
+	sort.Slice(asList, func(i, j int) bool {
+		if asList[i].Rank != asList[j].Rank {
+			return asList[i].Rank < asList[j].Rank
+		}
+		return asList[i].Suit < asList[j].Suit
+	})
+	subs := make([]Wildcard, len(usedWilds))
+	for i := range usedWilds {
+		subs[i] = Wildcard{Card: usedWilds[i], As: asList[i]}
+	}
 	return sortCards(out), subs, true
 }
 
