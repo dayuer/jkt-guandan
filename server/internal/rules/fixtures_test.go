@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -238,6 +239,189 @@ func TestDealFixture(t *testing.T) {
 	if *update {
 		saveFixture(t, "deal.json", f)
 	}
+}
+
+// 合法出法（#204 第 4 步）：一手牌 + 级数（+ 上一手）→ 全部能打出去的打法。
+//
+// 牌例里每一手写成 {kind, rank, size}（+ 有逢人配时带 wilds），比 Moves 算出来的**顺序也一致**
+// （和 combos.json 一个规矩：先 kind、再 rank、再 size、再 wilds）。
+type moveExpect struct {
+	Kind  string     `json:"kind"`
+	Rank  string     `json:"rank"`
+	Size  int        `json:"size"`
+	Wilds []wildDecl `json:"wilds,omitempty"`
+}
+
+type movesVector struct {
+	Name  string       `json:"name"`
+	Rule  []string     `json:"rule"`
+	Level string       `json:"level"`
+	Hand  []string     `json:"hand"`
+	Lead  *compareSide `json:"lead"`
+	Moves []moveExpect `json:"moves"`
+}
+
+type movesFixture struct {
+	Comment []string      `json:"_comment"`
+	Vectors []movesVector `json:"vectors"`
+}
+
+// leadCombo 读出牌例里写的「上一手」。牌型一定对得上，牌面写了就一起比（和 compare.json 一样）。
+func leadCombo(t *testing.T, v movesVector, lead compareSide, level Rank) Combo {
+	t.Helper()
+	kind, err := ParseComboType(lead.Kind)
+	if err != nil {
+		t.Fatalf("%s：上一手 %v", v.Name, err)
+	}
+	rank := Rank(0)
+	if lead.Rank != "" {
+		if rank, err = ParseRank(lead.Rank); err != nil {
+			t.Fatalf("%s：上一手 %v", v.Name, err)
+		}
+	}
+	combos, err := Recognize(cardsOf(t, lead.Cards), level)
+	if err != nil {
+		t.Fatalf("%s：上一手：%v", v.Name, err)
+	}
+	c, ok := Pick(combos, kind, rank)
+	if !ok {
+		t.Fatalf("%s：上一手认不出来（%s%s，%v）—— 实际有 %s", v.Name, lead.Kind, lead.Rank, lead.Cards, ComboSummary(combos))
+	}
+	return c
+}
+
+func TestMovesFixture(t *testing.T) {
+	var f movesFixture
+	loadFixture(t, "moves.json", &f)
+	if len(f.Vectors) == 0 {
+		t.Fatal("没有用例")
+	}
+	for _, v := range f.Vectors {
+		checkRules(t, v.Name, v.Rule)
+		level, err := ParseRank(v.Level)
+		if err != nil {
+			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
+		}
+		hand := cardsOf(t, v.Hand)
+		var lead *Combo
+		if v.Lead != nil {
+			lc := leadCombo(t, v, *v.Lead, level)
+			lead = &lc
+		}
+		moves, err := Moves(hand, level, lead)
+		if err != nil {
+			t.Fatalf("%s：%v", v.Name, err)
+		}
+		if len(moves) != len(v.Moves) {
+			t.Fatalf("%s（打 %s，%v）：算出 %d 手，牌例 %d 手\n算出 %s\n牌例 %s",
+				v.Name, v.Level, v.Hand, len(moves), len(v.Moves), movesText(moves), wantsText(v.Moves))
+		}
+		for i, want := range v.Moves {
+			got := moves[i]
+			if got.Type.String() != want.Kind || rankText(got) != want.Rank || len(got.Cards) != want.Size {
+				t.Fatalf("%s：第 %d 手不一样\n算出 %s\n牌例 %s\n（全部）算出 %s\n（全部）牌例 %s",
+					v.Name, i+1, moveText(got), wantText(want), movesText(moves), wantsText(v.Moves))
+			}
+			if len(got.Wilds) != len(want.Wilds) {
+				t.Fatalf("%s：第 %d 手的顶法不一样\n算出 %s\n牌例 %s", v.Name, i+1, moveText(got), wantText(want))
+			}
+			// 按集合比，不比顺序：README「逢人配」第 5 条 —— 一手牌里两张逢人配谁先谁后
+			// 是「用哪几张牌」的差别，两端各挑一套就行，顺序不该影响判定。
+			if gotSet, wantSet := wildSet(got.Wilds), wildSetOfDecl(want.Wilds); !sameSet(gotSet, wantSet) {
+				t.Fatalf("%s：第 %d 手的顶法不一样\n算出 %s\n牌例 %s", v.Name, i+1, moveText(got), wantText(want))
+			}
+		}
+	}
+}
+
+// wildSet 把顶法写成一组「顶成了什么」，用来**按集合**比：
+// 既不比顺序（README 逢人配第 5 条），也**不比用的是哪一张逢人配** —— 那是「用哪几张牌」
+// 的差别，而且 TS 端根本没有副号这个概念，比它就等于要求两端的牌编号一致。
+func wildSet(wilds []Wildcard) []string {
+	out := make([]string, 0, len(wilds))
+	for _, w := range wilds {
+		out = append(out, asKey(w.As))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func wildSetOfDecl(wilds []wildDecl) []string {
+	out := make([]string, 0, len(wilds))
+	for _, w := range wilds {
+		out = append(out, w.As)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// rankText 是这一手在牌例里写的「牌面」：四大天王没有牌面，写空串（README）。
+// 直接拿 Rank.RankName() 会写出 "0"（四大天王的 Rank 是 0），牌例按 README 写空串就对不上。
+func rankText(c Combo) string {
+	if c.Type == TypeJokerBomb {
+		return ""
+	}
+	return c.Rank.RankName()
+}
+
+func moveText(c Combo) string {
+	rank := rankText(c)
+	if rank != "" {
+		rank = " " + rank
+	}
+	out := c.Type.String() + rank + " " + strconv.Itoa(len(c.Cards)) + " 张"
+	for _, w := range c.Wilds {
+		out += "（" + w.Card.Key() + " 当 " + asKey(w.As) + "）"
+	}
+	return out
+}
+
+func wantText(w moveExpect) string {
+	out := w.Kind + " " + w.Rank + " " + strconv.Itoa(w.Size) + " 张"
+	for _, d := range w.Wilds {
+		out += "（" + d.Card + " 当 " + d.As + "）"
+	}
+	return out
+}
+
+func movesText(moves []Combo) string {
+	out := ""
+	for i, c := range moves {
+		if i > 0 {
+			out += "；"
+		}
+		out += moveText(c)
+	}
+	if out == "" {
+		out = "（空）"
+	}
+	return out
+}
+
+func wantsText(moves []moveExpect) string {
+	out := ""
+	for i, c := range moves {
+		if i > 0 {
+			out += "；"
+		}
+		out += wantText(c)
+	}
+	if out == "" {
+		out = "（空）"
+	}
+	return out
 }
 
 func compact(t *testing.T, v any) string {
