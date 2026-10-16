@@ -31,6 +31,7 @@ type fixture struct {
 	t    *testing.T
 	srv  *httptest.Server
 	st   *store.Store
+	clk  *clock.Fake
 	http *http.Client
 }
 
@@ -59,7 +60,7 @@ func newServer(t *testing.T) *fixture {
 	}))
 	t.Cleanup(srv.Close)
 
-	f := &fixture{t: t, srv: srv, st: st}
+	f := &fixture{t: t, srv: srv, st: st, clk: clk}
 	f.http = f.newBrowser()
 	return f
 }
@@ -312,5 +313,31 @@ func TestPracticeNewGameEndsTheOldOne(t *testing.T) {
 	}
 	if open != 1 {
 		t.Fatalf("同时开着的练习局该只有 1 局，有 %d 局", open)
+	}
+}
+
+// 建局限流（#270 复审 B2）：这条以前没测到 —— 把 `opener.Allow` 改成恒 true，测试照样全绿。
+//
+// 用假时钟把边界钉死：30 次过、第 31 次 429、过一分钟又满血。
+// （30 是 `openPerMinute`：不设限的话，建局会把表刷爆 —— 每次建局都要写一行、还要把上一局收掉。）
+func TestPracticeCreateIsRateLimited(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "刷的人")
+
+	create := func() resp {
+		return f.do(f.http, http.MethodPost, "/api/practice", map[string]any{}, nil)
+	}
+	for i := 1; i <= 30; i++ {
+		if r := create(); r.status != http.StatusOK {
+			t.Fatalf("第 %d 次建局该过，实际 %d %s", i, r.status, r.raw)
+		}
+	}
+	if r := create(); r.status != http.StatusTooManyRequests || r.errCode() != "rate_limited" {
+		t.Fatalf("第 31 次该 429 rate_limited，实际 %d %s", r.status, r.raw)
+	}
+	// 过一分钟，桶又满了（限流器读的是注入的时钟，不真等）。
+	f.clk.Advance(time.Minute)
+	if r := create(); r.status != http.StatusOK {
+		t.Fatalf("过一分钟该又能建局，实际 %d %s", r.status, r.raw)
 	}
 }

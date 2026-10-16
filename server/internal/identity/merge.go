@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
@@ -23,7 +24,7 @@ import (
 //
 // §5.2 只提到「座位和推送订阅」，这里把其余引用 user_id 的表也一并迁移，
 // 否则会留下指向已合并身份的记录（尤其是 games.host_id，不迁的话 §4 的不变量 3 会不成立）。
-func mergeUsers(ctx context.Context, tx *store.Tx, a, b string) (string, error) {
+func mergeUsers(ctx context.Context, tx *store.Tx, a, b string, now time.Time) (string, error) {
 	if a == b {
 		return a, nil
 	}
@@ -74,6 +75,21 @@ func mergeUsers(ctx context.Context, tx *store.Tx, a, b string) (string, error) 
 		if _, err := tx.ExecContext(ctx, stmt.cleanup, other); err != nil {
 			return "", err
 		}
+	}
+
+	// 练习局（#88）：**先把「他还没结束的那一局」结束掉，再整行转给主身份**。
+	//
+	// 不能照上面那张表的「搬不动就丢」：练习局是这个人的历史（复盘要用），丢了就没了。
+	// 但也不能直接搬 —— `practice_games_one_open_per_user`（`user_id WHERE ended_at IS NULL`）
+	// 会把「我正开着一局 + 他也没结束一局」这种搬法挡下来（两个身份合成一个之后，
+	// 「一人同时只有一局」必须继续成立）。所以先给并入方那局写上结束时间，
+	// 搬过去之后主身份手里最多一局开着的（主身份自己那局不动，两边都开着也只是把并入方那局收掉）。
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE practice_games SET ended_at = ? WHERE user_id = ? AND ended_at IS NULL`, now.Unix(), other); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE practice_games SET user_id = ? WHERE user_id = ?`, primary, other); err != nil {
+		return "", err
 	}
 
 	// 星标牌友：两个方向都要搬。
