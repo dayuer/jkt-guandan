@@ -3,7 +3,7 @@ import { getMe, type UserRef } from "../api";
 import { ClaimSheet } from "../components/ClaimSheet";
 import { initial } from "../components/Table";
 import { WaSheet } from "../components/WaSheet";
-import { maskWaPhone } from "../wa";
+import { maskWaPhone } from "../../../shared/src/wa";
 
 interface Props {
   me: UserRef | null;

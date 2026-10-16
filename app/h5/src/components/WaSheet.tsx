@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { ApiError, clearWaPhone, setWaPhone } from "../api";
 import { tapFocusHandlers } from "../tapFocus";
-import { maskWaPhone, normalizeWaPhone } from "../wa";
+import { maskWaPhone, normalizeWaPhone } from "../../../shared/src/wa";
 
 interface Props {
   /** 已绑定的号码（E.164）；没绑定是 undefined。 */

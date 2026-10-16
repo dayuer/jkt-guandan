@@ -4,7 +4,7 @@ import type { App, Scene, Sheet } from "../core/app";
 import { C, Ctx, Scroller, circle, ellipsize, fillRR, font, initial, strokeRR, text } from "../core/ui";
 import { PAD, avatar, button, chevron, copy, disclaimer, emptyState, errorLine, icon, nav, sheetHeader, textLink } from "../core/widgets";
 import { ApiError, API_BASE, getGroupInfo, listFriends, setStar, type Friend, type GroupInfo } from "../lib/api";
-import { inviteText } from "../../../h5/src/invite";
+import { inviteText } from "../../../shared/src/invite";
 import { TAB_H } from "./home";
 import type { Nav } from "./nav";
 

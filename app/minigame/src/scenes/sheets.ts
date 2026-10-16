@@ -8,7 +8,7 @@ import { ApiError, API_BASE, listFriends, posterURL, shareURL, type Friend, type
 import { dayShort, kindLabel, slashDate, timeHM, weekday, wibParts } from "../lib/fmt";
 import { currentUser, linkWithCode, signUp } from "../lib/session";
 import { track } from "../lib/telemetry";
-import { shareText } from "../../../h5/src/share";
+import { shareText } from "../../../shared/src/share";
 
 // ── 填称呼（B2）。返回填好的身份；用户关掉返回 null ──
 //
@@ -220,7 +220,10 @@ function calendarFallback(app: App, code: string) {
 
 export function shareSheet(app: App, d: GameDetail) {
   const g = d.game;
-  const textS = shareText(d, Math.floor(Date.now() / 1000), API_BASE);
+  // 共享层只负责拼文案，时间的写法由各端给（H5 用 Intl，这里用 lib/fmt —— 安卓微信不一定有 Intl）。
+  const now = Math.floor(Date.now() / 1000);
+  const when = `${dayShort(g.starts_at, now)} ${timeHM(g.starts_at)}`;
+  const textS = shareText(d, when, API_BASE);
   const channel = (c: "wechat" | "poster" | "copy") => track("share_channel", { game: g.short_code, channel: c });
   let poster: any = null, posterFailed = false;
   const img = wx.createImage();
