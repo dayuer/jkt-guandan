@@ -62,9 +62,13 @@ cli open --project <repo>/app/minigame
 | `S12-take-theirs.png` | S12 | 点了「用 TA 的」之后 |
 | `S8-match-over.png` | S8 | 本场结束：赢方 A 牌金边、「红方 过 A」、操作栏「分享战报 / 再来一场」 |
 | `S15-report-card.png` | S15 | 战报卡片（`wx.shareAppMessage` 生成的 imageUrl，直接从钩子里截回来） |
+| `S13-no-level-score.png` | S13 | 不升级玩法：两张牌换成**胜局数 1 : 0**，下面「双上」次数卡，没有级牌和升级路线 |
+| `S13-no-level-record.png` | S13 | 不升级的记一局：只要第一步（选了头游主按钮就能点） |
+| `S14-spectator.png` | S14 | 旁观视角：底栏只有「分享」+「只有座位上的四个人能记分」 |
 
-S13（不升级玩法）、S14（旁观视角）、S12 的「结果相同 → 静默合并」这一轮**没覆盖**：走查用的是
-经典玩法、身份一直坐在座位上。这三项 coord 已安排成 #206 之后的一个小 PR。
+S12 的「两个人记的**一样** → 静默合并 + toast「和 Lily 记的一样」」这一轮**没单独截**：
+走查里造的那次冲突两边记的正好不同（要触发弹框），同结果那条分支没造。
+代码路径是 `decideConflict` 的 `"same"` 分支（`lib/scoring.ts`），有单测覆盖，但没有界面截图。
 
 ## 视觉逐张对照（另一个 agent 独立做的）
 
