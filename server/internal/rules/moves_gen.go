@@ -30,6 +30,23 @@ type slot struct {
 	n    int
 }
 
+// candidate 是一个候选牌组：打出去的这几张牌，外加**每张逢人配顶成了什么**。
+//
+// 为什么要把顶法一路带出来（#241）：牌组是按槽位挑的，挑的时候就已经知道每张逢人配
+// 补的是哪个点位，顶法其实是**定死的**。如果只把牌组交给 Recognize，它会再把所有顶法
+// 试一遍、挑最小的那一种 —— 两张逢人配就是 52² 种试法，领出一次上百个候选，
+// 一个候选就白试几万次（实测领出 167ms，见 moves_bench_test.go 的基准）。
+// 带上顶法就能直接照这一种认，identified 的顶法也一样（顶法由槽位决定，本来就只有一种）。
+//
+// known 为 false 表示「这张候选的顶法不是按槽位定的」：手里全是逢人配时的那一两张候选，
+// 口径是「按它本来的点数算」（见 Recognize），交给 Recognize 定。
+type candidate struct {
+	cards []Card     // 打出去的牌（实牌 + 逢人配）
+	subs  []Wildcard // 每张逢人配顶成的那张牌（按牌 ID 排，和 Recognize 给出的顺序一致）
+	known bool       // true 表示 subs 是确定的，可以直接照它认
+	suit  *Suit      // 同花顺候选带的花色（其余牌型不挑花色）；见 combosOf 里的用法
+}
+
 // shapeMask 是「要生成哪些牌型」的开关。领出时全开；跟牌时只开需要的那些 ——
 // 要不起的牌型没必要造（见 shapesBeating）：这一下省掉一大半工作，
 // 而且是**跟牌这条最常见的路径**。
@@ -54,7 +71,7 @@ func shapesBeating(lead Combo) shapeMask {
 }
 
 // candidateSets 造出候选牌组；want 决定生成哪些牌型。
-func candidateSets(solids, wilds []Card, want shapeMask) [][]Card {
+func candidateSets(solids, wilds []Card, want shapeMask) []candidate {
 	byRank := map[Rank][]Card{}
 	for _, c := range solids {
 		byRank[c.Rank] = append(byRank[c.Rank], c)
@@ -73,12 +90,12 @@ func candidateSets(solids, wilds []Card, want shapeMask) [][]Card {
 
 	// 逢人配自己也是牌：一张单出、两张一起出（只按它本来的点数算 —— 和 Recognize 一个口径）。
 	// 手里只有逢人配、没有实牌时，候选就这些。
-	var out [][]Card
+	var out []candidate
 	for _, w := range wilds {
-		out = append(out, []Card{w})
+		out = append(out, candidate{cards: []Card{w}}) // 顶法按它本来的点数算，交给 Recognize
 	}
 	if len(wilds) >= 2 {
-		out = append(out, []Card{wilds[0], wilds[1]})
+		out = append(out, candidate{cards: []Card{wilds[0], wilds[1]}})
 	}
 	if len(ranks) == 0 {
 		return out
@@ -86,13 +103,14 @@ func candidateSets(solids, wilds []Card, want shapeMask) [][]Card {
 
 	// 同点数那几种（单张、对子、三同张、炸弹、三带对）：逢人配可以顶成这个点数、
 	// 也可以顶成另一个点数 —— 每一种顶法都是不同的打法，全枚举。
-	addSameRank := func(slots ...slot) {
-		out = append(out, slotVariants(slots, byRank, wilds, nil)...)
-	}
-	// 顺子类那几种：牌型要求**连续的点数各一张/两张**，逢人配只能补在缺的那个点位上
-	// （摆到已经有实牌的点位上只会多出一张重复的点数，反而不成牌型）。
-	addSequence := func(slots ...slot) {
-		out = append(out, slotVariants(slots, byRank, wilds, nil)...)
+	//
+	// 顺子类那几种（三连对、三同连张、顺子）用的是同一个做法：按「连续点数各一张/两张」
+	// 摆好槽位，逢人配补到**哪个槽位**都是不同的打法 —— 补在有实牌的点位上也合法，
+	// 那张实牌不用就是了（README「逢人配」第 1 条）。
+	// free 是「哪条槽位的点数不出现在牌型里」的下标（只有三带对的副对是这样，其余传 -1）：
+	// 那条槽位如果整条都用逢人配补出来，顶成哪个点数都成，顶法就不是唯一一种了（见 slotVariants）。
+	add := func(free int, slots ...slot) {
+		out = append(out, slotVariants(slots, byRank, wilds, nil, free)...)
 	}
 
 	// 单张、对子、三同张、炸弹（含用逢人配补齐的同点数牌）。
@@ -104,20 +122,21 @@ func candidateSets(solids, wilds []Card, want shapeMask) [][]Card {
 			n int
 		}{{TypeSingle, 1}, {TypePair, 2}, {TypeTriple, 3}} {
 			if want[s.t] {
-				addSameRank(slot{r, s.n})
+				add(-1, slot{r, s.n})
 			}
 		}
 		if want[TypeBomb] {
 			for n := 4; n <= 10; n++ {
-				addSameRank(slot{r, n})
+				add(-1, slot{r, n})
 			}
 		}
 	}
 
 	// 四大天王：大小王各两张。逢人配顶不了王，这里不试「用逢人配」那种取法。
 	if want[TypeJokerBomb] {
-		if set, ok := fillSlots([]slot{{BigJoker, 2}, {SmallJoker, 2}}, byRank, nil, []int{0, 0}, nil); ok {
-			out = append(out, set)
+		// 逢人配顶不了王（第二条 14），所以这里不试「用逢人配」那种取法，顶法自然是空的。
+		if set, _, ok := fillSlots([]slot{{BigJoker, 2}, {SmallJoker, 2}}, byRank, nil, []int{0, 0}, nil); ok {
+			out = append(out, candidate{cards: set, known: true})
 		}
 	}
 
@@ -126,7 +145,7 @@ func candidateSets(solids, wilds []Card, want shapeMask) [][]Card {
 		for _, a := range ranks {
 			for _, b := range ranks {
 				if a != b {
-					addSameRank(slot{a, 3}, slot{b, 2})
+					add(1, slot{a, 3}, slot{b, 2})
 				}
 			}
 		}
@@ -135,25 +154,25 @@ func candidateSets(solids, wilds []Card, want shapeMask) [][]Card {
 	// 三连对、三同连张、顺子、同花顺：按窗口挑。
 	if want[TypeTube] {
 		for _, w := range rankWindows(3) {
-			addSequence(slot{w[0], 2}, slot{w[1], 2}, slot{w[2], 2})
+			add(-1, slot{w[0], 2}, slot{w[1], 2}, slot{w[2], 2})
 		}
 	}
 	if want[TypePlate] {
 		for _, w := range rankWindows(2) {
-			addSequence(slot{w[0], 3}, slot{w[1], 3})
+			add(-1, slot{w[0], 3}, slot{w[1], 3})
 		}
 	}
 	if want[TypeStraight] || want[TypeStraightFlush] {
 		for _, w := range rankWindows(5) {
 			slots := []slot{{w[0], 1}, {w[1], 1}, {w[2], 1}, {w[3], 1}, {w[4], 1}}
 			if want[TypeStraight] {
-				addSequence(slots...)
+				add(-1, slots...)
 			}
 			// 同花顺：同一个窗口，四个花色各挑一遍。
 			if want[TypeStraightFlush] {
 				for _, suit := range []Suit{Spade, Heart, Club, Diamond} {
 					sc := suit
-					out = append(out, slotVariants(slots, byRank, wilds, &sc)...)
+					out = append(out, slotVariants(slots, byRank, wilds, &sc, -1)...)
 				}
 			}
 		}
@@ -168,8 +187,8 @@ func candidateSets(solids, wilds []Card, want shapeMask) [][]Card {
 // 「当对子那一档」—— 这些都是**不同的打法**（用的牌不同、Wilds 也不同），牌例里要逐条列出来。
 //
 // 槽位最多 2 个（三带对）、逢人配最多 2 张，所以规模很小。
-func slotVariants(slots []slot, byRank map[Rank][]Card, wilds []Card, suit *Suit) [][]Card {
-	var out [][]Card
+func slotVariants(slots []slot, byRank map[Rank][]Card, wilds []Card, suit *Suit, freeSlot int) []candidate {
+	var out []candidate
 	for mask := 0; mask < 1<<len(wilds); mask++ {
 		var chosen []Card
 		for i, w := range wilds {
@@ -178,8 +197,25 @@ func slotVariants(slots []slot, byRank map[Rank][]Card, wilds []Card, suit *Suit
 			}
 		}
 		for _, counts := range assignments(len(chosen), slots) {
-			if set, ok := fillSlots(slots, byRank, chosen, counts, suit); ok {
-				out = append(out, set)
+			if set, subs, ok := fillSlots(slots, byRank, chosen, counts, suit); ok {
+				cand := candidate{cards: set, subs: subs, known: true, suit: suit}
+				// 三带对的副对整条都用逢人配补：那张逢人配顶成 2、3……哪个点数都成
+				// （牌型只认「三同张的点数」，副对的点数不影响它）—— 顶法不唯一，
+				// 得让 Recognize 按「顶法最小」挑一种（顶成 2 的那一种），不能照槽位点数算。
+				if freeSlot >= 0 && counts[freeSlot] == slots[freeSlot].n {
+					cand.known = false
+				}
+				// 五张的槽位（炸弹那一路）里放三张实牌 + 两张逢人配：这张逢人配既可以
+				// 顶成同一个点数（炸弹），也可以顶成**一对别的点数**（三带对）——
+				// 「777 + 两张逢人配」就是「炸弹 7」和「三带对 7（两张逢人配顶成一对 2）」
+				// 两种打法，实牌只有一个点数时三带对那一路自己造不出候选，是 Recognize
+				// 认这组牌时顺带枚举出来的（auditor-242 抓到的漏一手）。
+				for i := range slots {
+					if counts[i] == 2 && slots[i].n == 5 {
+						cand.known = false
+					}
+				}
+				out = append(out, cand)
 			}
 		}
 	}
@@ -207,20 +243,40 @@ func assignments(n int, slots []slot) [][]int {
 // fillSlots 按槽位挑牌：第 i 个槽位先放 counts[i] 张给定的逢人配（它们是这次打法点名要用的），
 // 剩下的用手里这个点数的实牌补（按 ID 从小到大、够用就停）。同一张牌不能用两次；
 // 凑不齐返回 false；counts 里的逢人配没用完也算凑不齐（那是另一种打法，由别的 counts 表示）。
-func fillSlots(slots []slot, byRank map[Rank][]Card, wilds []Card, counts []int, suit *Suit) ([]Card, bool) {
+//
+// 除了牌组，还给出**每张逢人配顶成了什么**：它补在哪个槽位上，就顶成那个点数的牌。
+// 花色只有同花顺才管（那时必须是这个花色），其余牌型按最小花色取 —— 和 Recognize 的
+// lessWilds 一个口径（同一个解读留顶法最小的那一种），所以两端和暴力枚举对拍都对得上。
+func fillSlots(slots []slot, byRank map[Rank][]Card, wilds []Card, counts []int, suit *Suit) ([]Card, []Wildcard, bool) {
 	used := map[int]bool{}
 	out := make([]Card, 0, 10)
+	usedWilds := make([]Card, 0, len(wilds))
+	asList := make([]Card, 0, len(wilds))
 	next := 0 // 下一张还没用的逢人配
 	for i, sl := range slots {
 		need := sl.n
+		// 逢人配顶不了王（第二条 14）：王那两个点位只能用实打实的王来凑。
+		// 少了这条，「一张小王 + 一张逢人配」会被当成一对小王 —— 正是把顶法直接算出来的
+		// 时候最容易漏的一处（Recognize 是从「能顶成哪些牌」那张表里挑的，天然不含王）。
+		if counts[i] > 0 && sl.rank.IsJoker() {
+			return nil, nil, false
+		}
 		for k := 0; k < counts[i]; k++ {
 			if next >= len(wilds) {
-				return nil, false
+				return nil, nil, false
 			}
 			w := wilds[next]
 			next++
 			used[w.ID] = true
 			out = append(out, w)
+			// As 只是「顶成了哪一张」的说明，不是手里某张真牌：ID、副号留 0，
+			// 和 Recognize（从「能顶成哪些牌」那张模板表里取）给出来的一样。
+			as := Card{Rank: sl.rank, Suit: Spade}
+			if suit != nil {
+				as.Suit = *suit // 同花顺：顶出来的那张必须是这个花色
+			}
+			usedWilds = append(usedWilds, w)
+			asList = append(asList, as)
 			need--
 		}
 		for _, c := range byRank[sl.rank] {
@@ -238,13 +294,31 @@ func fillSlots(slots []slot, byRank map[Rank][]Card, wilds []Card, counts []int,
 			need--
 		}
 		if need > 0 {
-			return nil, false // 这个点数凑不齐（实牌不够，逢人配也用完了）
+			return nil, nil, false // 这个点数凑不齐（实牌不够，逢人配也用完了）
 		}
 	}
 	if next != len(wilds) {
-		return nil, false // 还有逢人配没地方放
+		return nil, nil, false // 还有逢人配没地方放
 	}
-	return sortCards(out), true
+	// 顶法按「最小的那一种」配对：**顶成的牌升序**（点数、花色，和 Recognize 的 lessWilds
+	// 一个口径）配**逢人配按牌 ID 升序**。
+	//
+	// 为什么不是直接按槽位顺序记：同一个打法里几张逢人配互换顶法还是同一手（用的牌
+	// 一模一样），Recognize 会枚举全部顶法、留最小的那一种 —— 也就是顶成的牌升序的那种。
+	// 按槽位顺序记会得到「同一手、顶法排列不同」的另一种写法：牌例按集合比所以看不出来，
+	// 但把新老两份实现摆在一起逐行对拍会全都对不上（#241 就是这么发现的）。
+	sort.Slice(usedWilds, func(i, j int) bool { return usedWilds[i].ID < usedWilds[j].ID })
+	sort.Slice(asList, func(i, j int) bool {
+		if asList[i].Rank != asList[j].Rank {
+			return asList[i].Rank < asList[j].Rank
+		}
+		return asList[i].Suit < asList[j].Suit
+	})
+	subs := make([]Wildcard, len(usedWilds))
+	for i := range usedWilds {
+		subs[i] = Wildcard{Card: usedWilds[i], As: asList[i]}
+	}
+	return sortCards(out), subs, true
 }
 
 // rankWindows 生成 count 个连续点数的窗口（第三条 7 那些），含「A 当 1」绕一圈的：

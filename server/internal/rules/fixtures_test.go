@@ -495,7 +495,9 @@ type comboFixture struct {
 }
 
 // cardsOf 按牌例的写法取牌（带 ID，见 ParseKey）。
-func cardsOf(t *testing.T, keys []string) []Card {
+// cardsOf 从牌面写法读出一组牌。参数是 testing.TB：牌例测试传 *testing.T，
+// 基准（moves_bench_test.go）传 *testing.B，两边都要用。
+func cardsOf(t testing.TB, keys []string) []Card {
 	t.Helper()
 	out := make([]Card, len(keys))
 	for i, k := range keys {

@@ -28,6 +28,16 @@ import (
 //
 // 「要不起就过」不在这个集合里：跟牌时过牌永远合法，由调用方自己加。
 func Moves(hand []Card, level Rank, lead *Combo) ([]Combo, error) {
+	return movesWith(hand, level, lead, combosOf)
+}
+
+// movesWith 是 Moves 的本体，把「怎么把一个候选认成解读」抽成一个参数。
+//
+// 为什么要有这个参数：**优化前后的行为一致性要有一条永久护栏**（#241）。老实现是每个候选
+// 都交给 Recognize 枚举一遍顶法（慢，但对），新实现是照候选自带的顶法直接认（快）。
+// 测试把老那条路当参照实现传进来（moves_old_test.go），同一批局面上逐字段比 ——
+// 以后谁再动 Moves，这条会先红，不用等人肉对拍。
+func movesWith(hand []Card, level Rank, lead *Combo, read func(candidate, Rank) ([]Combo, error)) ([]Combo, error) {
 	if len(hand) == 0 {
 		return nil, fmt.Errorf("求合法出法：手里没有牌")
 	}
@@ -52,10 +62,10 @@ func Moves(hand []Card, level Rank, lead *Combo) ([]Combo, error) {
 
 	// 每个（牌型、牌面、顶法）只留牌 ID 最小的那一套。
 	best := map[string]Combo{}
-	for _, set := range candidateSets(solids, wilds, want) {
-		combos, err := Recognize(set, level)
+	for _, cand := range candidateSets(solids, wilds, want) {
+		combos, err := read(cand, level)
 		if err != nil {
-			return nil, fmt.Errorf("求合法出法：候选 %s：%w", cardsText(set), err)
+			return nil, fmt.Errorf("求合法出法：候选 %s：%w", cardsText(cand.cards), err)
 		}
 		for _, c := range combos {
 			key := comboKey(c)
@@ -73,6 +83,55 @@ func Moves(hand []Card, level Rank, lead *Combo) ([]Combo, error) {
 		out = append(out, c)
 	}
 	return sortCombos2(out), nil
+}
+
+// combosOf 把一个候选认成解读（#241：这条路是热点，别再让 Recognize 枚举顶法）。
+//
+// 顶法已知的候选**直接照它的顶法认**：把逢人配换成它顶成的那张牌，再调 recognizeCards ——
+// 和 Recognize 内部那条路一模一样，只是省掉了「把所有顶法试一遍、每种都认一遍、再挑最小的」
+// 那一步。那一步对两张逢人配就是 52² 种试法，而领出一次要跑上百个候选（基准里 167ms 就是它）。
+//
+// 口径不变：顶法由槽位决定，本来就只有一种；同花顺的花色由槽位那边带过来，
+// 其余的按最小花色（和 Recognize 的 lessWilds 同一口径）。
+//
+// 「手里全是逢人配」的那一两张候选（逢人配本身的点数怎么算由 Recognize 定）交给 Recognize。
+func combosOf(cand candidate, level Rank) ([]Combo, error) {
+	if !cand.known {
+		return Recognize(cand.cards, level)
+	}
+	played := sortCards(cand.cards)
+	_, solids := splitWilds(played, level)
+	// 候选里全是逢人配（一张单出、两张一起出）：口径是「只按它本来的点数算」，
+	// 不枚举顶成 2–A 里的哪一张（第二条 14、第五条 2，见 Recognize 里那段）。
+	// 按槽位造出来的候选也会落到这里（比如「用两张逢人配凑一对 2」那种取法），
+	// 它们的口径和「两张逢人配就是一对级牌」是同一个，交给 Recognize 定。
+	if len(solids) == 0 {
+		return Recognize(cand.cards, level)
+	}
+	// 和 Recognize 一样的剪枝：实牌有 6 个以上点数，怎么顶都凑不成任何一种牌型。
+	if len(rankCounts(solids)) > 5 {
+		return nil, nil
+	}
+	trial := make([]Card, 0, len(played))
+	trial = append(trial, solids...)
+	for _, w := range cand.subs {
+		trial = append(trial, w.As)
+	}
+	out := make([]Combo, 0, 2)
+	for _, sh := range recognizeCards(trial) {
+		// 同花顺候选（挑过花色的那种）只留同花顺：这一手牌如果还能当普通顺子打，
+		// 那个解读的顶法里花色该是最小的（♠，见 Recognize 的 lessWilds），
+		// 而这里的逢人配被顶成了这个花色 —— 那条「顺子」另有一个不挑花色的候选会给出
+		// （顶法才是对的），这里丢掉，免得同一个牌型多出一条顶法不同的条目。
+		if cand.suit != nil && sh.typ != TypeStraightFlush {
+			continue
+		}
+		out = append(out, Combo{
+			Type: sh.typ, Cards: played, Wilds: cand.subs, Rank: sh.rank,
+			Value: comboValue(sh.typ, sh.rank, level),
+		})
+	}
+	return out, nil
 }
 
 // splitWilds 把手牌分成逢人配和实打实的牌（和 Recognize 里同一套切法）。
