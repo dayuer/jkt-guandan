@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -208,4 +210,150 @@ func compact(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return fmt.Sprintf("%.200s", b)
+}
+
+// 牌型识别（第三条）：一手牌 + 级数 → 全部合法解读。
+type interpretation struct {
+	Kind string `json:"kind"`
+	Rank string `json:"rank"`
+}
+
+type comboVector struct {
+	Name   string           `json:"name"`
+	Level  string           `json:"level"`
+	Cards  []string         `json:"cards"`
+	Combos []interpretation `json:"combos"`
+}
+
+type comboFixture struct {
+	Comment []string      `json:"_comment"`
+	Vectors []comboVector `json:"vectors"`
+}
+
+// cardsOf 按牌例的写法取牌（带 ID，见 ParseKey）。
+func cardsOf(t *testing.T, keys []string) []Card {
+	t.Helper()
+	out := make([]Card, len(keys))
+	for i, k := range keys {
+		c, err := ParseKey(k)
+		if err != nil {
+			t.Fatalf("牌 %q：%v", k, err)
+		}
+		out[i] = c
+	}
+	return out
+}
+
+// interpretations 把解读写成牌例的样子（四大天王没有点数，rank 是空串）。
+func interpretations(combos []Combo) []interpretation {
+	out := make([]interpretation, len(combos))
+	for i, c := range combos {
+		rank := ""
+		if c.Rank != 0 {
+			rank = c.Rank.RankName()
+		}
+		out[i] = interpretation{Kind: c.Type.String(), Rank: rank}
+	}
+	sortInterpretations(out)
+	return out
+}
+
+// 比对前按 kind、rank 排一遍：两端只约定「有哪些解读」，不约定顺序。
+func sortInterpretations(list []interpretation) {
+	sort.SliceStable(list, func(i, j int) bool {
+		if list[i].Kind != list[j].Kind {
+			return list[i].Kind < list[j].Kind
+		}
+		return list[i].Rank < list[j].Rank
+	})
+}
+
+func interpretText(list []interpretation) string {
+	if len(list) == 0 {
+		return "打不出去"
+	}
+	parts := make([]string, len(list))
+	for i, x := range list {
+		parts[i] = x.Kind + " " + x.Rank
+	}
+	return strings.Join(parts, "、")
+}
+
+func TestCombosFixture(t *testing.T) {
+	var f comboFixture
+	loadFixture(t, "combos.json", &f)
+	if len(f.Vectors) == 0 {
+		t.Fatal("没有用例")
+	}
+	for _, v := range f.Vectors {
+		level, err := ParseRank(v.Level)
+		if err != nil {
+			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
+		}
+		combos, err := Recognize(cardsOf(t, v.Cards), level)
+		if err != nil {
+			t.Fatalf("%s：%v", v.Name, err)
+		}
+		got := interpretations(combos)
+		want := append([]interpretation{}, v.Combos...)
+		sortInterpretations(want)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s（%v，打 %s）：\n算出 %s\n牌例 %s", v.Name, v.Cards, v.Level, interpretText(got), interpretText(want))
+		}
+	}
+}
+
+// 比较（第四条二）：两边都写完整的一手牌 + 声明的牌型。
+type compareSide struct {
+	Kind  string   `json:"kind"`
+	Cards []string `json:"cards"`
+}
+
+type compareVector struct {
+	Name  string      `json:"name"`
+	Level string      `json:"level"`
+	A     compareSide `json:"a"`
+	B     compareSide `json:"b"`
+	Beats bool        `json:"beats"`
+}
+
+type compareFixture struct {
+	Comment []string        `json:"_comment"`
+	Vectors []compareVector `json:"vectors"`
+}
+
+// sideCombo 按声明的牌型认这手牌：认不出来就是牌例自己写错了。
+func sideCombo(t *testing.T, v compareVector, which string, side compareSide, level Rank) Combo {
+	t.Helper()
+	kind, err := ParseComboType(side.Kind)
+	if err != nil {
+		t.Fatalf("%s：%s：%v", v.Name, which, err)
+	}
+	c, ok, err := FindCombo(cardsOf(t, side.Cards), level, kind)
+	if err != nil {
+		t.Fatalf("%s：%s：%v", v.Name, which, err)
+	}
+	if !ok {
+		t.Fatalf("%s：%s 这手牌打不出声明的 %s（%v）", v.Name, which, side.Kind, side.Cards)
+	}
+	return c
+}
+
+func TestCompareFixture(t *testing.T) {
+	var f compareFixture
+	loadFixture(t, "compare.json", &f)
+	if len(f.Vectors) == 0 {
+		t.Fatal("没有用例")
+	}
+	for _, v := range f.Vectors {
+		level, err := ParseRank(v.Level)
+		if err != nil {
+			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
+		}
+		a := sideCombo(t, v, "a", v.A, level)
+		b := sideCombo(t, v, "b", v.B, level)
+		if got := a.Beats(b); got != v.Beats {
+			t.Fatalf("%s：a=%s b=%s，算出 %v，牌例是 %v", v.Name, a, b, got, v.Beats)
+		}
+	}
 }

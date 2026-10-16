@@ -145,9 +145,31 @@ func (c Card) Key() string {
 
 func (c Card) String() string { return c.Key() }
 
-// ParseKey 读回 Key 写出来的那张牌。ID 不在里面：ID 由整副牌的顺序定（NewDeck），
-// 调用方拿 ParseKey 的结果去索引即可。
+// ParseKey 读回 Key 写出来的那张牌，带上它在整副牌里的 ID（新牌按 NewDeck 的顺序找）。
+// 「哪一张牌」在 Key 里就定死了（花色 + 牌面 + 副号），所以 ID 是查得出来的。
 func ParseKey(s string) (Card, error) {
+	c, err := parseKeyBody(s)
+	if err != nil {
+		return Card{}, err
+	}
+	id, ok := canonicalIndex[c.Key()]
+	if !ok {
+		return Card{}, fmt.Errorf("认不出牌 %q：整副牌里没有这一张", s)
+	}
+	c.ID = id
+	return c, nil
+}
+
+// canonicalIndex 是 Key → ID 的表，按 NewDeck 的顺序建一次（108 张，不用加锁）。
+var canonicalIndex = func() map[string]int {
+	index := make(map[string]int, 108)
+	for _, c := range NewDeck() {
+		index[c.Key()] = c.ID
+	}
+	return index
+}()
+
+func parseKeyBody(s string) (Card, error) {
 	i := strings.LastIndex(s, "/")
 	if i < 0 {
 		return Card{}, fmt.Errorf("认不出牌 %q：要写成「花色+牌面/副号」，比如 ♠7/0、大王/1", s)
