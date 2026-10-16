@@ -23,8 +23,16 @@
 //
 // **引擎不替人挑牌**：要贡哪张、还哪张由玩家给，这里只校验合不合规（和出牌一样）。
 //
-// 打几、过 A、下一副要不要进贡（Go 那边的 `Next`）**不在这里**：那是计分（scoring）的事，
-// 服务端已经有，这一步不重复实现 —— 「两端共用牌例」也是同一个口径（tribute.json 不含升级）。
+// 打几、过 A、下一副要不要进贡（Go 那边的 `Next`）**不在这个文件里，但在客户端做**：
+// 那是计分的事，住在 `./scoring`（第 6 步从 `app/minigame/src/lib/scoring.ts` 搬过来的），
+// 两端由 `server/internal/scoring/testdata/vectors.json` 那份共用用例锁住。
+//
+// ⚠️ 这里原先写的是「不在客户端做、服务端算好下发」—— **那是错的**：#87 的范围里明写了升级和
+// 过 A 的规则、目标里写了「完整判定……胜负」。把「服务端主持练习局」错读成了「客户端不用算结算」。
+// 「下一副要不要进贡」那层包装还没加（`ScoreState` 里已经够了：`playing_level` / `match_rounds` /
+// `match_over`），是下一步。
+//
+// 「两端共用牌例」这条口径仍然成立：`tribute.json` **不含**升级（升级有自己的共用用例，见上）。
 import { ACE, BIG_JOKER, TEN, TWO, isJoker, type Card, type Rank } from "./card";
 import { SEATS } from "./deal";
 import { Game, nextSeat, partnerSeat, type GameResult } from "./play";

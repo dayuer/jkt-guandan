@@ -59,9 +59,11 @@ eq '小游戏自己的改动只跑小游戏' \
   'local-ci/minigame' \
   "$(printf 'app/minigame/src/main.ts\napp/minigame/package.json\n' | scope_contexts)"
 
-# #87：规则引擎是独立的包、自己的 vitest，不跟 app/h5、app/minigame 共用依赖。
-eq '规则引擎自己的改动只跑 rules' \
-  'local-ci/rules' \
+# #87：小游戏从第 6 步起 import app/rules（计分规则搬过去了），改了引擎小游戏的包也会变 ——
+# 和上面 app/h5/src/* 那条同一个道理。这条断言就是钉住这件事的：漏了它，改规则引擎时
+# 小游戏那边不会跑，打包坏了也不会红。
+eq '规则引擎改动：rules 和 minigame 都要跑' \
+  "$(lines local-ci/rules local-ci/minigame)" \
   "$(printf 'app/rules/src/card.ts\napp/rules/package.json\n' | scope_contexts)"
 
 # 两端共用的牌例（#87 的 TS 版和 #204 的 Go 版读同一批文件）。它在 server/ 和 app/ 之外 ——

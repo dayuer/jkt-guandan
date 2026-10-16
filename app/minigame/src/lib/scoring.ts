@@ -1,69 +1,55 @@
-// 牌桌计分（#165，设计稿 design/guandan-minigame/README.md §7）的纯逻辑：类型、文案、冲突判断、去重。
+// 牌桌计分（#165，设计稿 design/guandan-minigame/README.md §7）里**界面和会话**的那一半：
+// 文案、冲突判断、去重、实时拼装、时间。
+//
+// 规则那一半（类型 + `compute` / `apply` / `previewEdit`）**已经搬到 `app/rules/src/scoring.ts`**
+// （#87 第 6 步）—— 引擎不该住在小游戏里，而且那份代码原来还反向 import 了 `app/h5` 的用户类型。
+// 这里把搬走的名字**原样再导出**，所以下面这些文件一行都不用改：
+// 记分页、实时、冲突判断都是 `import { ... } from "./scoring"`。
 //
 // 规则以服务端 server/internal/scoring 为准，记下来的每一局、两队级数都用服务端返回的。
-// 这里的 compute 只是那份规则的照抄，用在两个服务端还没回话的地方：
-//   - 记一局弹层的预览（S5–S7「红方 9 → J」「过 A」「没过」）；
-//   - 改一局弹层的「连带变化」（S10）和 S12 并排给出的「你记的」。
-// 提交之后一律换成服务端的结果。不涉及金钱（#91）：没有分数、倍率、金额。
+// 这里的 `apply` 只用在两个服务端还没回话的地方：记一局弹层的预览（S5–S7）、改一局弹层的
+// 「连带变化」（S10）。提交之后一律换成服务端的结果。不涉及金钱（#91）：没有分数、倍率、金额。
 
-import type { UserRef } from "../../../h5/src/api";
+import {
+  A,
+  apply,
+  mateOf,
+  newMatch,
+  sameOutcome,
+  type RoundFact,
+  type RoundResult,
+  type ScoreSettings,
+  type ScoreState,
+  type Side,
+  type Team,
+  type TeamState,
+} from "../../../rules/src/scoring";
 
-export type Team = "" | "red" | "black";
-export type Side = "red" | "black";
+// 规则那一半：搬去 app/rules 了，这里照原样转出去（现有 import 点不用动）。
+export { A, apply, compute, factOf, mateOf, other, previewEdit, sameFact, sameOutcome, teamOf } from "../../../rules/src/scoring";
+export type { RoundFact, RoundResult, ScoreSettings, ScoreState, Side, Team, TeamState } from "../../../rules/src/scoring";
 
-export interface ScoreSettings {
-  kind: "classic" | "no-level";
-}
-
-export interface TeamState {
-  level: number;
-  a_fails: number;
-  wins: number;
-  double_ups: number;
-}
-
-export interface ScoreState {
-  match: number;
-  match_rounds: number;
-  playing: Team;
-  playing_level: number;
-  red: TeamState;
-  black: TeamState;
-  match_over: boolean;
-  winner?: Team;
-}
-
-/** 一局的事实：谁头游、他的搭档第几个出完（2 二游 / 3 三游 / 4 末游）。 */
-export interface RoundFact {
-  head_seat: number;
-  partner_place: number;
-}
-
-export interface RoundResult extends RoundFact {
-  round_no: number;
-  match: number;
-  playing: Team;
-  playing_level: number;
-  winner: Side;
-  double_up: boolean;
-  upgrade: number;
-  level_before: number;
-  level_after: number;
-  passed_a: boolean;
-  failed_a?: Team;
-  a_fails?: number;
+/**
+ * 记分里用到的「一个人」：只要 id 和称呼。
+ *
+ * **故意不 import `app/h5/src/api` 的 `UserRef`** —— 引擎和这一块都不该反向依赖 H5
+ * （小游戏上线后 H5 就废弃了）。形状和 `UserRef` 一样，传 `UserRef` 进来照样成立。
+ */
+export interface ScoreUser {
+  id: string;
+  nickname: string;
 }
 
 export interface ScoreRound extends RoundResult {
-  recorded_by: UserRef;
+  recorded_by: ScoreUser;
   recorded_at: number;
-  edited_by?: UserRef;
+  edited_by?: ScoreUser;
   edited_at?: number;
   /**
    * 这一局当时 1–4 号座上的人（#172，下标 0 是 1 号）。中途换过人，换人前的局仍是原来的人。
    * 0009 迁移前记的局、那时空着的座号是 null，退回用现在的座位；更早的服务端没有这个字段。
    */
-  seats?: (UserRef | null)[];
+  seats?: (ScoreUser | null)[];
 }
 
 /** GET /api/games/{code}/score 和三个写接口的响应（docs/server-design.md §5.6）。 */
@@ -73,7 +59,7 @@ export interface Score {
   /** 现在点「开始记分」会成功：在座位上、满座、还没开始、已到开局前 30 分钟（服务端算，客户端不看本机时钟） */
   can_start?: boolean;
   settings?: ScoreSettings;
-  started_by?: UserRef;
+  started_by?: ScoreUser;
   started_at?: number;
   revision?: number;
   rounds?: ScoreRound[];
@@ -90,28 +76,17 @@ export function isStarted(s: Score | null | undefined): s is StartedScore {
 /** score.started / score.round / score.edited 的 data。没有顶层 v，按 revision 去重。 */
 export interface ScoreEventData {
   revision: number;
-  by: UserRef;
+  by: ScoreUser;
   rounds: number;
   settings: ScoreSettings;
   state: ScoreState;
   round?: ScoreRound;
 }
 
-// ── 座位和队 ──
+// ── 队名（界面文案；「红方」这种叫法只在界面上用，所以没跟着规则一起搬）──
 
-export const A = 14;
-
-/** 1、3 号红方，2、4 号黑方。 */
-export function teamOf(seat: number): Side {
-  return seat % 2 === 1 ? "red" : "black";
-}
-/** 对家：1↔3，2↔4。 */
-export function mateOf(seat: number): number {
-  return seat <= 2 ? seat + 2 : seat - 2;
-}
 export const TEAM_NAME: Record<Side, string> = { red: "红方", black: "黑方" };
 export const TEAM_SHORT: Record<Side, string> = { red: "红", black: "黑" };
-export const other = (t: Side): Side => (t === "red" ? "black" : "red");
 
 export function levelName(n: number): string {
   return n === 11 ? "J" : n === 12 ? "Q" : n === 13 ? "K" : n === 14 ? "A" : String(n);
@@ -123,92 +98,12 @@ export function placeName(p: number): string {
  * 「头游＋三游」「头游＋二游 · 双上」。
  * 不升级玩法只关心是不是双上：服务端要求 partner_place 是 2–4，没选时客户端只能占位传 3，
  * 所以不是双上就只写「头游」，不冒充「三游」（#174 第 6 项）。
+ *
+ * 「不比三游和末游的区别」这条规则本身在 `app/rules/src/scoring.ts` 的 `sameOutcome` 里。
  */
 export function howText(partnerPlace: number, kind: ScoreSettings["kind"] = "classic"): string {
   if (kind === "no-level") return partnerPlace === 2 ? "头游＋二游 · 双上" : "头游";
   return `头游＋${placeName(partnerPlace)}${partnerPlace === 2 ? " · 双上" : ""}`;
-}
-
-// ── 规则（照抄 server/internal/scoring.Compute，只做预览）──
-
-function newMatch(match: number): ScoreState {
-  const t = (): TeamState => ({ level: 2, a_fails: 0, wins: 0, double_ups: 0 });
-  return { match, match_rounds: 0, playing: "", playing_level: 2, red: t(), black: t(), match_over: false };
-}
-function clone(st: ScoreState): ScoreState {
-  return { ...st, red: { ...st.red }, black: { ...st.black } };
-}
-
-/** 记一局：返回这一局的结果和记完后的状态。st 本场已结束时，这一局是下一场的第 1 局。 */
-export function apply(s: ScoreSettings, prev: ScoreState, rd: RoundFact): { round: RoundResult; state: ScoreState } {
-  const st = prev.match_over ? newMatch(prev.match + 1) : clone(prev);
-  const winner = teamOf(rd.head_seat);
-  const rr: RoundResult = {
-    ...rd, round_no: 0, match: st.match, playing: st.playing, playing_level: st.playing_level, winner,
-    double_up: rd.partner_place === 2, upgrade: 0, level_before: 0, level_after: 0, passed_a: false,
-  };
-  st.match_rounds++;
-  const w = st[winner];
-  w.wins++;
-  if (rr.double_up) w.double_ups++;
-  if (s.kind === "no-level") return { round: rr, state: st };
-
-  rr.upgrade = 5 - rd.partner_place;
-  rr.level_before = w.level;
-  const playingOwnA = st.playing !== "" && st[st.playing].level === A;
-  if (playingOwnA && winner === st.playing && rd.partner_place !== 4) {
-    rr.passed_a = true;
-    rr.level_after = A;
-    st.match_over = true;
-    st.winner = winner;
-    st.playing = "";
-    st.playing_level = 2;
-    return { round: rr, state: st };
-  }
-  w.level = Math.min(w.level + rr.upgrade, A);
-  if (playingOwnA) {
-    // 打自己的 A 没过：A 必打（2022 竞赛规则第二条 13），没过就一直打 A，级数不动，
-    // 只把次数记上去给界面展示。
-    const p = st[st.playing as Side];
-    p.a_fails++;
-    rr.failed_a = st.playing;
-    rr.a_fails = p.a_fails;
-  }
-  rr.level_after = w.level;
-  st.playing = winner;
-  st.playing_level = w.level;
-  return { round: rr, state: st };
-}
-
-export function compute(s: ScoreSettings, facts: RoundFact[]): { rounds: RoundResult[]; state: ScoreState } {
-  let st = newMatch(1);
-  const rounds: RoundResult[] = [];
-  facts.forEach((f, i) => {
-    const r = apply(s, st, f);
-    r.round.round_no = i + 1;
-    rounds.push(r.round);
-    st = r.state;
-  });
-  return { rounds, state: st };
-}
-
-export const factOf = (r: RoundFact): RoundFact => ({ head_seat: r.head_seat, partner_place: r.partner_place });
-export const sameFact = (a: RoundFact, b: RoundFact) => a.head_seat === b.head_seat && a.partner_place === b.partner_place;
-/**
- * 两个结果在这个玩法下是不是一回事：不升级玩法里三游、末游都只算「不是双上」，没有区别
- * （名次没选时客户端占位传 3，见 howText）。
- */
-export function sameOutcome(kind: ScoreSettings["kind"], a: RoundFact, b: RoundFact): boolean {
-  if (kind !== "no-level") return sameFact(a, b);
-  return a.head_seat === b.head_seat && (a.partner_place === 2) === (b.partner_place === 2);
-}
-
-/** 改第 no 局之后会怎样（S10「连带变化」）。 */
-export function previewEdit(s: ScoreSettings, rounds: RoundFact[], no: number, fact: RoundFact) {
-  const facts = rounds.map(factOf);
-  facts[no - 1] = factOf(fact);
-  const after = compute(s, facts);
-  return { round: after.rounds[no - 1], state: after.state, later: rounds.length - no };
 }
 
 // ── 看的时候：下一局打什么 ──
@@ -306,11 +201,11 @@ export function whoLine(fact: RoundFact, names: Names, kind: ScoreSettings["kind
  * 某一局的称呼：用这一局当时的座位（#172 的 seats），那个座号是 null 或者服务端没给，
  * 退回用现在坐在那里的人（current）。S9 每局记录、S10 改一局、S12 并排、S15 战报都用它。
  */
-export function roundNames(round: { seats?: (UserRef | null)[] } | null | undefined, current: Names): Names {
+export function roundNames(round: { seats?: (ScoreUser | null)[] } | null | undefined, current: Names): Names {
   return (seat) => round?.seats?.[seat - 1]?.nickname || current(seat);
 }
 /** 某一局当时这个座号上是不是我；seats 没有这个座号时退回看现在的座位（isMeNow）。 */
-export function roundIsMe(round: { seats?: (UserRef | null)[] } | null | undefined, seat: number, myId: string | undefined, isMeNow: (seat: number) => boolean): boolean {
+export function roundIsMe(round: { seats?: (ScoreUser | null)[] } | null | undefined, seat: number, myId: string | undefined, isMeNow: (seat: number) => boolean): boolean {
   const who = round?.seats?.[seat - 1];
   return who ? !!myId && who.id === myId : isMeNow(seat);
 }
