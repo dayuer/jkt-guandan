@@ -2,7 +2,7 @@
 // 每条拒绝都有用例盯着 —— 这些是 #213 开 PR 前审计时手试出来的，固化成测试，
 // 以后改读取器不会悄悄放松。
 import { describe, expect, it } from "vitest";
-import { readDeal, readDeck, readPower } from "./fixtures";
+import { readCombos, readCompare, readDeal, readDeck, readPower } from "./fixtures";
 
 /** 去掉一个字段（比赋值 undefined 更接近「根本没写」）。 */
 const without = (obj: object, key: string): Record<string, unknown> => {
@@ -114,6 +114,77 @@ describe("读取器：条款号（rule）", () => {
       expect(() => readDeck({ ...deckOk, rule: [rule] })).toThrow(/的写法不对/);
     });
   }
+});
+
+describe("读取器：combos.json（一手牌 + 全部解读）", () => {
+  const ok = {
+    _comment: ["说明"],
+    vectors: [{ name: "单张", rule: ["第三条 1"], level: "7", cards: ["♠K/0"], combos: [{ kind: "single", rank: "K" }] }],
+  };
+  const at = (patch: Record<string, unknown>) => ({ vectors: [{ ...ok.vectors[0], ...patch }] });
+
+  it("最小的牌例读得过（combos 可以是空数组：什么牌型都不是）", () => {
+    expect(readCombos(ok)).toEqual(ok.vectors);
+    expect(readCombos(at({ combos: [] }))[0].combos).toEqual([]);
+  });
+
+  it("空用例列表要拒绝", () => expect(() => readCombos({ ...ok, vectors: [] })).toThrow(/没有用例/));
+
+  it("缺字段说「缺字段 X（必填…）」", () => {
+    expect(() => readCombos(at({ cards: undefined }))).toThrow(/缺字段 cards（必填/);
+    expect(() => readCombos(at({ combos: [without(ok.vectors[0].combos[0], "rank")] }))).toThrow(/缺字段 rank（必填/);
+  });
+
+  it("未知字段要拒绝：顶层、用例里、解读里", () => {
+    expect(() => readCombos({ ...ok, seats: 4 })).toThrow(/不认识的字段 "seats"/);
+    expect(() => readCombos(at({ winner: 1 }))).toThrow(/不认识的字段 "winner"/);
+    expect(() => readCombos(at({ combos: [{ kind: "single", rank: "K", extra: 1 }] }))).toThrow(/不认识的字段 "extra"/);
+  });
+
+  it("类型不对说「应该是……」", () => {
+    expect(() => readCombos(at({ cards: "♠K/0" }))).toThrow(/cards：应该是数组/);
+    expect(() => readCombos(at({ combos: ["single"] }))).toThrow(/combos\[0\]：应该是对象/);
+    expect(() => readCombos(at({ combos: [{ kind: 1, rank: "K" }] }))).toThrow(/kind：应该是字符串/);
+  });
+});
+
+describe("读取器：compare.json（a 能不能压 b）", () => {
+  const ok = {
+    _comment: ["说明"],
+    vectors: [
+      {
+        name: "K 压 5",
+        rule: ["第四条 二、（一）"],
+        level: "7",
+        a: { kind: "pair", cards: ["♠K/0", "♥K/1"] },
+        b: { kind: "pair", cards: ["♠5/0", "♥5/1"] },
+        result: "a",
+      },
+    ],
+  };
+  const at = (patch: Record<string, unknown>) => ({ vectors: [{ ...ok.vectors[0], ...patch }] });
+
+  it("最小的牌例读得过", () => {
+    expect(readCompare(ok)).toEqual(ok.vectors);
+  });
+
+  it("空用例列表要拒绝", () => expect(() => readCompare({ ...ok, vectors: [] })).toThrow(/没有用例/));
+
+  it("缺字段说「缺字段 X（必填…）」", () => {
+    expect(() => readCompare(at({ result: undefined }))).toThrow(/缺字段 result（必填/);
+    expect(() => readCompare(at({ a: without(ok.vectors[0].a, "cards") }))).toThrow(/缺字段 cards（必填/);
+  });
+
+  it("未知字段要拒绝：顶层、用例里、比较的边上", () => {
+    expect(() => readCompare({ ...ok, seats: 4 })).toThrow(/不认识的字段 "seats"/);
+    expect(() => readCompare(at({ winner: "a" }))).toThrow(/不认识的字段 "winner"/);
+    expect(() => readCompare(at({ a: { kind: "pair", cards: ["♠K/0"], extra: 1 } }))).toThrow(/不认识的字段 "extra"/);
+  });
+
+  it("类型不对说「应该是……」", () => {
+    expect(() => readCompare(at({ result: 1 }))).toThrow(/result：应该是字符串/);
+    expect(() => readCompare(at({ a: ["♠K/0"] }))).toThrow(/a：应该是对象/);
+  });
 });
 
 // README：两端都必须拒绝未知字段 —— 所以加字段是破坏性改动，要先改 README、再两端一起改。

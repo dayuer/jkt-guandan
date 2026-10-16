@@ -207,3 +207,95 @@ export function readDeal(raw: Json): DealVector[] {
     };
   });
 }
+
+/** 一种解读：牌型名 + 当这个牌型打时的牌面。 */
+export interface ComboSpec {
+  kind: string;
+  rank: string;
+}
+
+export interface CombosVector {
+  name: string;
+  rule: string[];
+  /** 级数，同 power.json。 */
+  level: string;
+  /** 这一手牌（顺序无所谓）。 */
+  cards: string[];
+  /** **全部**合法解读，**排好序**（先按 kind 在 README 那张表里从上到下，再按 rank 从小到大）。空数组表示什么牌型都不是。 */
+  combos: ComboSpec[];
+}
+
+function readComboSpec(value: Json, what: string): ComboSpec {
+  const spec = asObject(value, what);
+  rejectUnknownKeys(spec, ["kind", "rank"], what);
+  return {
+    kind: asString(required(spec, "kind", what), `${what}.kind`),
+    rank: asString(required(spec, "rank", what), `${what}.rank`),
+  };
+}
+
+export function readCombos(raw: Json): CombosVector[] {
+  const what = "combos.json";
+  const obj = asObject(raw, what);
+  rejectUnknownKeys(obj, ["_comment", "vectors"], what);
+  checkComment(obj, what);
+  return requiredVectors(obj, what).map((item, i) => {
+    const at = `${what}.vectors[${i}]`;
+    const vector = asObject(item, at);
+    rejectUnknownKeys(vector, ["name", "rule", "level", "cards", "combos"], at);
+    return {
+      name: asString(required(vector, "name", at), `${at}.name`),
+      rule: requiredRule(vector, at),
+      level: asString(required(vector, "level", at), `${at}.level`),
+      cards: asStringList(required(vector, "cards", at), `${at}.cards`),
+      combos: asArray(required(vector, "combos", at), `${at}.combos`).map((spec, j) =>
+        readComboSpec(spec, `${at}.combos[${j}]`),
+      ),
+    };
+  });
+}
+
+/** 比较的一边：声明的牌型 + 完整的一手牌。 */
+export interface CompareSide {
+  kind: string;
+  cards: string[];
+}
+
+export interface CompareVector {
+  name: string;
+  rule: string[];
+  level: string;
+  a: CompareSide;
+  b: CompareSide;
+  /** `a` / `b` / `equal` / `incomparable`。两个方向都会断言。 */
+  result: string;
+}
+
+function readCompareSide(value: Json, what: string): CompareSide {
+  const side = asObject(value, what);
+  rejectUnknownKeys(side, ["kind", "cards"], what);
+  return {
+    kind: asString(required(side, "kind", what), `${what}.kind`),
+    cards: asStringList(required(side, "cards", what), `${what}.cards`),
+  };
+}
+
+export function readCompare(raw: Json): CompareVector[] {
+  const what = "compare.json";
+  const obj = asObject(raw, what);
+  rejectUnknownKeys(obj, ["_comment", "vectors"], what);
+  checkComment(obj, what);
+  return requiredVectors(obj, what).map((item, i) => {
+    const at = `${what}.vectors[${i}]`;
+    const vector = asObject(item, at);
+    rejectUnknownKeys(vector, ["name", "rule", "level", "a", "b", "result"], at);
+    return {
+      name: asString(required(vector, "name", at), `${at}.name`),
+      rule: requiredRule(vector, at),
+      level: asString(required(vector, "level", at), `${at}.level`),
+      a: readCompareSide(required(vector, "a", at), `${at}.a`),
+      b: readCompareSide(required(vector, "b", at), `${at}.b`),
+      result: asString(required(vector, "result", at), `${at}.result`),
+    };
+  });
+}
