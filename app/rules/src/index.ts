@@ -17,3 +17,4 @@ export * from "./combo";
 export * from "./moves";
 export * from "./play";
 export * from "./tribute";
+export * from "./scoring";

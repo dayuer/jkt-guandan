@@ -61,11 +61,12 @@ _path_to_context() {
       echo 'local-ci/test'; echo 'local-ci/e2e' ;;
     app/minigame/*)
       echo 'local-ci/minigame' ;;
-    # 规则引擎（#87）自己一个包、自己的 vitest，不跟 app/h5、app/minigame 共用依赖。
-    # ⚠️ 小游戏一旦 `import "../../rules/src"`（第 2 步起会用到），这里要一起加上
-    # `local-ci/minigame` —— 道理同下面 `app/h5/src/*` 那条：改了规则引擎，小游戏的包也会变。
+    # 规则引擎（#87）自己的包、自己的 vitest。**小游戏从第 6 步起 import 它了**
+    # （`app/minigame/src/lib/scoring.ts` → `app/rules/src/scoring.ts`，计分规则搬进引擎），
+    # 所以这里也要跑 `local-ci/minigame` —— 道理同 `app/h5/src/*` 那条：改了规则引擎，
+    # 小游戏打出来的包也会变（`local-ci/minigame` 里就带 `npm run build`）。
     app/rules/*)
-      echo 'local-ci/rules' ;;
+      echo 'local-ci/rules'; echo 'local-ci/minigame' ;;
     # 两端共用的牌例（#87 的 TS 版和 #204 的 Go 版读同一批文件）。它不在 server/ 也不在
     # app/ 下 —— 不单独列出来的话，只改牌例的 PR 一条检查都不跑（静默漏检）。
     testdata/rules/*)

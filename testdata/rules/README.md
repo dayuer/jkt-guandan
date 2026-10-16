@@ -261,8 +261,10 @@ TS 版（`app/rules`，#87）读同一批文件，任何一边改规则都要先
 
 - **抗贡的用例 `steps` 是空数组**：抗贡在开局就判定了，本来就没有动作可做，`expect` 里写
   `kind: "resisted"` + `leader`（上游）就够。硬塞一个假动作反而更容易看错。
-- **升级 / 过 A / 下一副要不要进贡不进这份牌例**：那是计分（`scoring`）的事，服务端已经有自己的
-  测试，在这里再钉一遍只会多一份要同步的期望值。
+- **升级 / 过 A / 下一副要不要进贡不进这份牌例**：那是计分（`scoring`）的事 —— 它在客户端也做
+  （`app/rules/src/scoring.ts`），只是**有它自己的一份共用用例**
+  （`server/internal/scoring/testdata/vectors.json`，Go 和小游戏都读）。在这里再钉一遍只会多一份
+  要同步的期望值。
 
 ## 牌型的名字（`combos.json` 的 `kind`、`compare.json` 的 `a.kind`／`b.kind`）
 

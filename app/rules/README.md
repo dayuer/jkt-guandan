@@ -37,11 +37,14 @@
 | `src/moves.ts` | —（**没有移植**） | 上游 `packages/core/src/enumerator.ts` 是另一套枚举（先枚举连张窗口再填牌），这里的槽位式枚举和去重键是按服务端的 `server/internal/rules/{moves,moves_gen}.go` 写的 —— 两端要逐条比对，生成方式必须一样 |
 | `src/play.ts` | —（**没有移植**） | 上游没有出牌状态机；按服务端的 `server/internal/rules/play.go` 写（第八条、第九条），两端共用 `testdata/rules/play.json` |
 | `src/tribute.ts` | —（**没有移植**） | 上游没有进贡；按服务端的 `server/internal/rules/tribute.go` 写（第十条），两端共用 `testdata/rules/tribute.json` |
-| — | `packages/core/src/engine/`、`rules.ts`、`rng.ts` | **没有移植**：出牌、进贡按服务端写（上面两行），随机源用 `src/testing/random.ts` 自己的 mulberry32。上游那几处是它自己的引擎外壳，规则口径和竞赛规则对不上（见 `combo.ts` 那行） |
+| `src/scoring.ts` | —（**没有移植**，是**从本仓库搬过来的**） | 升级 / 过 A / 本场结束。原来住在 `app/minigame/src/lib/scoring.ts`（和记分弹层的界面/会话混在一起），第 6 步把规则那一半搬到这里；口径按服务端的 `server/internal/scoring`，两端由**共用用例** `server/internal/scoring/testdata/vectors.json` 锁住 |
+| — | `packages/core/src/engine/`、`rules.ts`、`rng.ts` | **没有移植**：出牌、进贡、计分按服务端和本仓库写（上面三行），随机源用 `src/testing/random.ts` 自己的 mulberry32。上游那几处是它自己的引擎外壳，规则口径和竞赛规则对不上（见 `combo.ts` 那行） |
 
 **被小游戏打包时要带上许可**：`app/minigame/build.mjs` 现在是 `minify: true` 加
-`legalComments: "none"`，MIT 声明会被去掉。现在小游戏还没 import 本包（第 4 步接界面时才用得上）；
-到那时要么把 `legalComments` 改成 `"eof"`，要么在被移植文件的头部加 `/*! ... */`，做法写进那一步的 PR。
+`legalComments: "none"`，MIT 声明会被去掉。小游戏**从第 6 步起已经 import 本包了**
+（`src/scoring.ts` —— 那是自家代码，没有许可问题）；但等它 import 到**移植自上游**的
+`card` / `power` / `deal` / `combo` / `moves` 时，MIT 声明就会被打包器去掉。到那时要么把
+`legalComments` 改成 `"eof"`，要么在被移植文件的头部加 `/*! ... */`，做法写进那一步的 PR。
 
 ## 移植清单（从服务端搬东西时先看这个）
 
@@ -113,14 +116,20 @@ import { deal, power } from "../../rules/src/index";
 | 3. 逢人配（枚举全部顶法） | 已合入（#237） |
 | 4. 领出 / 跟牌的合法出法生成 | 已合入（#240） |
 | 5. 出牌状态机（过牌、接风、出完顺序） | 已合入（#247） |
-| 6. 进贡、还贡、抗贡 | 本 PR |
-| 7. 随机对局性质测试 | |
+| 6. 结算、升级、过 A 配置 | 本 PR（规则从 minigame 搬进 `src/scoring.ts`） |
+| 7. 进贡、还贡、抗贡 | 已合入（#252） |
+| 8. 随机对局性质测试 | |
 
 第 2、3 步和服务端的 #216、#217 对齐（同一批牌例、同一套 `rule` 条款号写法）。
 
-**编号按 issue（#87 / #204）的口径统一了**：以前这张表把「结算、升级、过 A 配置」算第 6 步、
-进贡算第 7 步，和 `testdata/rules/README.md` 里说的「第 6 步的牌例」对不上。
+**这两处说明是更正过的，写清楚免得再绕一遍：**
 
-**结算 / 升级 / 过 A 不在客户端做**，所以这里没有那一步：游数和升级由服务端算好下发，客户端只
-显示。#204 把它折进了第 6 步（`Next` 复用 `scoring`），`tribute.json` 也不含它（见
-`testdata/rules/README.md` 的 `tribute.json` 那节）。
+1. **这张表的编号按 #87 正文那份清单**（调研评论第三节）：6 是结算、7 是进贡、8 是随机对局。
+   **服务端 #204 的编号不一样** —— 它那边 6 就是进贡（把结算折进了第 6 步的 `Next`、复用 `scoring`）。
+   两张表编号不同，所以「第 6 步」在两边指的不是同一件事，说的时候要带上是哪个 issue。
+   （之前有一版把这行改成「6 = 进贡」、说那样才和 issue 一致 —— **说反了**，这里改回来。）
+2. **结算 / 升级 / 过 A 是在客户端做的**，就是第 6 步。这里原先写过「不在客户端做，服务端算好
+   下发」—— **那句是错的**：#87 的范围里明写了升级和过 A 的规则、目标里写了「完整判定……胜负」。
+   把「服务端主持练习局」（#87 评论第 3 条）错读成了「客户端不用算结算」。规则现在住在
+   `src/scoring.ts`，两端由 `server/internal/scoring/testdata/vectors.json` 那份共用用例锁住。
+   （同一句错话在 `src/tribute.ts` 的注释里也有一份，一并改了。）
