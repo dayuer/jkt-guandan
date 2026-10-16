@@ -70,6 +70,15 @@ eq '共用牌例改动：两端都要跑' \
   "$(lines local-ci/test local-ci/rules)" \
   "$(printf 'testdata/rules/deck.json\n' | scope_contexts)"
 
+# Go 端牌例读取器里的条款号正则被 app/rules 的 rule-sync.test.ts 逐字比对（#87 配套）：
+# 只改它也要跑 rules；原来服务端那四项照旧（它本身是 Go 测试）。
+eq 'Go 端牌例读取器改动：服务端四项 + rules' \
+  "$(lines local-ci/test local-ci/rules local-ci/vuln local-ci/docker local-ci/e2e)" \
+  "$(printf 'server/internal/rules/fixtures_test.go\n' | scope_contexts)"
+eq 'server/internal/rules 下别的文件不额外跑 rules（只有正则所在的那个文件）' \
+  "$(lines local-ci/test local-ci/vuln local-ci/docker local-ci/e2e)" \
+  "$(printf 'server/internal/rules/combo.go\n' | scope_contexts)"
+
 eq 'nginx 模板只跑 nginx 检查' \
   'local-ci/nginx' \
   "$(printf 'deploy/nginx/guandan.synon.ai.conf\n' | scope_contexts)"
@@ -135,6 +144,11 @@ for c in $CONTEXT_ORDER; do
   [ -n "$(context_tools "$c")" ] || missing_tools="$missing_tools $c"
 done
 eq 'CONTEXT_ORDER 里每个 context 都声明了 context_tools' '' "$missing_tools"
+# make e2e 靠 scripts/e2e-port.sh 探端口（#228），那是 python3。
+case " $(context_tools local-ci/e2e) " in
+  *' python3 '*) ok 'e2e 的工具里有 python3（e2e-port.sh 要用）' ;;
+  *) bad 'e2e 的工具里有 python3（e2e-port.sh 要用）' '含 python3' "$(context_tools local-ci/e2e)" ;;
+esac
 
 eq 'test 就是 make test' 'make test  # go vet + 前端构建 + go test -race + 前端测试' "$(context_command local-ci/test)"
 eq 'minigame 与原 ci.yml 一致' \

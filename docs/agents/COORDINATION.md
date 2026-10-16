@@ -116,7 +116,7 @@ scripts/pre-merge-check.sh        # coord 合并前：整个队列合起来跑
   | `local-ci/vuln` | `server/`、`go.mod` | `make vuln`（govulncheck） |
   | `local-ci/h5-audit` | `app/h5/package*.json` | `npm audit --omit=dev`（查官方源的漏洞库） |
   | `local-ci/minigame` | `app/minigame/`、`app/h5/src/`、`.nvmrc` | 小游戏 `npm ci`、typecheck、test、build |
-  | `local-ci/rules` | `app/rules/`、`testdata/rules/` | 规则引擎（#87）的 `npm ci`、typecheck、vitest |
+  | `local-ci/rules` | `app/rules/`、`testdata/rules/`、`server/internal/rules/fixtures_test.go`（条款号正则两端逐字比对） | 规则引擎（#87）的 `npm ci`、typecheck、vitest |
   | `local-ci/nginx` | `deploy/nginx/`、`scripts/check-nginx.sh` | nginx 模板检查 |
   | `local-ci/docker` | `server/`、`go.mod`、`Dockerfile`、`deploy/`、部署脚本 | docker build、容器冒烟、发布回滚测试、恢复演练 |
   | `local-ci/e2e` | `server/`、`app/h5/`、`go.mod`、`Makefile` | `make e2e` |

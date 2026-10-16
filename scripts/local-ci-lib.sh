@@ -46,6 +46,10 @@ _path_to_context() {
     # 规则和对照用例 testdata/vectors.json 小游戏的 vitest 也读（#174），要排在 server/* 前面
     server/internal/scoring/*)
       echo 'local-ci/test'; echo 'local-ci/minigame'; echo 'local-ci/vuln'; echo 'local-ci/docker'; echo 'local-ci/e2e' ;;
+    # Go 端的牌例读取器：里面的条款号正则 `ruleRe` 被 app/rules 的 rule-sync.test.ts 逐字比对（#87 配套），
+    # 只改它也要跑 local-ci/rules，否则 TS 端会悄悄落后。同样要排在 server/* 前面。
+    server/internal/rules/fixtures_test.go)
+      echo 'local-ci/test'; echo 'local-ci/vuln'; echo 'local-ci/docker'; echo 'local-ci/e2e'; echo 'local-ci/rules' ;;
     server/*)
       echo 'local-ci/test'; echo 'local-ci/vuln'; echo 'local-ci/docker'; echo 'local-ci/e2e' ;;
     # ⚠️ 下面三条要排在 `app/h5/*` 前面：case 取**第一个**命中的分支。
@@ -161,7 +165,8 @@ context_tools() {
     local-ci/meta)     echo 'bash' ;;
     local-ci/nginx)    echo 'awk' ;;
     local-ci/docker)   echo 'docker curl python3' ;;
-    local-ci/e2e)      echo 'make go npm npx' ;;
+    # python3：make e2e 用 scripts/e2e-port.sh 探空闲端口（#228）。
+    local-ci/e2e)      echo 'make go npm npx python3' ;;
     *) : ;;
   esac
 }
