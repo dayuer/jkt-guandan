@@ -2,12 +2,12 @@
 GO ?= go
 NPM ?= npm
 
-.PHONY: help web-install web-build build vet go-test race-test vuln web-test test e2e run seed docker deploy-test restore-drill clean
+.PHONY: help web-install web-build build vet go-test race-test vuln web-test shared-check test e2e run seed docker deploy-test restore-drill clean
 
 help:
 	@echo "make build    构建二进制（会先构建前端，再用 embed 打进去）"
 	@echo "make run      开发模式跑起来：GUANDAN_DEV=1，监听 :8080，数据写在 ./.data"
-	@echo "make test     go vet + 后端测试（-race）+ 前端测试"
+	@echo "make test     go vet + 后端测试（-race）+ 前端测试 + 共享层 typecheck"
 	@echo "make e2e      浏览器端到端冒烟（Playwright + 无头 Chromium，先构建二进制）"
 	@echo "make vuln     govulncheck"
 	@echo "make seed     往 ./.data 写入设计稿里的示例数据"
@@ -41,8 +41,15 @@ vuln:
 web-test: web-install
 	cd app/h5 && $(NPM) test
 
+# 两端共用的那层（app/shared）单独 typecheck（#253 P8）：它有自己的 tsconfig，而且
+# **不带 DOM lib** —— 共享层里一旦冒出 window / document / localStorage 这类浏览器 API，
+# 这里当场编译不过，不用靠人记得。默认值（窗口地址、本地存储）都归各端的壳。
+# tsc 装在 app/h5 的 node_modules 里，所以从那儿跑，--no-install 免得悄悄去下载。
+shared-check: web-install
+	cd app/h5 && npx --no-install tsc -p ../shared --noEmit
+
 # 先构建前端再跑后端测试，这样 httpapi 的用例能真正验证内嵌进去的页面。
-test: vet web-build race-test web-test
+test: vet web-build race-test web-test shared-check
 
 # 浏览器端到端冒烟（#72）。第一次跑之前装一次浏览器：cd app/h5 && npx playwright install chromium
 # 端口每次运行单独分配（#228），本机几个会话同时跑也不会撞；要固定端口就自己设 E2E_PORT。

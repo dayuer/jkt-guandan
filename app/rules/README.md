@@ -37,7 +37,7 @@
 | `src/moves.ts` | —（**没有移植**） | 上游 `packages/core/src/enumerator.ts` 是另一套枚举（先枚举连张窗口再填牌），这里的槽位式枚举和去重键是按服务端的 `server/internal/rules/{moves,moves_gen}.go` 写的 —— 两端要逐条比对，生成方式必须一样 |
 | `src/play.ts` | —（**没有移植**） | 上游没有出牌状态机；按服务端的 `server/internal/rules/play.go` 写（第八条、第九条），两端共用 `testdata/rules/play.json` |
 | `src/tribute.ts` | —（**没有移植**） | 上游没有进贡；按服务端的 `server/internal/rules/tribute.go` 写（第十条），两端共用 `testdata/rules/tribute.json` |
-| `src/scoring.ts` | —（**没有移植**，是**从本仓库搬过来的**） | 升级 / 过 A / 本场结束。原来住在 `app/minigame/src/lib/scoring.ts`（和记分弹层的界面/会话混在一起），第 6 步把规则那一半搬到这里；口径按服务端的 `server/internal/scoring`，两端由**共用用例** `server/internal/scoring/testdata/vectors.json` 锁住 |
+| `src/scoring.ts` | —（**没有移植**，是**从本仓库搬过来的**） | 升级 / 过 A / 本场结束。原来住在 `app/minigame/src/lib/scoring.ts`（和记分弹层的界面/会话混在一起），第 6 步把规则那一半搬到这里；口径按服务端的 `server/internal/scoring`，两端由**共用用例** `testdata/scoring/vectors.json` 锁住 |
 | — | `packages/core/src/engine/`、`rules.ts`、`rng.ts` | **没有移植**：出牌、进贡、计分按服务端和本仓库写（上面三行），随机源用 `src/testing/random.ts` 自己的 mulberry32。上游那几处是它自己的引擎外壳，规则口径和竞赛规则对不上（见 `combo.ts` 那行） |
 
 **被小游戏打包时要带上许可**：`app/minigame/build.mjs` 现在是 `minify: true` 加
@@ -138,5 +138,5 @@ import { deal, power } from "../../rules/src/index";
 2. **结算 / 升级 / 过 A 是在客户端做的**，就是第 6 步。这里原先写过「不在客户端做，服务端算好
    下发」—— **那句是错的**：#87 的范围里明写了升级和过 A 的规则、目标里写了「完整判定……胜负」。
    把「服务端主持练习局」（#87 评论第 3 条）错读成了「客户端不用算结算」。规则现在住在
-   `src/scoring.ts`，两端由 `server/internal/scoring/testdata/vectors.json` 那份共用用例锁住。
+   `src/scoring.ts`，两端由 `testdata/scoring/vectors.json` 那份共用用例锁住。
    （同一句错话在 `src/tribute.ts` 的注释里也有一份，一并改了。）

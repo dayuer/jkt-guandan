@@ -263,7 +263,7 @@ TS 版（`app/rules`，#87）读同一批文件，任何一边改规则都要先
   `kind: "resisted"` + `leader`（上游）就够。硬塞一个假动作反而更容易看错。
 - **升级 / 过 A / 下一副要不要进贡不进这份牌例**：那是计分（`scoring`）的事 —— 它在客户端也做
   （`app/rules/src/scoring.ts`），只是**有它自己的一份共用用例**
-  （`server/internal/scoring/testdata/vectors.json`，Go 和小游戏都读）。在这里再钉一遍只会多一份
+  （`testdata/scoring/vectors.json`，Go 和小游戏都读）。在这里再钉一遍只会多一份
   要同步的期望值。
 
 ## 牌型的名字（`combos.json` 的 `kind`、`compare.json` 的 `a.kind`／`b.kind`）

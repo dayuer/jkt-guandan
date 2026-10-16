@@ -25,7 +25,7 @@
 //
 // 打几、过 A、下一副要不要进贡（Go 那边的 `Next`）**不在这个文件里，但在客户端做**：
 // 那是计分的事，住在 `./scoring`（第 6 步从 `app/minigame/src/lib/scoring.ts` 搬过来的），
-// 两端由 `server/internal/scoring/testdata/vectors.json` 那份共用用例锁住。
+// 两端由 `testdata/scoring/vectors.json` 那份共用用例锁住。
 //
 // ⚠️ 这里原先写的是「不在客户端做、服务端算好下发」—— **那是错的**：#87 的范围里明写了升级和
 // 过 A 的规则、目标里写了「完整判定……胜负」。把「服务端主持练习局」错读成了「客户端不用算结算」。

@@ -29,7 +29,7 @@
 #                     与改动无关的红不该挂在别人的 PR 上）
 #   local-ci/minigame 小游戏 typecheck + test + build。小游戏复用 app/h5/src 的纯逻辑，
 #                     所以 app/h5/src 改了也要跑（原 ci.yml 里那条注释说的就是这个）；
-#                     vitest 还读 server/internal/scoring/testdata/vectors.json，规则改了也跑
+#                     vitest 还读仓库根 testdata/scoring/vectors.json，规则改了也跑
 #   local-ci/rules    规则引擎（#87，app/rules）自己的 typecheck + vitest。它有独立的依赖，
 #                     和 app/h5、app/minigame 都不共用；牌例读仓库根 testdata/rules/
 #   local-ci/nginx    nginx 模板检查
@@ -43,7 +43,7 @@ _path_to_context() {
   case "$1" in
     go.mod|go.sum)
       echo 'local-ci/test'; echo 'local-ci/vuln'; echo 'local-ci/docker'; echo 'local-ci/e2e' ;;
-    # 规则和对照用例 testdata/vectors.json 小游戏的 vitest 也读（#174），要排在 server/* 前面
+    # 规则和对照用例 testdata/scoring/vectors.json 小游戏的 vitest 也读（#174），要排在 server/* 前面
     server/internal/scoring/*)
       echo 'local-ci/test'; echo 'local-ci/minigame'; echo 'local-ci/vuln'; echo 'local-ci/docker'; echo 'local-ci/e2e' ;;
     # Go 端的牌例读取器：里面的条款号正则 `ruleRe` 被 app/rules 的 rule-sync.test.ts 逐字比对（#87 配套），
@@ -76,6 +76,12 @@ _path_to_context() {
     # app/ 下 —— 不单独列出来的话，只改牌例的 PR 一条检查都不跑（静默漏检）。
     testdata/rules/*)
       echo 'local-ci/test'; echo 'local-ci/rules' ;;
+    # 计分规则的对照用例（#174）：Go 的 scoring/vectors_test.go 和小游戏的
+    # scoring.vectors.test.ts 读同一份。和上面那批牌例一样，它在 server/ 和 app/ 之外 ——
+    # 不单独列出来的话，只改用例的 PR 一条检查都不跑（静默漏检）。
+    # （服务端的规则代码改了呢？那条走 server/internal/scoring/*。）
+    testdata/scoring/*)
+      echo 'local-ci/test'; echo 'local-ci/minigame' ;;
     .nvmrc)
       echo 'local-ci/test'; echo 'local-ci/minigame'; echo 'local-ci/e2e' ;;
     Makefile)

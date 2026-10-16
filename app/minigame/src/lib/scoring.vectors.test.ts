@@ -1,7 +1,7 @@
 // 两端规则一致性（#174）：和 server/internal/scoring/vectors_test.go 读同一份 vectors.json，
 // 本地预览用的 compute / previewEdit 必须和服务端 Compute 逐字段一样。改了规则这里会红。
 import { describe, expect, it } from "vitest";
-import data from "../../../../server/internal/scoring/testdata/vectors.json";
+import data from "../../../../testdata/scoring/vectors.json";
 import { compute, previewEdit, type RoundFact, type ScoreSettings } from "./scoring";
 
 interface Vector {

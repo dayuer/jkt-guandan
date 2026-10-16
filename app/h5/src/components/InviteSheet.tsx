@@ -1,5 +1,5 @@
 import type { Friend } from "../api";
-import { inviteText } from "../../../shared/src/invite";
+import { inviteText } from "../invite";
 import { copyText, whatsappURL } from "../share";
 
 interface Props {
