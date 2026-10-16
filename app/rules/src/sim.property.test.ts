@@ -29,13 +29,14 @@
 //   必然结束 —— 每一副都在有限步内分出上游，不会卡住；
 //   可重放   —— 引擎不读时间、不读随机数：同一个种子跑两遍，逐副结果一样。
 import { describe, expect, it } from "vitest";
-import { ACE, TEN, TWO, cardKey, isJoker, newDeck, type Card, type Rank } from "./card";
-import { SEATS, deal, permShuffler } from "./deal";
+import { ACE, BIG_JOKER, TEN, TWO, cardKey, isJoker, newDeck, type Card, type Rank } from "./card";
+import { HANDS_EACH, SEATS, deal, permShuffler } from "./deal";
 import { moves } from "./moves";
 import { Game, RuleError, nextSeat, partnerSeat, type GameResult } from "./play";
 import { cardPower, isWild } from "./power";
-import { nextHand, teamOf, type RoundFact } from "./scoring";
+import { nextHand, type RoundFact, type Side } from "./scoring";
 import { Tribute } from "./tribute";
+import { handOf } from "./testing/cards";
 import { seededRandom, type Rng } from "./testing/random";
 
 /**
@@ -199,7 +200,7 @@ function rejectWith(g: Game, reason: string, act: () => void): void {
  * 得挑一家手里真有牌的，否则先被 `cards-not-in-hand` 拦下来，就试不出想试的那条了
  * （jkt 在 #251 踩过这个坑）。
  */
-function probeIllegal(g: Game, seat: number, step: number): void {
+function probeIllegal(g: Game, seat: number, step: number, level: Rank): void {
   if (step % 7 !== 1) return;
 
   const other = nextSeat(seat);
@@ -216,10 +217,22 @@ function probeIllegal(g: Game, seat: number, step: number): void {
   if (notMine) {
     rejectWith(g, "cards-not-in-hand", () => g.play(seat, [notMine], "single", notMine.rank));
   }
+
+  // 压不住上一手：挑一张**单张**，它一定压不住这一手 ——
+  // 上一手不是单张时，单张和它「没得比」（incomparable）；是单张就挑牌力更小的那张。
+  const last = g.lastPlay();
+  if (last) {
+    const isSingle = last.combo.type === "single";
+    const low = isSingle ? cardPower(last.combo.cards[0]!, level) : -1;
+    const victim = g.hand(seat).find((c) => cardPower(c, level) < low || !isSingle);
+    if (victim) {
+      rejectWith(g, "does-not-beat", () => g.play(seat, [victim], "single", victim.rank));
+    }
+  }
 }
 
 /** 打完已经摆好的这一副：从 `g` 现在的局面一路走到分出上游。 */
-function playDeal(rng: Rng, level: Rank, g: Game, m: SimModel): { steps: number; borrowed: number } {
+function playDeal(rng: Rng, level: Rank, g: Game, m: SimModel): { steps: number; borrowed: number; ledger: string } {
   let steps = 0;
   while (!g.over()) {
     if (++steps > MAX_STEPS_PER_DEAL) {
@@ -228,7 +241,7 @@ function playDeal(rng: Rng, level: Rank, g: Game, m: SimModel): { steps: number;
     const seat = g.turn();
     expect(seat, "模型和引擎轮到的不是同一个人").toBe(m.turn);
 
-    probeIllegal(g, seat, steps);
+    probeIllegal(g, seat, steps, level);
 
     const lead = g.lastPlay();
     const cands = moves(g.hand(seat), level, lead?.combo);
@@ -257,7 +270,29 @@ function playDeal(rng: Rng, level: Rank, g: Game, m: SimModel): { steps: number;
   const result = g.result();
   expect(result, "打完了就该有结果").toBeDefined();
   expect(result!.partnerPlace, "搭档名次该是 2–4").toBeGreaterThanOrEqual(2);
-  return { steps, borrowed: m.borrowed };
+  return { steps, borrowed: m.borrowed, ledger: dealLedger(g, m) };
+}
+
+/** 这一副的账：每步谁出了什么（或过牌），加上**测试自己推的**出完顺序。 */
+function dealLedger(g: Game, m: SimModel): string {
+  const moves = g.moves().map((mv) =>
+    mv.pass ? `${mv.seat}:过` : `${mv.seat}:${(mv.combo?.cards ?? []).map(cardKey).join("+")}`,
+  );
+  return `${moves.join(" ")} | 出完=${m.done.join(",")}`;
+}
+
+/**
+ * 这一副最终的出完顺序：模型里出完的先后 + 没出完的按座位号排在后面（第二条 10、
+ * `play.go` 的 `Result` 同一个口径）。**由模型推**，不读引擎的 `result()`。
+ */
+function finalOrder(m: SimModel): number[] {
+  const rest = [1, 2, 3, 4].filter((s) => !m.done.includes(s)).sort((a, b) => a - b);
+  return [...m.done, ...rest];
+}
+
+/** 把「出完的顺序」还原成上一副的结果（三个字段都由顺序推得）。 */
+function prevFromOrder(order: readonly number[]): GameResult {
+  return { order: [...order], headSeat: order[0]!, partnerPlace: refPartnerPlace(order) };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -265,51 +300,182 @@ function playDeal(rng: Rng, level: Rank, g: Game, m: SimModel): { steps: number;
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
+ * 1、3 一方，2、4 一方 —— **本地另写一份**，不用 `scoring` 的 `teamOf`。
+ *
+ * 不共用是有意的：`teamOf` 被改坏时，如果这里也调它，两边一起错、谁都看不出来
+ * （#256 复审：那条突变原来整个 rules 套件都是绿的，只有小游戏的测试红）。
+ */
+const refTeam = (seat: number): Side => (seat % 2 === 1 ? "red" : "black");
+
+/**
+ * 顺时针的下一家：座位 1→2→3→4 是**逆时针**，所以顺时针是 s−1（1 号座的是 4 号座）。
+ * 同样本地另写，不用 `rules` 的 `ClockwiseSeat`。
+ */
+const refClockwise = (seat: number): number => ((seat + SEATS - 2) % SEATS) + 1;
+
+/** 上一副出完的顺序里，上游的搭档第几个出完（2 二游 / 3 三游 / 4 末游）。 */
+function refPartnerPlace(order: readonly number[]): number {
+  return order.indexOf(partnerSeat(order[0]!)) + 1;
+}
+
+/** 按第十条独立推出来的一份贡牌过程。 */
+interface RefTribute {
+  kind: "single" | "double" | "resisted";
+  /** 要进贡的人，按座位号从小到大。 */
+  givers: number[];
+  /** 进贡的人 → 贡给谁（抗贡时是空的）。 */
+  to: Map<number, number>;
+  /** 首圈领出的人。 */
+  leader: number;
+  /** 每个人该贡哪一张（驱动器照着贡；引擎必须接受）。 */
+  give: Map<number, Card>;
+}
+
+/**
+ * 按**第十条**独立推这一副的进贡：谁要贡、抗不抗贡、谁贡给谁、首圈谁领出。
+ *
+ * **只用两样输入**：上一副出完的顺序（测试自己的 `SimModel` 推的）、这一副发到的四手牌。
+ * **不看引擎的任何输出** —— 不看 `givers()` / `kind()` / `receiver()`，也不看 `g.turn()`。
+ * 这就是 #251 复审定下的要求：期望值要能独立推出来，否则引擎那边改坏了也没人知道。
+ *
+ * 依据：
+ *   第十条 二：单贡 —— 从第二副牌起，下游把手里最大的一张（红心级牌除外）贡给上游；
+ *               首圈由下游领出。
+ *   第十条 三：双贡 —— 双下时双下方两人都贡，上游拿牌点大的那张、搭档拿小的；
+ *               两张一样大时按顺时针方向进贡；还牌后由贡给上游的那位领出。
+ *   第十条 四：抗贡 —— 要进贡的一方（双下时两人合计）抓到两个大王，就不贡不还，上游领出。
+ */
+function refTribute(hands: readonly Card[][], level: Rank, order: readonly number[]): RefTribute {
+  const head = order[0]!;
+  const partner = partnerSeat(head);
+  const double = refPartnerPlace(order) === 2;
+
+  // 谁要贡：双下是对方两家；单贡是下游（出完顺序里的最后一个）。
+  const givers = double
+    ? [1, 2, 3, 4].filter((s) => s !== head && s !== partner)
+    : [order[SEATS - 1]!];
+  givers.sort((a, b) => a - b);
+
+  const give = new Map<number, Card>();
+  for (const g of givers) give.set(g, biggestNonWild(hands[g - 1]!, level));
+
+  // 抗贡：要贡的一方**合计**两个大王（两副牌一共就两个大王，所以就是「都在这边」）。
+  let bigJokers = 0;
+  for (const g of givers) {
+    for (const c of hands[g - 1]!) if (c.rank === BIG_JOKER) bigJokers++;
+  }
+  if (bigJokers >= 2) {
+    return { kind: "resisted", givers, to: new Map(), leader: head, give };
+  }
+
+  const to = new Map<number, number>();
+  let leader = head;
+  if (!double) {
+    to.set(givers[0]!, head); // 单贡贡给上游
+    leader = givers[0]!; // 首圈由下游领出
+  } else {
+    const [a, b] = givers as [number, number];
+    const pa = cardPower(give.get(a)!, level);
+    const pb = cardPower(give.get(b)!, level);
+    if (pa > pb) {
+      to.set(a, head); // 大的给上游
+      to.set(b, partner);
+    } else if (pa < pb) {
+      to.set(b, head);
+      to.set(a, partner);
+    } else {
+      to.set(a, refClockwise(a)); // 一样大：按顺时针方向进贡
+      to.set(b, refClockwise(b));
+    }
+    for (const [g, r] of to) if (r === head) leader = g; // 贡给上游的那位领出
+  }
+  return { kind: double ? "double" : "single", givers, to, leader, give };
+}
+
+/**
  * 第二份「下一副打几」：只按条文推，**不看 `scoring` 的实现**。
  * 那边是一个 `ScoreState` 一路 apply；这里把两队的级数、本场状态分开记 —— 摆法和算法都另写一套，
  * 只共享同一份规则条文。
  */
 interface RefMatch {
-  levels: { red: number; black: number };
-  playing: "" | "red" | "black";
-  playingLevel: number;
+  match: number;
+  /** 本场打了几局（`state.match_rounds`）。 */
   rounds: number;
+  playing: "" | Side;
+  playingLevel: number;
+  levels: Record<Side, number>;
+  aFails: Record<Side, number>;
+  wins: Record<Side, number>;
+  doubleUps: Record<Side, number>;
   over: boolean;
+  winner?: Side;
 }
 
 const newRefMatch = (): RefMatch => ({
-  levels: { red: 2, black: 2 },
+  match: 1,
+  rounds: 0,
   playing: "",
   playingLevel: 2,
-  rounds: 0,
+  levels: { red: 2, black: 2 },
+  aFails: { red: 0, black: 0 },
+  wins: { red: 0, black: 0 },
+  doubleUps: { red: 0, black: 0 },
   over: false,
 });
+
+/** 一局的事实换成**接口那套字段**（`ScoreState`），整份和引擎比。 */
+function refState(ref: RefMatch) {
+  const team = (t: Side) => ({
+    level: ref.levels[t],
+    a_fails: ref.aFails[t],
+    wins: ref.wins[t],
+    double_ups: ref.doubleUps[t],
+  });
+  const st: Record<string, unknown> = {
+    match: ref.match,
+    match_rounds: ref.rounds,
+    playing: ref.playing,
+    playing_level: ref.playingLevel,
+    red: team("red"),
+    black: team("black"),
+    match_over: ref.over,
+  };
+  if (ref.over) st.winner = ref.winner;
+  return st;
+}
 
 /** 记一局，推到下一副。 */
 function refNext(ref: RefMatch, headSeat: number, partnerPlace: number): void {
   if (ref.over) {
     // 本场已结束：这一局是下一场的第 1 局，两队都从 2 开始（第十二条）。
-    ref.levels = { red: 2, black: 2 };
+    ref.match++;
+    ref.rounds = 0;
     ref.playing = "";
     ref.playingLevel = 2;
-    ref.rounds = 0;
+    ref.levels = { red: 2, black: 2 };
+    ref.aFails = { red: 0, black: 0 };
+    ref.wins = { red: 0, black: 0 };
+    ref.doubleUps = { red: 0, black: 0 };
     ref.over = false;
+    delete ref.winner;
   }
-  const winner = teamOf(headSeat);
+  const winner = refTeam(headSeat);
   ref.rounds++;
-  const playingOwnA = ref.playing !== "" && ref.levels[ref.playing] === ACE;
+  ref.wins[winner]++;
+  if (partnerPlace === 2) ref.doubleUps[winner]++;
 
+  const playingOwnA = ref.playing !== "" && ref.levels[ref.playing] === ACE;
   // 第二条 13：打本队的 A 时头游、搭档不是末游 = 过 A，本场结束（级数不再动）。
   if (playingOwnA && winner === ref.playing && partnerPlace !== 4) {
     ref.over = true;
+    ref.winner = winner;
     ref.playing = "";
     ref.playingLevel = 2;
     return;
   }
   // 第二条 12：只有头游所在的队升级，搭档二游 +3、三游 +2、末游 +1；到 A 封顶（第二条 13）。
   ref.levels[winner] = Math.min(ref.levels[winner] + (5 - partnerPlace), ACE);
-  // 第二条 13「A 级必打」：打本队的 A 没过，下一副还打 A —— 上面那一步加完仍被 min 封在 A 上，
-  // 所以「级数不动」是自然成立的，这里不需要额外做什么。
+  if (playingOwnA) ref.aFails[ref.playing as Side]++; // A 必打：没过记一次，级数不动
   ref.playing = winner;
   ref.playingLevel = ref.levels[winner]; // 第二条 14：下一副打上一局赢的那一队的级
 }
@@ -350,32 +516,20 @@ function returnable(hand: readonly Card[], level: Rank): Card {
   return best;
 }
 
-/**
- * 按规则把一副牌的贡、还走完。
- *
- * 贡的是「手里最大的一张（红心级牌除外）」、还的是「不超过 10 的（读法 A）/ 全都大于 10 时最小的」，
- * 同大任选一张 —— 挑完引擎必须接受，不接受就是驱动器或引擎和规则对不上，直接红。
- * 抗贡由 `Tribute` 自己判，这里什么都不做。
- */
-function driveTribute(tr: Tribute, level: Rank): void {
-  for (const g of tr.givers()) {
-    tr.give(g, biggestNonWild(tributeHands(tr)[g - 1]!, level));
-  }
-  if (tr.done()) return;
-  for (const g of tr.givers()) {
-    const seat = tr.receiver(g)!;
-    tr.returnCard(seat, returnable(tributeHands(tr)[seat - 1]!, level));
-  }
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // F：一场打到底
 // ───────────────────────────────────────────────────────────────────────────
 
 interface MatchLog {
-  /** 是「过 A 结束」还是撞上了副数上限（上限只是防死循环，撞上说明哪里不对）。 */
+  /** 是「过 A 结束」还是撞上了副数上限（上限只是防死循环，撞上说明那里不对）。 */
   over: boolean;
   deals: number;
+  /**
+   * **整串账**：每一副的动作（每步谁出了什么、谁过了）+ 测试自己推出来的出完顺序。
+   * 「同一个种子跑两遍一样」那条比的就是它（对齐 Go 的整串账口径）。
+   */
+  ledger: string[];
   steps: number;
   tributeDeals: number;
   resistedDeals: number;
@@ -388,12 +542,13 @@ interface MatchLog {
  * 一路打到过 A 或者打满上限。
  */
 function playMatch(rng: Rng, maxDeals = MAX_DEALS_PER_MATCH): MatchLog {
-  const log: MatchLog = { over: false, deals: 0, steps: 0, tributeDeals: 0, resistedDeals: 0, borrowed: 0, levels: [] };
+  const log: MatchLog = { over: false, deals: 0, steps: 0, tributeDeals: 0, resistedDeals: 0, borrowed: 0, levels: [], ledger: [] };
   const ref = newRefMatch();
   const facts: RoundFact[] = [];
   let level: Rank = TWO;
-  let prev: GameResult | null = null;
-  // 要不要进贡：第一副不进贡（第十条 二「从第二副牌开始」），之后由引擎说 —— 说错了下面那条会红。
+  /** 上一副出完的顺序 —— **测试自己推的**（`finalOrder`），不是引擎的 `result()`。 */
+  let prevOrder: number[] | null = null;
+  /** 第一副不进贡（第十条 二「从第二副牌开始」）。 */
   let needTribute = false;
 
   while (log.deals < maxDeals) {
@@ -404,42 +559,88 @@ function playMatch(rng: Rng, maxDeals = MAX_DEALS_PER_MATCH): MatchLog {
       // 不进贡的这一副：谁领出由调用方给。
       g = new Game(level, hands, 1);
     } else {
-      const tr = new Tribute(level, hands, prev!);
+      // 按**第十条独立推**这一副的进贡，再和引擎对 —— 不看 givers()/kind()/receiver()/g.turn()。
+      // 以前这里直接拿引擎那几样往下走，所以「双贡分配反」「抗贡只看一人」「单贡首圈领出错」
+      // 那一批突变全都能活着（#256 复审）。
+      const rt = refTribute(hands, level, prevOrder!);
+      const tr = new Tribute(level, hands, prevFromOrder(prevOrder!));
       log.tributeDeals++;
-      if (tr.kind() === "resisted") {
+      expect(tr.kind(), `第 ${log.deals + 1} 副：单贡还是双贡、抗不抗贡`).toBe(rt.kind);
+      expect(tr.givers(), `第 ${log.deals + 1} 副：谁要进贡`).toStrictEqual(rt.givers);
+
+      if (rt.kind === "resisted") {
         log.resistedDeals++;
+        expect(tr.done(), "抗贡了就不贡不还，一上来就该算完").toBe(true);
       } else {
-        driveTribute(tr, level);
+        // 贡：用推出来的那张牌，引擎必须收下。
+        for (const gi of rt.givers) tr.give(gi, rt.give.get(gi)!);
+        for (const gi of rt.givers) {
+          expect(tr.receiver(gi), `${gi} 号座贡给谁`).toBe(rt.to.get(gi));
+        }
+        // 还：收贡的人还给贡给自己的人；还完两边各一张，张数不变。
+        for (const gi of rt.givers) {
+          const seat = rt.to.get(gi)!;
+          const back = returnable(tributeHands(tr)[seat - 1]!, level);
+          const before = tributeHands(tr)[seat - 1]!.length;
+          tr.returnCard(seat, back);
+          expect(tributeHands(tr)[seat - 1]!.length, "还了一张出去，收贡的人该少一张").toBe(before - 1);
+          expect(
+            tributeHands(tr)[gi - 1]!.some((c) => c.id === back.id),
+            "还出去的牌该在进贡的人手里",
+          ).toBe(true);
+          expect(
+            tributeHands(tr)[seat - 1]!.some((c) => c.id === rt.give.get(gi)!.id),
+            "贡进来的牌该在收贡的人手里",
+          ).toBe(true);
+        }
+        expect(tr.done(), "贡完还完该算完了").toBe(true);
+        // 贡一张、还一张，四家的张数一张都不该变。
+        for (let s = 1; s <= SEATS; s++) {
+          expect(tributeHands(tr)[s - 1]!.length, `${s} 号座贡完还完该还是 ${HANDS_EACH} 张`).toBe(HANDS_EACH);
+        }
       }
       g = tr.start();
+      expect(g.turn(), "首圈领出的人").toBe(rt.leader);
     }
     log.levels.push(level);
 
     // 模型从**这一副真正开打时的**手牌和领出人起算（进贡还完之后的那一副）。
     const m = newSimModel([g.hand(1), g.hand(2), g.hand(3), g.hand(4)], g.turn());
-    const { steps, borrowed } = playDeal(rng, level, g, m);
+    const { steps, borrowed, ledger } = playDeal(rng, level, g, m);
     log.deals++;
     log.steps += steps;
     log.borrowed += borrowed;
+    log.ledger.push(ledger);
 
-    const res = g.result()!;
-    facts.push({ head_seat: res.headSeat, partner_place: res.partnerPlace });
+    // 出完的顺序**由模型推**，再和引擎的结果对 —— 以前是直接拿 `g.result()` 往下走的，
+    // 那样 `result()` 被改坏也没人知道（两边一起错）。
+    const order = finalOrder(m);
+    const res = g.result();
+    expect(res, "打完了就该有结果").toBeDefined();
+    expect(res!.order, "引擎的出完顺序该等于自己推的").toStrictEqual(order);
+    expect(res!.headSeat, "引擎的上游该等于自己推的").toBe(order[0]);
+    expect(res!.partnerPlace, "引擎的搭档名次该等于自己推的").toBe(refPartnerPlace(order));
+
+    const head = order[0]!;
+    const place = refPartnerPlace(order);
+    facts.push({ head_seat: head, partner_place: place });
 
     // 独立推一遍下一副打几、本场结束没有，和引擎对。
-    refNext(ref, res.headSeat, res.partnerPlace);
+    refNext(ref, head, place);
     const engine = nextHand(facts);
-    expect(engine.level, `第 ${log.deals} 副之后：下一副打几（独立推的是 ${ref.playingLevel}）`).toBe(ref.playingLevel);
-    expect(engine.score.match_over, `第 ${log.deals} 副之后：本场结束没有`).toBe(ref.over);
+    // **整份状态**和独立推的比 —— 只比级数的话，「红黑标签对调」那种错看不出来
+    // （级数会一致地跟着换名字，数字一点没变，#256 复审）。
+    expect(engine.score, `第 ${log.deals} 副之后：整份计分状态（独立推的）`).toStrictEqual(refState(ref));
+    expect(engine.level, `第 ${log.deals} 副之后：下一副打几`).toBe(ref.playingLevel);
 
-    // 「要不要进贡」也独立推一遍：这一场已经打过至少一副（第十条 二），而且本场还没结束
-    // —— 本场刚结束时下一副是**新一场的第一副**，不进贡。
-    const wantTribute = facts.length > 0 && !ref.over;
-    expect(engine.tribute, `第 ${log.deals} 副之后：要不要进贡`).toBe(wantTribute);
+    // 「要不要进贡」：走到这里这一场已经打过至少一副（第十条 二），所以只剩「本场刚结束」这一种
+    // 不进贡 —— 下一副是新一场的第一副。
+    expect(engine.tribute, `第 ${log.deals} 副之后：要不要进贡`).toBe(!ref.over);
 
     if (ref.over) break;
     level = engine.level as Rank;
     needTribute = engine.tribute;
-    prev = res;
+    prevOrder = order;
   }
   log.over = ref.over;
   return log;
@@ -471,41 +672,53 @@ describe("性质：随机对局（完整的一场：发牌 → 进贡 → 出牌
     expect(deals, "一共打了多少副").toBeGreaterThan(20);
     expect(tributeDeals, "进贡过的副数（第 2 副起才有）").toBeGreaterThan(10);
     expect(borrowed, "借风发生过多少次").toBeGreaterThan(0);
-    // 覆盖面的数字（几副、几步、进贡/抗贡/借风各多少次）由上面几条断言钉着；
-    // 想看具体数字时把 `expect(...)` 的期望值挪一下，红了就会把实际值打出来。
-    expect(resisted, "抗贡过的副数（撞上两个大王，可能为 0）").toBeGreaterThanOrEqual(0);
+    // 抗贡也要真的走到过：这条以前写的是 `>= 0`（恒真）—— 等于没核（#256 复审）。
+    expect(resisted, "抗贡过的副数").toBeGreaterThan(0);
   });
 
   it("同一个种子跑两遍：逐副结果一模一样（引擎不读时间、不读随机数）", () => {
     const a = playMatch(seededRandom(20261016), 4);
     const b = playMatch(seededRandom(20261016), 4);
+    // 先确认这串账**真的记了东西**：每副一条、每条都有动作和出完顺序 ——
+    // 不然「两遍一样」可能只是两个空串（恒真的另一副面孔）。
+    expect(a.ledger, "一副一条账").toHaveLength(a.deals);
+    for (const line of a.ledger) {
+      expect(line, "每条账都该有出完顺序").toContain("出完=");
+      expect(line.length, "每条账都该有动作").toBeGreaterThan(10);
+    }
     expect(a, "同一个种子两遍该完全一样").toStrictEqual(b);
   });
 
-  it("进贡还贡只换谁拿哪张：四家的牌一张不多不少，而且贡来的确实进了收贡的人手里", () => {
-    const rng = seededRandom(7);
-    const hands = dealFor(rng, 1);
-    const prev: GameResult = { order: [1, 2, 3, 4], headSeat: 1, partnerPlace: 3 };
-    const tr = new Tribute(TWO, hands, prev);
-    const before = tributeHands(tr).flat().map(cardKey).sort();
+  it("进贡还贡：贡来的进了收贡人手里、还回去的进了进贡人手里（一手固定的牌，期望值手写）", () => {
+    // 单贡：上游 1 号座、搭档第 3 → 下游 4 号座要贡。4 号手里最大的一张是 ♠A/0
+    // （♥7/0 是逢人配，不算）；1 号座还一张不超过 10 的 → ♣5/0。
+    const hands = [
+      handOf(["♠K/0", "♣5/0"]),
+      handOf(["♠3/0"]),
+      handOf(["♠4/0"]),
+      handOf(["♠A/0", "♥7/0"]),
+    ];
+    const rt = refTribute(hands, TWO, [1, 2, 3, 4]);
+    expect(rt.kind, "这套牌不抗贡，是单贡").toBe("single");
+    expect(rt.givers, "要贡的是下游 4 号座（第十条 二）").toStrictEqual([4]);
+    expect(rt.leader, "单贡之后由下游领出（第十条 二）").toBe(4);
+    expect(cardKey(rt.give.get(4)!), "贡的是手里最大的一张（红心级牌除外）").toBe("♠A/0");
 
-    for (const g of tr.givers()) {
-      const card = biggestNonWild(tributeHands(tr)[g - 1]!, TWO);
-      const to = tr.receiver(g); // 还没贡完时是 undefined（双贡要等两人都贡完）
-      tr.give(g, card);
-      expect(tributeHands(tr)[g - 1]!.some((c) => c.id === card.id), "贡出去的牌该从进贡人手里拿走").toBe(false);
-      if (to !== undefined) expect(to, "收贡的人在贡完之前不该定下来").toBeDefined();
-    }
-    if (!tr.done()) {
-      for (const g of tr.givers()) {
-        const seat = tr.receiver(g)!;
-        tr.returnCard(seat, returnable(tributeHands(tr)[seat - 1]!, TWO));
-      }
-    }
-    expect(tr.done(), "贡完还完该算完了").toBe(true);
-    expect(
-      tr.hands().flat().map(cardKey).sort(),
-      "进贡还贡只是换谁拿哪张，牌一张不多不少",
-    ).toStrictEqual(before);
+    const tr = new Tribute(TWO, hands, prevFromOrder([1, 2, 3, 4]));
+    const keysOf = (seat: number) => tributeHands(tr)[seat - 1]!.map(cardKey).sort();
+
+    expect(tr.kind()).toBe("single");
+    expect(tr.givers()).toStrictEqual([4]);
+
+    tr.give(4, rt.give.get(4)!);
+    expect(tr.receiver(4), "单贡贡给上游").toBe(1);
+    expect(keysOf(4), "贡出去就从手里没了").toStrictEqual(["♥7/0"]);
+    expect(keysOf(1), "贡来的进了收贡人手里").toStrictEqual(["♠A/0", "♠K/0", "♣5/0"]);
+
+    tr.returnCard(1, returnable(tributeHands(tr)[0]!, TWO));
+    expect(keysOf(1), "还一张出去，收贡的人少一张").toStrictEqual(["♠A/0", "♠K/0"]);
+    expect(keysOf(4), "还回来的进了进贡人手里").toStrictEqual(["♣5/0", "♥7/0"]);
+    expect(tr.done()).toBe(true);
+    expect(tr.start().turn(), "首轮还是 4 号座领出").toBe(4);
   });
 });
