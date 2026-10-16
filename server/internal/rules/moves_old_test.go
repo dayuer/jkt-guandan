@@ -70,12 +70,16 @@ func TestMovesMatchesOldSlowPath(t *testing.T) {
 		sameMoveLists(t, "（领出）", hand, level, want, got)
 		leads++
 
-		other := randomHand(rnd, deck, 1+rnd.Intn(6), level)
-		combos, err := Recognize(other, level)
-		if err != nil || len(combos) == 0 {
+		// 跟牌那一手的「上一手」从**这手牌自己的出法**里挑（#243）。
+		//
+		// 原来是另抓一手随机牌当上一手，结果是：多数时候认不出牌型、或者手里根本压不住 ——
+		// 那样比的是两个空集合，等于没比（5000 手里真正比到跟牌的只有 1272 个）。
+		// 改成从自己的出法里挑以后，上一手一定是合法出法，而且多半手里真有能压的东西，
+		// 跟牌局面 1272 → 5291（其中「手里真有能压的」从 758 涨到 3577）；代价是这条测试从 1.2s 涨到 1.8s 上下（慢在老实现跑跟牌上）。
+		if len(got) == 0 {
 			continue
 		}
-		lead := combos[rnd.Intn(len(combos))]
+		lead := got[rnd.Intn(len(got))]
 
 		want, err = movesOld(hand, level, &lead)
 		if err != nil {
