@@ -232,6 +232,7 @@ type interpretation struct {
 
 type comboVector struct {
 	Name   string           `json:"name"`
+	Rule   []string         `json:"rule"`
 	Level  string           `json:"level"`
 	Cards  []string         `json:"cards"`
 	Combos []interpretation `json:"combos"`
@@ -298,6 +299,9 @@ func TestCombosFixture(t *testing.T) {
 		t.Fatal("没有用例")
 	}
 	for _, v := range f.Vectors {
+		if len(v.Rule) == 0 {
+			t.Fatalf("%s：没写 rule（条款号）", v.Name)
+		}
 		level, err := ParseRank(v.Level)
 		if err != nil {
 			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
@@ -323,10 +327,13 @@ type compareSide struct {
 
 type compareVector struct {
 	Name  string      `json:"name"`
+	Rule  []string    `json:"rule"`
 	Level string      `json:"level"`
 	A     compareSide `json:"a"`
 	B     compareSide `json:"b"`
-	Beats bool        `json:"beats"`
+	// Result 是 a 和 b 的关系：a / b / equal / incomparable（#216 复审：布尔值分不出
+	// 「一样大」和「牌型不同没得比」）。两个方向都要成立，下面两个断言各测一遍。
+	Result string `json:"result"`
 }
 
 type compareFixture struct {
@@ -358,14 +365,51 @@ func TestCompareFixture(t *testing.T) {
 		t.Fatal("没有用例")
 	}
 	for _, v := range f.Vectors {
+		if len(v.Rule) == 0 {
+			t.Fatalf("%s：没写 rule（条款号）", v.Name)
+		}
 		level, err := ParseRank(v.Level)
 		if err != nil {
 			t.Fatalf("%s：级数 %q：%v", v.Name, v.Level, err)
 		}
+		want, err := parseOrder(v.Result)
+		if err != nil {
+			t.Fatalf("%s：%v", v.Name, err)
+		}
 		a := sideCombo(t, v, "a", v.A, level)
 		b := sideCombo(t, v, "b", v.B, level)
-		if got := a.Beats(b); got != v.Beats {
-			t.Fatalf("%s：a=%s b=%s，算出 %v，牌例是 %v", v.Name, a, b, got, v.Beats)
+		if got := a.Compare(b); got != want {
+			t.Fatalf("%s：a=%s b=%s，算出 %s，牌例是 %s", v.Name, a, b, got, want)
+		}
+		// 反方向也要对：a 大 就 b 小，一样大就还是一样大，没得比就还是没得比。
+		// 这样「压不了」的三种情况各自都有两边的用例，不会只测一个方向。
+		if got := b.Compare(a); got != reverseOrder(want) {
+			t.Fatalf("%s（反方向）：b=%s a=%s，算出 %s，应当是 %s", v.Name, b, a, got, reverseOrder(want))
 		}
 	}
+}
+
+// parseOrder 读牌例里的 result。
+func parseOrder(s string) (Order, error) {
+	switch s {
+	case "a":
+		return Greater, nil
+	case "b":
+		return Less, nil
+	case "equal":
+		return Equal, nil
+	case "incomparable":
+		return Incomparable, nil
+	}
+	return Incomparable, fmt.Errorf("result 只能是 a / b / equal / incomparable，写的是 %q", s)
+}
+
+func reverseOrder(o Order) Order {
+	switch o {
+	case Greater:
+		return Less
+	case Less:
+		return Greater
+	}
+	return o
 }

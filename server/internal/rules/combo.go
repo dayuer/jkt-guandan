@@ -98,13 +98,13 @@ type Combo struct {
 	// Cards 是这手牌，按牌点从小到大排好（王在最后）。
 	Cards []Card
 	// Rank 是这手牌的牌面：单张、对子、三同张是那个点数；三带对是三同张的点数
-	// （第四条二（一）2：不比较所带对子）；顺子类是顶张（A2345 的顶张是 5）；
+	// （第四条 二、（一）2：不比较所带对子）；顺子类是顶张（A2345 的顶张是 5）；
 	// 炸弹是点数；四大天王没有点数（0）。
 	Rank Rank
-	// Value 是比大小用的数值，只在同一牌型之间比（第四条二（一））。
+	// Value 是比大小用的数值，只在同一牌型之间比（第四条 二、（一））。
 	//
 	// 两种算法，差别就在级牌上：
-	//   - 单张、对子、三同张、三带对、炸弹：按牌点在当前级数下的大小（第四条一），
+	//   - 单张、对子、三同张、三带对、炸弹：按牌点在当前级数下的大小（第四条 一），
 	//     所以打 7 的时候，单张 7 压单张 A；
 	//   - 顺子类（三连对、三同连张、顺子、同花顺）：按牌面原位置算顶张（第五条 1），
 	//     打 7 的时候 34567 的顶张还是 7，不会变成最大的一张。
@@ -118,7 +118,7 @@ func (c Combo) String() string {
 	return fmt.Sprintf("%s %s（%d 张）", c.Type.label(), c.Rank.RankName(), len(c.Cards))
 }
 
-// IsBomb 判断这手牌算不算炸弹：炸弹、同花顺、四大天王都能压普通牌型（第四条二（二））。
+// IsBomb 判断这手牌算不算炸弹：炸弹、同花顺、四大天王都能压普通牌型（第四条 二、（二））。
 func (c Combo) IsBomb() bool {
 	switch c.Type {
 	case TypeBomb, TypeStraightFlush, TypeJokerBomb:
@@ -127,7 +127,7 @@ func (c Combo) IsBomb() bool {
 	return false
 }
 
-// bombTier 是炸弹之间的档次，越大越强（第四条二（二）：四大天王 ＞ 超过五张数的炸弹 ＞
+// bombTier 是炸弹之间的档次，越大越强（第四条 二、（二）：四大天王 ＞ 超过五张数的炸弹 ＞
 // 同花顺 ＞ 五张数炸弹 ＞ 四张数炸弹）。非炸弹是 0。
 func (c Combo) bombTier() int {
 	switch {
@@ -145,36 +145,80 @@ func (c Combo) bombTier() int {
 	return 0
 }
 
-// Beats 判断 a 能不能压 b（第四条二）。两手的解读要在同一个级数下认出来（Value 才可比）。
+// Order 是两手牌比出来的关系（第四条 二）。两手的解读要在同一个级数下认出来（Value 才可比）。
+type Order int
+
+const (
+	// Incomparable：牌型不同、又不是炸弹压普通牌型，压根没得比。
+	// 跟牌判断只关心「压不压得住」，但牌例要能把这三种「压不住」区分开（#216 复审）。
+	Incomparable Order = iota
+	// Less：a 比 b 小。
+	Less
+	// Equal：一样大（同牌型同张数同 Value；四大天王碰上四大天王也只有这一种）。
+	Equal
+	// Greater：a 压得住 b。
+	Greater
+)
+
+func (o Order) String() string {
+	switch o {
+	case Incomparable:
+		return "incomparable"
+	case Less:
+		return "less"
+	case Equal:
+		return "equal"
+	case Greater:
+		return "greater"
+	}
+	return "unknown"
+}
+
+// Compare 比出 a 和 b 的关系（第四条 二）。
 //
-//   - 都不是炸弹：牌型和张数都得一样，再比 Value（第四条二（一）：三带对比三同张，其余比牌点）；
+//   - 都不是炸弹：牌型和张数都得一样才谈得上比；一样了再比 Value
+//     （第四条 二、（一）：三带对比三同张，其余比牌点），牌型或张数不同就是 incomparable；
 //   - 炸弹压任何普通牌型；普通牌型压不了炸弹；
 //   - 都是炸弹：先比档次（四大天王 ＞ 超过五张数的炸弹 ＞ 同花顺 ＞ 五张数炸弹 ＞ 四张数炸弹），
 //     同档再比：超过五张的比张数、张数相同比 Value，同花顺比顶张。
-//
-// 一样大时返回 false：接不下去就是接不下去，压不了自己。
-func (a Combo) Beats(b Combo) bool {
+func (a Combo) Compare(b Combo) Order {
 	switch {
 	case !a.IsBomb() && !b.IsBomb():
-		return a.Type == b.Type && len(a.Cards) == len(b.Cards) && a.Value > b.Value
+		if a.Type != b.Type || len(a.Cards) != len(b.Cards) {
+			return Incomparable
+		}
+		return orderOf(a.Value, b.Value)
 	case !a.IsBomb():
-		return false
+		return Less
 	case !b.IsBomb():
-		return true
+		return Greater
 	}
 	if ta, tb := a.bombTier(), b.bombTier(); ta != tb {
-		return ta > tb
+		return orderOf(ta, tb)
 	}
 	if a.Type != b.Type {
-		return false // 同档次必定同牌型，这里是防守
+		return Incomparable // 同档次必定同牌型，这里是防守
 	}
 	if a.Type == TypeJokerBomb {
-		return false // 四大天王只有一副，碰上了就是一样大
+		return Equal // 四大天王只有一副，碰上了就是一样大
 	}
 	if len(a.Cards) != len(b.Cards) {
-		return len(a.Cards) > len(b.Cards) // 张数多者大（第四条二（一）3）
+		return orderOf(len(a.Cards), len(b.Cards)) // 张数多者大（第四条 二、（一）3）
 	}
-	return a.Value > b.Value
+	return orderOf(a.Value, b.Value)
+}
+
+// Beats 是 Compare 的简写：能不能压住。跟牌判断只问这一句（#204 第 4 步）。
+func (a Combo) Beats(b Combo) bool { return a.Compare(b) == Greater }
+
+func orderOf(a, b int) Order {
+	switch {
+	case a > b:
+		return Greater
+	case a < b:
+		return Less
+	}
+	return Equal
 }
 
 // isSeqType 判断是不是顺子类的牌型：这几种按牌面原位置比大小，不按级数（第五条 1）。
