@@ -10,6 +10,8 @@ function fakeStore() {
     setItem: (k: string, v: string) => {
       m.set(k, v);
     },
+    /** 测试用：存进去的原始内容，用来钉存储键和 JSON 形状。 */
+    raw: m,
   };
 }
 
@@ -20,6 +22,16 @@ describe("学习进度（#253 P6：正文在 app/shared，存储由各端给）"
     markDone("overview", s);
     markDone("overview", s);
     expect([...doneLessons(s)]).toEqual(["overview"]);
+  });
+
+  // 键名和 JSON 形状是**跨版本**的东西（用户手机上已经存着了），改了小游戏的旧进度就读不出来 ——
+  // 这里钉死，免得「改键名」这种改动一路绿到底（auditor 复审提的）。
+  it("存在 gd_learn_done 里，值是课号数组的 JSON", () => {
+    const s = fakeStore();
+    markDone("overview", s);
+    expect([...s.raw.entries()]).toEqual([["gd_learn_done", '["overview"]']]);
+    markDone("dealing", s);
+    expect(s.raw.get("gd_learn_done")).toBe('["overview","dealing"]');
   });
 
   it("拿不到存储（null）时当作没学过，也不抛", () => {

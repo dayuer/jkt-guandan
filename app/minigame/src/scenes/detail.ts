@@ -12,27 +12,9 @@ import { dayLabel, kindLabel, timeHM, wibAt, wibParts, weekday, slashDate } from
 import { realtime } from "../lib/realtime";
 import { currentUser } from "../lib/session";
 import { track } from "../lib/telemetry";
-import {
-  conflictingFields,
-  describeConflict as describeShared,
-  type ConflictGame,
-  type FieldDiff,
-  type FieldLabels,
-  type GamePatchLike,
-} from "../../../shared/src/conflict";
-
-/**
- * K4 的对比表（#253：逻辑在 app/shared/src/conflict.ts，这里把**小游戏的时间写法**注进去）。
- * 小游戏在安卓微信上不一定有 `Intl`，所以时间是用 `../lib/fmt` 自己算的 —— 共享层只收渲染好的文字。
- */
-const conflictLabels: FieldLabels = {
-  startsAt: (unixSeconds: number) => `${dayLabel(unixSeconds)} ${timeHM(unixSeconds)}`,
-  kind: kindLabel,
-};
-
-function describeConflict(patch: GamePatchLike, baseline: ConflictGame, latest: ConflictGame): FieldDiff[] {
-  return describeShared(patch, baseline, latest, conflictLabels);
-}
+// K4 的对比表（#253）：逻辑在 app/shared/src/conflict.ts，「小游戏的时间写法」在 lib/conflict.ts
+// 里注入 —— 挪出去是为了能单独测（这个场景模块 import 了 wx / core/ui 一大串）。
+import { conflictingFields, describeConflict, type FieldDiff } from "../lib/conflict";
 import type { Notice, NoticeKind } from "../../../shared/src/status";
 import { detailView, dismissNotice, observeNotices } from "../lib/notice";
 import { rescheduleText } from "./home";

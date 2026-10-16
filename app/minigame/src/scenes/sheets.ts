@@ -4,11 +4,11 @@ import type { App, Sheet } from "../core/app";
 // #144/#155 的转发卡片用 measure（core/ui），main 上的补位弹层用 icon（core/widgets）—— 两边都留。
 import { C, Ctx, circle, ellipsize, fillRR, font, initial, measure, paragraph, strokeRR, text, wrap, Scroller } from "../core/ui";
 import { avatar, button, copy, field, icon, sheetButtons, sheetHeader, simpleSheet, textLink } from "../core/widgets";
-import { ApiError, API_BASE, listFriends, posterURL, shareURL, type Friend, type GameDetail, type UserRef } from "../lib/api";
+import { ApiError, listFriends, posterURL, shareURL, type Friend, type GameDetail, type UserRef } from "../lib/api";
 import { dayShort, kindLabel, slashDate, timeHM, weekday, wibParts } from "../lib/fmt";
 import { currentUser, linkWithCode, signUp } from "../lib/session";
 import { track } from "../lib/telemetry";
-import { shareText } from "../../../shared/src/share";
+import { gameShareText } from "../lib/share";
 
 // ── 填称呼（B2）。返回填好的身份；用户关掉返回 null ──
 //
@@ -220,10 +220,8 @@ function calendarFallback(app: App, code: string) {
 
 export function shareSheet(app: App, d: GameDetail) {
   const g = d.game;
-  // 共享层只负责拼文案，时间的写法由各端给（H5 用 Intl，这里用 lib/fmt —— 安卓微信不一定有 Intl）。
-  const now = Math.floor(Date.now() / 1000);
-  const when = `${dayShort(g.starts_at, now)} ${timeHM(g.starts_at)}`;
-  const textS = shareText(d, when, API_BASE);
+  // 文案在 app/shared，时间的写法和站点地址在 lib/share.ts 里绑好（#253）。
+  const textS = gameShareText(d);
   const channel = (c: "wechat" | "poster" | "copy") => track("share_channel", { game: g.short_code, channel: c });
   let poster: any = null, posterFailed = false;
   const img = wx.createImage();
