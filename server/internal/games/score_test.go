@@ -47,9 +47,9 @@ func (f *fixture) mustRecord(code, user string, expected int, head, partner int)
 	return sc
 }
 
-func (f *fixture) mustStart(code, user string, limit int) *games.Score {
+func (f *fixture) mustStart(code, user string) *games.Score {
 	f.t.Helper()
-	sc, err := f.games.StartScore(context.Background(), code, user, limit, "")
+	sc, err := f.games.StartScore(context.Background(), code, user, "")
 	if err != nil {
 		f.t.Fatalf("开始记分: %v", err)
 	}
@@ -61,8 +61,8 @@ func TestScoreDesignExampleThroughService(t *testing.T) {
 	f := newFixture(t)
 	code, seats := f.fullGame()
 
-	sc := f.mustStart(code, seats[1], 3)
-	if !sc.Started || sc.Settings.Kind != scoring.KindClassic || sc.Settings.AFailLimit != 3 || !sc.CanRecord {
+	sc := f.mustStart(code, seats[1])
+	if !sc.Started || sc.Settings.Kind != scoring.KindClassic || !sc.CanRecord {
 		t.Fatalf("%+v", sc)
 	}
 	example := [][2]int{{1, 2}, {4, 3}, {3, 4}, {1, 2}, {2, 2}, {1, 3}}
@@ -111,7 +111,7 @@ func TestScoreDesignExampleThroughService(t *testing.T) {
 func TestScoreRoundConflict(t *testing.T) {
 	f := newFixture(t)
 	code, seats := f.fullGame()
-	f.mustStart(code, seats[0], 3)
+	f.mustStart(code, seats[0])
 	f.mustRecord(code, seats[0], 1, 1, 2)
 
 	_, err := f.record(code, seats[1], 1, 2, 3)
@@ -135,7 +135,7 @@ func TestScoreRoundConflict(t *testing.T) {
 func TestScoreConcurrentRecord(t *testing.T) {
 	f := newFixture(t)
 	code, seats := f.fullGame()
-	f.mustStart(code, seats[0], 3)
+	f.mustStart(code, seats[0])
 
 	var (
 		wg        sync.WaitGroup
@@ -169,22 +169,15 @@ func TestScoreConcurrentRecord(t *testing.T) {
 	f.checkInvariants(code)
 }
 
-// 开始记分：重复开始原样返回、约定不变；no-level 的局按胜局记；太早不能开始。
+// 开始记分：重复开始原样返回、开局约定不重来；no-level 的局按胜局记；太早不能开始。
 func TestScoreStart(t *testing.T) {
 	f := newFixture(t)
 	code, seats := f.fullGame()
 
-	f.mustStart(code, seats[0], 0)
-	sc := f.mustStart(code, seats[2], 3)
-	if sc.Settings.AFailLimit != 0 || sc.StartedBy.ID != seats[0] || sc.Revision != 1 {
-		t.Fatalf("第二次开始不该改约定：%+v", sc)
-	}
-
-	// 不合法的约定。
-	f2 := newFixture(t)
-	code2, seats2 := f2.fullGame()
-	if _, err := f2.games.StartScore(context.Background(), code2, seats2[0], 2, ""); !errors.Is(err, games.ErrInvalidInput) {
-		t.Fatalf("a_fail_limit=2 应不合法，实际 %v", err)
+	f.mustStart(code, seats[0])
+	sc := f.mustStart(code, seats[2])
+	if sc.StartedBy.ID != seats[0] || sc.Revision != 1 || sc.Settings.Kind != scoring.KindClassic {
+		t.Fatalf("第二次开始不该改开局约定：%+v", sc)
 	}
 
 	// 开局前 30 分钟之前不能开始。
@@ -196,11 +189,11 @@ func TestScoreStart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := f3.games.StartScore(context.Background(), code3, host, 3, ""); !errors.Is(err, games.ErrScoreTooEarly) {
+	if _, err := f3.games.StartScore(context.Background(), code3, host, ""); !errors.Is(err, games.ErrScoreTooEarly) {
 		t.Fatalf("开局前 2 小时应 too_early，实际 %v", err)
 	}
 	f3.fake.Advance(90 * time.Minute) // 正好开局前 30 分钟
-	f3.mustStart(code3, host, 3)
+	f3.mustStart(code3, host)
 }
 
 func TestScoreNoLevelGame(t *testing.T) {
@@ -222,7 +215,7 @@ func TestScoreNoLevelGame(t *testing.T) {
 		}
 	}
 	f.fake.Advance(40 * time.Minute)
-	sc := f.mustStart(code, host, 3)
+	sc := f.mustStart(code, host)
 	if sc.Settings.Kind != scoring.KindNoLevel {
 		t.Fatalf("%+v", sc.Settings)
 	}
@@ -243,10 +236,10 @@ func TestScoreWritePermissions(t *testing.T) {
 	if _, err := f.record(code, seats[0], 1, 1, 2); !errors.Is(err, games.ErrScoreNotStarted) {
 		t.Fatalf("没开始应 score_not_started，实际 %v", err)
 	}
-	if _, err := f.games.StartScore(context.Background(), code, outsider, 3, ""); !errors.Is(err, games.ErrNotSeated) {
+	if _, err := f.games.StartScore(context.Background(), code, outsider, ""); !errors.Is(err, games.ErrNotSeated) {
 		t.Fatalf("不在座位上应 not_seated，实际 %v", err)
 	}
-	f.mustStart(code, seats[0], 3)
+	f.mustStart(code, seats[0])
 	if _, err := f.record(code, outsider, 1, 1, 2); !errors.Is(err, games.ErrNotSeated) {
 		t.Fatalf("不在座位上应 not_seated，实际 %v", err)
 	}
@@ -310,7 +303,7 @@ func TestScoreEvents(t *testing.T) {
 	code, seats := f.fullGame()
 	rec.reset()
 
-	f.mustStart(code, seats[0], 3)
+	f.mustStart(code, seats[0])
 	f.mustRecord(code, seats[1], 1, 2, 2)
 	if _, err := f.record(code, seats[2], 1, 1, 2); err == nil {
 		t.Fatal("应冲突")
@@ -406,12 +399,13 @@ func TestScoreOverHTTP(t *testing.T) {
 		t.Fatalf("旁观：%d %s", r.status, r.raw)
 	}
 
+	// 旧客户端带 `a_fail_limit` 也收（#205：这个约定没有了），只在响应里再也看不到它。
 	r = f.do(mini, http.MethodPost, path, map[string]any{"a_fail_limit": 0}, bearer)
 	if r.status != http.StatusOK || r.body["started"] != true || r.body["can_record"] != true {
 		t.Fatalf("开始：%d %s", r.status, r.raw)
 	}
-	if s := r.body["settings"].(map[string]any); s["kind"] != "classic" || s["a_fail_limit"].(float64) != 0 {
-		t.Fatalf("%v", s)
+	if s := r.body["settings"].(map[string]any); s["kind"] != "classic" || len(s) != 1 {
+		t.Fatalf("约定里只该有 kind：%v", s)
 	}
 
 	rounds := path + "/rounds"

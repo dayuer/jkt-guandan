@@ -216,8 +216,9 @@ export const updateGame = (code: string, patch: GamePatch, version: number) =>
 // 四个接口都返回整份计分；409 round_taken / round_changed 的响应体里也有（err.body）。
 
 export const getScore = (code: string) => request<Score>("GET", `/api/games/${enc(code)}/score`);
-export const startScore = (code: string, aFailLimit: number, key: string) =>
-  request<Score>("POST", `/api/games/${enc(code)}/score`, { body: { a_fail_limit: aFailLimit }, headers: { "Idempotency-Key": key } });
+// 开始记分没有请求参数了（#205：不再有「打 A 几次不过回到 2」这个约定），带 Idempotency-Key 就行。
+export const startScore = (code: string, key: string) =>
+  request<Score>("POST", `/api/games/${enc(code)}/score`, { body: {}, headers: { "Idempotency-Key": key } });
 export const recordRound = (code: string, expectedRoundNo: number, fact: RoundFact, key: string) =>
   request<Score>("POST", `/api/games/${enc(code)}/score/rounds`, {
     body: { expected_round_no: expectedRoundNo, head_seat: fact.head_seat, partner_place: fact.partner_place },

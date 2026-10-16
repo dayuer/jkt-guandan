@@ -122,6 +122,9 @@ func writeWxError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "wx_disabled", "小游戏登录未开启")
 	case errors.Is(err, ErrNicknameInvalid):
 		writeError(w, http.StatusBadRequest, "nickname_invalid", "称呼需要 1–12 个字符")
+	case errors.Is(err, ErrNicknameReserved):
+		// 保留称呼（「已注销牌友」）：新建这条路上也要挡，和改称呼同一个错误码（#221）。
+		writeError(w, http.StatusBadRequest, "nickname_reserved", "这个称呼不能用")
 	case errors.Is(err, secheck.ErrUnsafe):
 		writeUnsafeError(w, err)
 	case errors.Is(err, ErrWxCodeInvalid):

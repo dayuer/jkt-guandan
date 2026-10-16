@@ -42,7 +42,7 @@ export class Create implements Scene {
   constructor(private app: App, private nav: Nav) {}
 
   onEnter() { this.unretry = subscribeRetry((v) => { this.retrying = v; this.app.redraw(); }); }
-  onLeave() { this.unretry?.(); if (this.app.editing) wx.hideKeyboard({}); }
+  onLeave() { this.unretry?.(); this.app.blurKeyboard(); }
 
   /** 内容改了就换一个幂等键：同一份内容重试不会开两局，改过的内容是新的一局（§11.4）。 */
   private changed() { this.idemKey = newIdempotencyKey(); }
@@ -145,7 +145,7 @@ export class Create implements Scene {
   /** 地点或备注里有字就先确认；片区、时间这类选择项不算「填过」（适配稿 M4）。 */
   private cancel() {
     const a = this.app;
-    if (a.editing) wx.hideKeyboard({});
+    a.blurKeyboard();
     if (!this.venue.trim() && !this.note.trim()) { this.nav.back(); return; }
     const s: Sheet = {
       dialog: true,

@@ -302,7 +302,7 @@ function tabBar(ctx, active) {
     const cx = tw * i + tw / 2;
     if (!ic) {
       circle(ctx, cx, y + 6, 31, C.card); circle(ctx, cx, y + 6, 27, C.red);
-      text(ctx, "蛋", cx, y + 7, font(24, "900", true), C.cream, "center");
+      text(ctx, "雅", cx, y + 7, font(24, "900", true), C.cream, "center");
       circle(ctx, cx + 20, y - 13, 5, C.green, C.card, 2);
       text(ctx, label, cx, y + 46, font(11), C.ink3, "center");
       return;
@@ -1035,7 +1035,7 @@ add("七、牌桌计分（#162）", "S1", "入口：已成局的详情页", "局
   homeBar(ctx); statusBar(ctx); capsule(ctx);
 });
 
-add("七、牌桌计分（#162）", "S2", "开始记分：确认分队和约定", "分队由座位决定，不用选对家。只有一个约定要定：打 A 几次不过回 2（默认 3 次，和学牌页说法一致）。谁先点「开始」都行，其他三人实时进入记分页", (ctx) => {
+add("七、牌桌计分（#162）", "S2", "开始记分：确认分队", "分队由座位决定，不用选对家；没有要额外定的约定（A 级必打，打到过为止）。谁先点「开始」都行，其他三人实时进入记分页", (ctx) => {
   ctx.fillStyle = C.paper; ctx.fillRect(0, 0, E.W, E.H);
   detailTop(ctx, E.contentTop + 4, { seats: [["老", "host"], ["L", "other"], ["阿", "other"], ["小", "other"]], center: "4/4", sub: "已成局", teams: true });
   nav(ctx, "牌局详情", "back");
@@ -1060,10 +1060,8 @@ add("七、牌桌计分（#162）", "S2", "开始记分：确认分队和约定"
     cy += 62 + 10;
   });
   cy += 12;
-  text(ctx, "打 A 几次不过，回到 2", 20, cy + 10, font(14, "700"), C.ink);
-  cy += 28;
-  let x = 20; for (const [k, on] of [["3 次", 1], ["不回 2", 0]]) x += chip(ctx, x, cy, k, !!on) + 8;
-  cy += 36 + 16;
+  text(ctx, "打 A 必打：没过就一直打 A", 20, cy + 10, font(14, "700"), C.ink);
+  cy += 34;
   text(ctx, "过 A：打本队的 A 时拿头游，搭档不是末游。过了这场结束", 20, cy, font(12), C.ink3);
   cy += 24;
   button(ctx, 20, cy, pw, 52, "开始 · 第 1 局打 2", "primary");
@@ -1094,10 +1092,10 @@ add("七、牌桌计分（#162）", "S6", "打 A：过了", "打本队的 A 时�
   recordSheet(ctx, { title: "记第 13 局", sub: "本局打红方的 A · 第 2 次", head: "老王", partner: "二游", at: true, preview: { kind: "pass", main: "过 A！红方赢下这一场", sub: "老王头游、阿杰二游 · 一共 13 局" }, cta: "记下 · 本场结束", ctaOn: true });
 });
 
-add("七、牌桌计分（#162）", "S7", "打 A：没过", "头游＋末游不算过。预览写清楚还剩几次：3 次不过回到 2。对方拿头游时同样算本队这次没过，同时对方照常升级", (ctx) => {
+add("七、牌桌计分（#162）", "S7", "打 A：没过", "头游＋末游不算过。预览写清楚已经没过几次。对方拿头游时同样算本队这次没过，同时对方照常升级", (ctx) => {
   scorePage(ctx, ST_A);
   statusBar(ctx); capsule(ctx);
-  recordSheet(ctx, { title: "记第 13 局", sub: "本局打红方的 A · 第 2 次", head: "老王", partner: "末游", at: true, preview: { kind: "fail", main: "没过 A · 红方下一局还打 A", sub: "已没过 2 次，第 3 次再不过就回到 2" }, cta: "记下第 13 局", ctaOn: true });
+  recordSheet(ctx, { title: "记第 13 局", sub: "本局打红方的 A · 第 2 次", head: "老王", partner: "末游", at: true, preview: { kind: "fail", main: "没过 A · 红方下一局还打 A", sub: "已没过 2 次" }, cta: "记下第 13 局", ctaOn: true });
 });
 
 add("七、牌桌计分（#162）", "S8", "本场结束", "赢的一方级牌换成金底 A。只给局数、用时、双上次数——不出现任何分数、筹码、金额（#91 合规）。「再来一场」两队都从 2 开始，记录接着存在这一局下面", (ctx) => {

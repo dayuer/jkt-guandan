@@ -51,7 +51,7 @@ function tabScene(name: TabName): Scene {
   return tabs[name]!;
 }
 
-// ── 底部 Tab（#107）：牌局、学牌、约局（蛋）、牌友、我的 ──
+// ── 底部 Tab（#107）：牌局、学牌、约局（中间红球里是「雅」，#218）、牌友、我的 ──
 // 花色画路径：iOS 可能把 ♠ ♥ 显示成彩色 emoji，选中变红就失效了（适配稿 4.2）
 const TABS: [TabName | "create", Suit | null, string][] = [
   ["games", "spade", "牌局"], ["learn", "club", "学牌"], ["create", null, "约局"], ["friends", "diamond", "牌友"], ["me", "heart", "我的"],
@@ -68,7 +68,7 @@ app.drawTabs = (ctx: Ctx, active: string) => {
       const cy = y + 6, pressed = app.isPressed("tab:create");
       circle(ctx, cx, cy, 31, C.card);
       circle(ctx, cx, cy, pressed ? 25 : 27, pressed ? C.redDeep : C.red);
-      text(ctx, "蛋", cx, cy + 1, font(24, "900", true), C.cream, "center");
+      text(ctx, "雅", cx, cy + 1, font(24, "900", true), C.cream, "center");
       if (realtime.status === "online") circle(ctx, cx + 20, cy - 19, 5, C.green, C.card, 2);
       text(ctx, label, cx, y + 46, font(11), C.ink3, "center");
       app.hit("tab:create", cx - 34, cy - 34, 68, 90, () => nav.create());

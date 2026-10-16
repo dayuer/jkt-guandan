@@ -339,7 +339,7 @@ func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string, s
 	case "POST /api/games/{code}/invites":
 		body = map[string]any{"user_ids": []string{"someone"}}
 	case "POST /api/games/{code}/score":
-		body = map[string]any{"a_fail_limit": 3}
+		body = map[string]any{}
 	case "POST /api/games/{code}/score/rounds":
 		body = map[string]any{"expected_round_no": 1, "head_seat": 1, "partner_place": 2}
 	case "PUT /api/games/{code}/score/rounds/{no}":

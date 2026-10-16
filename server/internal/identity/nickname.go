@@ -14,19 +14,15 @@ import (
 
 // 改称呼（#210）。用户原话：「名称，我现在不能改，应该允许我修改」。
 //
-// 校验、内容安全检测都和小游戏新建身份**走同一套**：长度用 NormalizeNickname（1–12 字符，
-// 去掉首尾空白和控制字符），检测用 secheck 的场景 1（资料）——只是从「按 openid 查」
-// 换成「按 user_id 查」（CheckUser），因为这时候人已经在库里了。
+// 校验、内容安全检测都和小游戏新建身份**走同一套**：长度、保留名、去空白和零宽字符都在
+// NormalizeNickname 里（#221 起新建身份也走它），检测用 secheck 的场景 1（资料）——
+// 只是从「按 openid 查」换成「按 user_id 查」（CheckUser），因为这时候人已经在库里了。
 //
 // 称呼不存在快照：座位、候补、牌友列表、每局记录的「谁记的」都是按 user id 关联、
 // 读的时候 JOIN users（见 #210 的说明），所以改完一处，各处都跟着变。
 
-var (
-	// ErrNicknameReserved 表示用了保留的称呼。
-	ErrNicknameReserved = errors.New("这个称呼不能用")
-	// ErrUserDeleted 表示这个人已经注销了。
-	ErrUserDeleted = errors.New("这个身份已经注销")
-)
+// ErrUserDeleted 表示这个人已经注销了。
+var ErrUserDeleted = errors.New("这个身份已经注销")
 
 // ChangeNickname 改称呼，返回改完之后的用户信息（接口层直接回给前端，省一次 GET）。
 //
@@ -36,10 +32,7 @@ func (s *Service) ChangeNickname(ctx context.Context, userID, raw string) (User,
 	if err != nil {
 		return User{}, err
 	}
-	// 注销之后座位显示成「已注销牌友」（delete.go）。允许改成这个名字，就等于可以冒充注销的人。
-	if clean == DeletedNickname {
-		return User{}, ErrNicknameReserved
-	}
+	// 长度和保留名（「已注销牌友」）都在 NormalizeNickname 里挡，和新建身份同一支。
 	// 小游戏用户才查（H5 测试用户没有 openid，Guard 里会跳过）；微信出错、超时都放行。
 	if err := s.sec.CheckUser(ctx, userID, secheck.SceneProfile, secheck.Field{Name: "nickname", Text: clean}); err != nil {
 		return User{}, err
