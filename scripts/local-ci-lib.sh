@@ -58,6 +58,8 @@ _path_to_context() {
     app/minigame/*)
       echo 'local-ci/minigame' ;;
     # 规则引擎（#87）自己一个包、自己的 vitest，不跟 app/h5、app/minigame 共用依赖。
+    # ⚠️ 小游戏一旦 `import "../../rules/src"`（第 2 步起会用到），这里要一起加上
+    # `local-ci/minigame` —— 道理同下面 `app/h5/src/*` 那条：改了规则引擎，小游戏的包也会变。
     app/rules/*)
       echo 'local-ci/rules' ;;
     # 两端共用的牌例（#87 的 TS 版和 #204 的 Go 版读同一批文件）。它不在 server/ 也不在
@@ -151,6 +153,9 @@ context_tools() {
     local-ci/h5-audit) echo 'npm' ;;
     local-ci/minigame) echo 'npm' ;;
     local-ci/rules)    echo 'npm' ;;
+    # 自测脚本只要 bash（就是正在跑它的这个）。写出来是为了让「CONTEXT_ORDER 里每一项都声明了
+    # 工具」这条不变式成立 —— context_tools 漏写是静默跳过检查（require_tools '' 直接返回 0）。
+    local-ci/meta)     echo 'bash' ;;
     local-ci/nginx)    echo 'awk' ;;
     local-ci/docker)   echo 'docker curl python3' ;;
     local-ci/e2e)      echo 'make go npm npx' ;;

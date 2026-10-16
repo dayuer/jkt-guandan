@@ -22,23 +22,44 @@
 ## 许可
 
 `src/` 下的算法移植自 [mimaima699-ux/Guandan-Poker-Platform](https://github.com/mimaima699-ux/Guandan-Poker-Platform)
-的 `packages/core`（MIT，不含它的 `ai/`），牌堆顺序、牌的写法、ID 的含义按 `testdata/rules`
-的约定重写。许可原文见 [LICENSE](LICENSE)。
+的 `packages/core`（MIT，不含它的 `ai/`），盯的是上游 `03dfbb6`（2026-09-22）。许可原文见
+[LICENSE](LICENSE)。
+
+上游用 8 位整数编码一张牌（`card.ts`），发牌是 Fisher–Yates 加种子 RNG、按每 27 张一摞切开后排序
+（`deck.ts`）；这里按 `testdata/rules` 的约定重写了牌的模型和发牌方向，所以逐文件对应是：
+
+| 这里 | 上游 | 改动 |
+|---|---|---|
+| `src/card.ts` | `packages/core/src/card.ts`、`rank.ts` 的点数部分 | 牌改成 `{id,rank,suit,deck}` + `cardKey`/`parseKey`；牌堆顺序按 `testdata/rules/deck.json` 锁定 |
+| `src/power.ts` | `packages/core/src/card.ts` 的 `orderKey`、`isWildCard` | 数值和 `orderKey` 不同（这里级牌 = 15、A = 14、原值兜底），只用来比大小 |
+| `src/deal.ts` | `packages/core/src/deck.ts` | 随机源改成注入一个**排列**（`shuffle[i]` 是第 i 张发出的牌的 ID），不是种子 RNG；不排序、不按摞切 |
+| — | `packages/core/src/recognizer.ts`、`enumerator.ts`、`engine/`、`rules.ts`、`rng.ts` | 第 2 步起再移植 |
+
+**第 2 步起移植的代码会打进小游戏包**，而 `app/minigame/build.mjs` 现在是 `minify: true` 加
+`legalComments: "none"`，MIT 声明会被去掉。搬代码之前要先定好怎么带上声明（改 `legalComments`，
+或者在文件头加 `/*! ... */`），做法写进那一步的 PR。
 
 ## 怎么跑
 
 ```bash
 cd app/rules
 npm ci
-npm run typecheck
+npm run typecheck   # 两个 tsc：全量 + 只查 src/ 的 ES2017 那一遍
 npm test
 ```
+
+`tsconfig.src.json` 是给**要被小游戏打包的那部分**（`src/` 里的非测试文件）单独设的一道闸：
+`lib: ES2017`。esbuild 的 `target: es2017` 只降语法、不给运行时 API 打补丁，所以 `.flat()`、
+`Object.fromEntries` 这类 ES2018+ 的 API 能让类型检查先拦下来。
 
 小游戏（`app/minigame`）用相对路径 import，不经过 npm 包解析：
 
 ```ts
 import { deal, power } from "../../rules/src/index";
 ```
+
+⚠️ `src/testing/` 是读牌例的测试支持代码，**不要从 `index.ts` 导出** —— 一旦导出，小游戏打包
+会把几十 KB 的牌例 JSON 一起打进 `game.js`。
 
 ## 进度（#87 的第 1–8 步）
 

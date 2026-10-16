@@ -129,6 +129,13 @@ for c in $CONTEXT_ORDER; do
   else bad "context_command 认识 $c" '非空' '空'; fi
 done
 
+# context_tools 漏写是**静默**跳过工具检查（require_tools '' 直接返回 0），加检查项时最容易漏这一处。
+missing_tools=''
+for c in $CONTEXT_ORDER; do
+  [ -n "$(context_tools "$c")" ] || missing_tools="$missing_tools $c"
+done
+eq 'CONTEXT_ORDER 里每个 context 都声明了 context_tools' '' "$missing_tools"
+
 eq 'test 就是 make test' 'make test  # go vet + 前端构建 + go test -race + 前端测试' "$(context_command local-ci/test)"
 eq 'minigame 与原 ci.yml 一致' \
   'cd app/minigame && npm ci && npm run typecheck && npm test && npm run build' \

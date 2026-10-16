@@ -57,9 +57,9 @@ export function rankName(rank: Rank): string {
 /**
  * 认牌面：2–10、J、Q、K、A、小王、大王。
  *
- * 这里**只认规范写法**（大写牌面）。Go 版的 `ParseRank` 用 `strings.ToUpper`，`"j"` 也认，
- * 但它的 `ParseKey` 有「读回来再写出去仍然一样」的校验，所以到了牌例这一层两端一样严；
- * 不同只在这条更靠里的函数上，TS 端这里严一点不会放过任何 README 说无效的写法。
+ * 只认**规范写法**：大写牌面，`"j"`、`"05"`、`"+5"` 都拒绝。牌例是两端逐字符串比对的，
+ * 一端松、另一端严的话，同一条牌例会在一端过、在另一端挂 —— 两边都该以严的为准
+ * （#213 开 PR 前审计：松的那一边是 Go 的 `ParseRank`，由 #204 收紧）。
  */
 export function parseRank(s: string): Rank {
   switch (s) {

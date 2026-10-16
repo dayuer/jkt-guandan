@@ -7,6 +7,9 @@
 //
 // 这一步（第 1 步）只有牌、发牌、牌点大小。牌型识别、逢人配、合法出法、出牌流程、
 // 结算、进贡按 #87 的拆分一步步来。
+//
+// ⚠️ **不要 export `./testing/*`**。那里是读牌例的测试支持代码（还 import 了 testdata/rules
+// 下的 JSON）；一旦从这里出去，小游戏打包时会把几十 KB 的牌例打进 game.js。
 export * from "./card";
 export * from "./power";
 export * from "./deal";

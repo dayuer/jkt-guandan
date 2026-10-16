@@ -5,7 +5,7 @@
   "type": "module",
   "description": "掼蛋规则引擎（纯逻辑，#87）：小游戏用相对路径 import",
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.src.json",
     "test": "vitest run"
   },
   "devDependencies": {

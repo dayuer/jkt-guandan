@@ -1,12 +1,13 @@
 // 两端共用的牌例（#87 第 1 步）：这里和服务端的 server/internal/rules/fixtures_test.go
 // 读仓库根 testdata/rules/ 下同一批文件。规则口径改在哪一头，这里都会红。
 //
-// `rule`（条款号）非空由 fixtures.ts 的读取器统一把关，不必每个用例再写一遍。
+// 结构校验（`rule` 非空、拒绝未知字段、不能空用例列表……）由 testing/fixtures.ts 统一把关
+// 并有自己的单测，这里只查「算出来的结果和牌例写的一样」。
 import { describe, expect, it } from "vitest";
 import { cardKey, newDeck, parseKey, parseRank, type Card } from "./card";
 import { deal, HANDS_EACH, permShuffler, SEATS } from "./deal";
-import { dealFixture, deckFixture, powerFixture } from "./fixtures";
 import { power } from "./power";
+import { dealFixture, deckFixture, powerFixture } from "./testing/testdata";
 
 const keys = (cards: readonly Card[]): string[] => cards.map(cardKey);
 
