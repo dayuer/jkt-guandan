@@ -3,10 +3,12 @@
 // 目标是「像样」不是「强」（#88 的「不做」：不做搜索、不做训练模型、不做残局穷举）：
 // 不犯蠢、不拆炸弹、知道配合队友，就够了。策略条文写在设计（#88 的评论）里，这里逐条对着实现：
 //
-//	领出：① 能一次走完就走完（**由 ② 承载**，见 pickLead 的注释）；② 优先张数多的牌型；③ 不主动拆炸弹；④ 牌不多了先出小的；
-//	      ⑤ 单张先出孤张。
-//	跟牌：① 用最小的能压住；② 队友领先时让牌；③ 对手快走完就不让、该炸就炸；
-//	      ④ 炸弹的时机（平时不炸，残局/对手要走才炸；**绝不用炸弹压队友**）；⑤ 要不起就过。
+//	领出：① 能一次走完就走完；② 优先张数多的牌型；④ 牌不多了先出小的。
+//	      （③ 不主动拆炸弹、⑤ 孤张先出这两条**不用单独做** —— 领出时它们改不了结果，
+//	      论证和实测见 pickLead 上面的注释。）
+//	跟牌：① 能一次走完就走完，否则用最小的能压住；② 队友领先、**且他那一手不小**才让牌；
+//	      ③ 对手快走完就不让、该炸就炸；④ 炸弹的时机（平时不炸，残局/对手要走才炸；
+//	      **绝不用炸弹压队友**）；⑤ 要不起就过。
 //
 // **纯函数**：同样的 `View` + `Config` 一定给同样的答案（不读时间、不掷骰子）。难度差别做成参数，
 // 不做成随机 —— 测试要能照着复现。
@@ -22,8 +24,13 @@ import (
 // Config 是策略参数。第一版只有一组默认值（一档难度），但差别都做成参数 ——
 // 以后要加「新手 / 熟练」档，改参数就行，不用重写策略。
 type Config struct {
-	// YieldToPartner：队友出的那一手没人压得住时让给他（过牌）。
+	// YieldToPartner：队友领先时让牌（过牌）。
 	YieldToPartner bool
+	// YieldMinPower：队友那一手的牌力**到这个数（含）才算「不小」**，才值得让 ——
+	// 比它小的一手，对手随手就能压过去，让牌等于把这一圈白送，不如自己接过来。
+	// 只对非炸弹的牌型看这个数：炸弹（含同花顺、四大天王）一律算不小。
+	// 按**当前级数下的大小**算（打 7 时 7 是级牌，算大的）。默认 10（十以上，含十）。
+	YieldMinPower int
 	// PressOpponentLeft：对手剩这么多张（含）以内，就不再让、能压就压。
 	PressOpponentLeft int
 	// BombWhenOwnLeft：自己剩这么多张（含）以内，该用炸弹就用（「该炸的时机」的一种）。
@@ -32,7 +39,7 @@ type Config struct {
 
 // DefaultConfig 是第一版（也是唯一一档）的参数。
 func DefaultConfig() Config {
-	return Config{YieldToPartner: true, PressOpponentLeft: 2, BombWhenOwnLeft: 6}
+	return Config{YieldToPartner: true, YieldMinPower: 10, PressOpponentLeft: 2, BombWhenOwnLeft: 6}
 }
 
 // Decision 是 AI 挑的一手。`Pass` 为真就是过牌；否则 `Combo` 是从 `rules.Moves` 的候选里挑的
@@ -80,30 +87,42 @@ func leadOf(v View) *rules.Combo {
 
 // ── 领出 ──
 
-// pickLead 挑一手领出（上面「领出」那五条）。打分取最高的；同分保留先出现的那个（**确定**）。
+// pickLead 挑一手领出（上面「领出」那三条）。打分取最高的；同分保留先出现的那个（**确定**）。
+//
+// 写在最前面的一条经验（#259 复审踩过）：**「没有用例能区分」不等于「冗余」**。
+// 判一条策略是不是真冗余，要看「有没有**任何输入**会给出不同的答案」，不是看测试红不红 ——
+// 当时把 ① 删掉（全绿）就当成冗余了，其实只是缺用例。下面每条不做的策略都做了差分验算：
+// 2 万个随机局面，逐个比较「有这条策略 / 没有」的输出，看有没有一个输入会变。
 func pickLead(v View, cands []rules.Combo) rules.Combo {
-	// ③ 不主动拆炸弹：**还有别的选择**时，先把这个可能性去掉 —— 做成结构性的首选，
-	// 而不是打个很重的分（打分要跟别的项比大小，容易被「一次走完」之类的权重顶掉）。
-	if keep := notSplittingBombs(v, cands); len(keep) > 0 {
-		cands = keep
+	// ① 能一次走完就走完：**直接走完，不再比别的** —— 走完这一副对本方有利，
+	// 「炸弹留着」「大牌留后手」都排在这条后面。
+	//
+	// ⚠️ 这条**不能**只用打分表达（打分会跟别的项比大小）：审计 #259 给的三个反例 ——
+	// 手里正好 4 张 K 时，炸弹扣 30000 分压过「张数多」→ 出三张 K；6 张 K 出三张 K；
+	// 四大天王出一对小王。「走完那一手张数最多，② 就能挑出来」这个说法**只在不扣分时成立**。
+	if c, ok := finishInOneGo(v, cands); ok {
+		return c
 	}
+	// ③ 不主动拆炸弹：领出这条**不用单独做**，所以这里没有过滤。手里某种点数有 4 张以上时，
+	// 一定同时有「三张」这个候选，而三张（3×1000）永远压过对子（≤2×1000+500）和单张
+	// （≤1000+500），所以拆成对子/单张从来不会被选中。原来这里有一道 `notSplittingBombs`
+	// 过滤，差分验算（2 万个局面）的结果是**一个输入都不会变**，所以删掉。
+	// （跟牌那边不能这么推：压得住的候选可能只剩拆炸弹一种，所以那边的过滤留着。）
+	//
+	// ⑤ 单张先出孤张：同理不做。「孤张 +500」只对单张生效，而两张候选单张要么都孤（加了等于没加）、
+	// 要么有一张不孤 —— 不孤就说明同点数还有同伴，那手里一定有更大的牌型候选（一对 2000 >
+	// 单张 ≤1500；同伴 ≥4 张时对子会被拆炸弹过滤掉，但那时还有三张 3000）。差分验算同样是
+	// **一个输入都不变**。
 	best, bestScore := cands[0], 0
 	for i, c := range cands {
 		score := 0
-		// ①「能一次走完就走完」**不单独加分**：能把整手牌一次走完的那一手，张数一定最多，
-		// ② 就把它挑出来了 —— 加 1_000_000 也永远改变不了结果。
-		// （实测：从旧版本里删掉这个分支，整个包的测试 + 整局驱动照样全绿，说明没有用例能区分它。
-		//   一条谁都区分不出来的分支就是噪声，所以这里只留 ②。「一次走完」这件事本身由
-		//   `TestAIFinishesInOneGo` 钉着。）
-		score += len(c.Cards) * 1_000 // ② 张数多优先 / ① 一次走完
+		score += len(c.Cards) * 1_000 // ② 张数多优先
 		if isBomb(c) {
 			score -= 30_000 // 领出时也别急着丢炸弹
 		}
-		if len(c.Cards) == 1 && isLone(v.Hand, v.Level, c.Cards[0]) {
-			score += 500 // ⑤ 孤张先出
-		}
 		if len(v.Hand) <= 6 {
-			// ④ 牌不多了：先出小的，大的留作后手。
+			// ④ 牌不多了：先出小的（按当前级数下的大小 —— 打 J 时的 J 是级牌，比 K 大，先出 K），
+			// 大的留作后手。
 			score -= int(c.Rank.Power(v.Level)) * 10
 		}
 		if i == 0 || score > bestScore {
@@ -113,15 +132,36 @@ func pickLead(v View, cands []rules.Combo) rules.Combo {
 	return best
 }
 
+// finishInOneGo 找「一手把整手牌出光」的候选（领出、跟牌共用）。
+//
+// 有就返回它 —— 走完这一副对本方最有利，别的策略（留炸弹、留大牌、让牌给队友）都排在这条后面。
+func finishInOneGo(v View, cands []rules.Combo) (rules.Combo, bool) {
+	for _, c := range cands {
+		if len(c.Cards) == len(v.Hand) {
+			return c, true
+		}
+	}
+	return rules.Combo{}, false
+}
+
 // ── 跟牌 ──
 
 // pickFollow 挑一手跟上（上面「跟牌」那五条）。
 func pickFollow(v View, cands []rules.Combo, cfg Config) Decision {
+	// ① 能一次走完就走完 —— 这条**压过让牌**：走完这一副对本方最有利，哪怕队友正领先着。
+	// 放在让牌前面，否则「队友领先」会把自家走完的机会让掉。
+	if c, ok := finishInOneGo(v, cands); ok {
+		return Decision{Combo: c}
+	}
+
 	oppLow := v.OpponentAboutToWin(cfg.PressOpponentLeft)
 
-	// ② 队友领先、而且没人快走完：让给他（留着牌）。
+	// ② 队友领先、他那一手不小、而且没人快走完：让给他（留着牌）。
 	// ④ 例外：**绝不用炸弹压队友** —— 所以队友这一手直接让，不去看候选。
-	if cfg.YieldToPartner && v.LastFromPartner() && !oppLow {
+	//
+	// 「不小」这一条是审计 #259 定的口径：队友出一手小牌，对手随手就能压过去，让牌等于把这一圈
+	// 白送；不如自己接过来。阈值见 Config.YieldMinPower（炸弹一律算不小）。
+	if cfg.YieldToPartner && v.LastFromPartner() && !oppLow && playIsBig(v.LastCombo, v.Level, cfg) {
 		return Decision{Pass: true}
 	}
 
@@ -187,6 +227,15 @@ func isBomb(c rules.Combo) bool {
 	return false
 }
 
+// playIsBig 判断上一手「算不算不小」：炸弹（含同花顺、四大天王）一律算不小；
+// 其余按牌力，到 Config.YieldMinPower 才算不小（按当前级数算大小）。
+func playIsBig(c rules.Combo, level rules.Rank, cfg Config) bool {
+	if isBomb(c) {
+		return true
+	}
+	return int(c.Rank.Power(level)) >= cfg.YieldMinPower
+}
+
 // nonBombs 去掉炸弹，保留其余候选。
 func nonBombs(cands []rules.Combo) []rules.Combo {
 	out := make([]rules.Combo, 0, len(cands))
@@ -243,18 +292,4 @@ func splitsBombIntoSmall(hand []rules.Card, level rules.Rank, c rules.Combo) boo
 		}
 	}
 	return false
-}
-
-// isLone 判断这张牌在手里是不是孤张：同点数（不含逢人配）就它一张。
-func isLone(hand []rules.Card, level rules.Rank, card rules.Card) bool {
-	if card.IsWild(level) {
-		return false
-	}
-	n := 0
-	for _, c := range hand {
-		if !c.IsWild(level) && c.Rank == card.Rank {
-			n++
-		}
-	}
-	return n == 1
 }

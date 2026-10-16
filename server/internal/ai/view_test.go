@@ -1,37 +1,137 @@
 package ai
 
 import (
+	"fmt"
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/dayuer/jkt-guandan/server/internal/rules"
 )
 
-// AI **不许**看得见别家的手牌 —— 用反射把这条钉死，免得以后有人「顺手」加个字段。
+const rulesPkg = "github.com/dayuer/jkt-guandan/server/internal/rules"
+
+// viewFields 是 `View` 允许有的字段，一个不多一个不少。
 //
-// 为什么值得一条测试：这种洞从外面看不出来 —— AI 照样能跑、照样能过其它所有测试，
-// 只是它每一手都打得「恰好」正确（因为它在偷看）。而它又很容易加进来：只要有人图省事
-// 把别家的手牌、或者整个 `*rules.Game`（`Game.Hand(seat)` 谁的手牌都给得出来）放进 View 就行。
+// 加字段必须**有意识地**改这里并说清理由 —— AI 的输入形状就是「它看得见什么」，随手加一个字段
+// 可能就把别家的牌塞进去了（那种洞从外面看不出来：AI 照样能跑、照样能过其它测试，
+// 只是它每一手都打得「恰好」正确）。
+var viewFields = []string{"Level", "Seat", "Hand", "Counts", "Done", "Leading", "LastSeat", "LastCombo"}
+
+// complainAbout 递归走一个类型的每个字段，报出「能把别家手牌端过来」的地方。
+//
+// **递归**是后补的：原来只看了 View 这一层，所以 `struct{ G *rules.Game }` 套一层、
+// 或者 `map[int][]rules.Card`、`[][]rules.Card` 都拦不住（#259 复审第 4 条）。
+//
+// 规矩三条：
+//
+//   - 只有 `View.Hand` 可以是 `[]rules.Card`（自己的手牌）；
+//   - `rules.Combo` 放行 —— 它是「已经打出去的那一手」，是牌桌上人人看得见的信息
+//     （它的 `Cards` 不再往里走，所以上面那条「只有 Hand 是手牌」不会被它破例）；
+//   - 其余的具名规则类型（`rules.Game`、`rules.Tribute`、`rules.Deck`……）一律拒 ——
+//     `Game.Hand(seat)` 谁的手牌都给得出来，`Tribute` 手里也攥着四家牌。
+//
+// 还有：map 一律拒（拆开看也说不清它装的是什么），指针、切片、数组、嵌套结构体一路走到底。
+func complainAbout(t reflect.Type, path string, seen map[reflect.Type]bool) []string {
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if seen[t] {
+		return nil
+	}
+	seen[t] = true
+
+	var out []string
+	switch t.Kind() {
+	case reflect.Map:
+		out = append(out, fmt.Sprintf("%s 是 map（%s）—— 不许用映射装牌", path, t))
+		out = append(out, complainAbout(t.Elem(), path+"[值]", seen)...)
+	case reflect.Slice, reflect.Array:
+		e := t.Elem()
+		for e.Kind() == reflect.Ptr {
+			e = e.Elem()
+		}
+		if e.Kind() == reflect.Struct && e.PkgPath() == rulesPkg && e.Name() == "Card" {
+			// 只放行 `View.Hand` 这一条路（检查真类型时根路径是 "View"；反例一律按违反算）。
+			if path != "View.Hand" {
+				out = append(out, fmt.Sprintf("%s 是 %s —— 手牌形状的字段只许有 View.Hand", path, t))
+			}
+			return out
+		}
+		out = append(out, complainAbout(e, path+"[]", seen)...)
+	case reflect.Struct:
+		if t.PkgPath() == rulesPkg {
+			if t.Name() != "Combo" {
+				out = append(out, fmt.Sprintf("%s 是 rules.%s —— 它能把别家的手牌端过来", path, t.Name()))
+			}
+			return out
+		}
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			// 未导出的字段也走一遍 —— 同包里「顺手」加个私有字段一样能偷看。
+			out = append(out, complainAbout(f.Type, path+"."+f.Name, seen)...)
+		}
+	}
+	return out
+}
+
+// AI **不许**看得见别家的手牌 —— 用反射把这条钉死。
 func TestViewExposesNoOtherHands(t *testing.T) {
 	typ := reflect.TypeOf(View{})
-	oneHand := reflect.TypeOf([]rules.Card{})
-	manyHands := reflect.TypeOf([][]rules.Card{})
-	game := reflect.TypeOf(&rules.Game{})
 
 	// 自己的手牌要有 —— 不然这条测试是空转（把所有手牌形状都禁掉也能「通过」）。
 	if _, ok := typ.FieldByName("Hand"); !ok {
 		t.Fatal("View 里没有 Hand —— AI 没法打牌，这条测试也就没意义了")
 	}
 
+	// 字段集合钉死。
+	var got []string
 	for i := 0; i < typ.NumField(); i++ {
-		f := typ.Field(i)
-		switch {
-		case f.Type == oneHand && f.Name != "Hand":
-			t.Fatalf("View.%s 是手牌形状的字段 —— AI 只该看得见自己的手牌（别家只给张数 Counts）", f.Name)
-		case f.Type == manyHands:
-			t.Fatalf("View.%s 是四家手牌 —— AI 只该看得见自己的手牌", f.Name)
-		case f.Type == game:
-			t.Fatalf("View.%s 是 *rules.Game —— 它把手牌全暴露给 AI 了", f.Name)
+		got = append(got, typ.Field(i).Name)
+	}
+	sorted := append([]string(nil), got...)
+	sort.Strings(sorted)
+	want := append([]string(nil), viewFields...)
+	sort.Strings(want)
+	if strings.Join(sorted, ",") != strings.Join(want, ",") {
+		t.Fatalf("View 的字段变成了 %v，白名单是 %v —— 加字段要先想清楚「它让 AI 多看见了什么」"+
+			"（别家的牌一律不许），再改 viewFields", got, viewFields)
+	}
+
+	if out := complainAbout(typ, "View", map[reflect.Type]bool{}); len(out) > 0 {
+		t.Fatalf("View 里出现了能装别家手牌的东西：\n  %s", strings.Join(out, "\n  "))
+	}
+}
+
+// 上面那台检查器自己也要有**反例**兜着 —— 不然「没报错」可能只是它什么都没查。
+//
+// 每个反例都是审计 #259 第 4 条点出来的那种写法：套一层结构体、用 map、[][]Card、直接塞引擎类型。
+func TestViewCheckerCatchesDecoys(t *testing.T) {
+	type decoyGame struct{ G *rules.Game }
+	type decoyTribute struct{ T *rules.Tribute }
+	type decoyMap struct{ Others map[int][]rules.Card }
+	type decoyNested struct {
+		Info struct{ Hand []rules.Card }
+	}
+	type decoySliceOfHands struct{ Hands [][]rules.Card }
+	type decoyPtrToHands struct{ Hands *[]rules.Card }
+	type decoyTributeByValue struct{ T rules.Tribute }
+
+	for _, d := range []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{"套一层结构体藏 *rules.Game", reflect.TypeOf(decoyGame{})},
+		{"套一层结构体藏 *rules.Tribute", reflect.TypeOf(decoyTribute{})},
+		{"map[int][]rules.Card", reflect.TypeOf(decoyMap{})},
+		{"嵌套结构体里的 []rules.Card", reflect.TypeOf(decoyNested{})},
+		{"[][]rules.Card", reflect.TypeOf(decoySliceOfHands{})},
+		{"*[]rules.Card", reflect.TypeOf(decoyPtrToHands{})},
+		{"Tribute 按值放进来", reflect.TypeOf(decoyTributeByValue{})},
+	} {
+		if out := complainAbout(d.typ, "Decoy", map[reflect.Type]bool{}); len(out) == 0 {
+			t.Errorf("%s 都没被检查器认出来 —— 这台检查器是空转的", d.name)
 		}
 	}
 }
