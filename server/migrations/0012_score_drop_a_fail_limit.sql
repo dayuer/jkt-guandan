@@ -1,0 +1,11 @@
+-- breaking: 删掉 score_matches.a_fail_limit（#205，2022 竞赛规则 A 必打，这个约定没有了）
+--
+-- 2022《竞技掼蛋竞赛规则（试行）》里没有「打 A 几次不过回到 2」这条约定：第二条 13「A 级必打」，
+-- 打不过就一直打 A。仓库所有者 2026-10-16 决定把这个开局约定去掉（#205），
+-- server/internal/scoring 不再有 Settings.AFailLimit，回到 2 的分支、ResetTo2 字段一并删掉。
+--
+-- 为什么是 breaking：旧版本（读过这一列的）SELECT 不到 a_fail_limit 会报错，回滚到旧镜像必须
+-- 先恢复发布前的快照（runbook §2.3）。#165 还没有部署（线上是 9254990），所以没有要迁移的数据。
+--
+-- 只删列，不动 kind 和别的约束；score_matches 的行、score_rounds 一局都不动。
+ALTER TABLE score_matches DROP COLUMN a_fail_limit;

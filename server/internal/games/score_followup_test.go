@@ -15,24 +15,29 @@ import (
 // 记分跟进（#168、#165 复审的两条意见）
 // ---------------------------------------------------------------------------
 
-// 同一个幂等键配不同的请求体：422，不当成重放，也不记。同一个请求体重发仍是重放。
+// 幂等键：同一个请求重发是重放，换成一个别的请求（别的路由，或者换了一局的局号、结果）返回
+// 422，不当成重放，也不记。
+//
+// 开始记分没有请求体参数了（#205：打 A 必打，没有可选的约定），所以「同一个键换了约定」这一路
+// 不存在了；这里改成验「同一个键用在别的接口上」照样 422。
 func TestScoreIdemKeyFingerprint(t *testing.T) {
 	f := newFixture(t)
 	code, seats := f.fullGame()
 	ctx := context.Background()
+	rd := scoring.Round{HeadSeat: 1, PartnerPlace: 2}
 
-	if _, err := f.games.StartScore(ctx, code, seats[0], 3, "start-1"); err != nil {
+	if _, err := f.games.StartScore(ctx, code, seats[0], "start-1"); err != nil {
 		t.Fatal(err)
 	}
-	// 同一个键、不同的约定：422（约定本来也不会生效，但客户端以为生效了）。
-	if _, err := f.games.StartScore(ctx, code, seats[0], 0, "start-1"); !errors.Is(err, games.ErrIdemKeyReused) {
-		t.Fatalf("同一个键换约定应 ErrIdemKeyReused，实际 %v", err)
-	}
-	if _, err := f.games.StartScore(ctx, code, seats[0], 3, "start-1"); err != nil {
+	// 原样重发：重放。
+	if _, err := f.games.StartScore(ctx, code, seats[0], "start-1"); err != nil {
 		t.Fatalf("原样重发应是重放：%v", err)
 	}
+	// 同一个人的「开始」键拿来记一局：别的路由，422（键按人分，所以用开始的那个座位）。
+	if _, err := f.games.RecordRound(ctx, code, seats[0], 1, rd, "start-1"); !errors.Is(err, games.ErrIdemKeyReused) {
+		t.Fatalf("同一个键用在别的接口应 ErrIdemKeyReused，实际 %v", err)
+	}
 
-	rd := scoring.Round{HeadSeat: 1, PartnerPlace: 2}
 	if _, err := f.games.RecordRound(ctx, code, seats[1], 1, rd, "r-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +115,7 @@ func TestScoreCanStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f.mustStart(code, seats[2], 3)
+	f.mustStart(code, seats[2])
 	if sc := read(host); sc.CanStart || !sc.CanRecord {
 		t.Fatalf("开始以后：%+v", sc)
 	}
@@ -120,7 +125,7 @@ func TestScoreCanStart(t *testing.T) {
 func (f *fixture) startedGameAfterGrace() (string, [4]string) {
 	f.t.Helper()
 	code, seats := f.fullGame()
-	f.mustStart(code, seats[0], 3)
+	f.mustStart(code, seats[0])
 	f.mustRecord(code, seats[0], 1, 1, 2)
 	f.fake.Advance(20*time.Minute + games.JoinGrace + time.Minute)
 	return code, seats
@@ -197,7 +202,7 @@ func TestScoreRejoinOnlyOwnSeat(t *testing.T) {
 	// 自己的座号被人占了（JoinGrace 之内有人补上），过了 JoinGrace 就不能坐别的空位。
 	f2 := newFixture(t)
 	code2, seats2 := f2.fullGame()
-	f2.mustStart(code2, seats2[0], 3)
+	f2.mustStart(code2, seats2[0])
 	f2.fake.Advance(30 * time.Minute) // 开局后 10 分钟，还在 JoinGrace 之内
 	if _, err := f2.games.Leave(ctx, code2, seats2[1]); err != nil {
 		t.Fatal(err)
@@ -280,7 +285,7 @@ func TestScoreRejoinWithinGracePrefersOwnSeat(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	code, seats := f.fullGame()
-	f.mustStart(code, seats[0], 3)
+	f.mustStart(code, seats[0])
 
 	if _, err := f.games.Leave(ctx, code, seats[3]); err != nil { // 4 号
 		t.Fatal(err)
@@ -369,7 +374,7 @@ func TestScoreDeleteMeDropsSeatLeaver(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	code, seats := f.fullGame()
-	f.mustStart(code, seats[0], 3)
+	f.mustStart(code, seats[0])
 	u, token := f.newUserWithToken("五号")
 	if _, err := f.games.Leave(ctx, code, seats[3]); err != nil {
 		t.Fatal(err)
@@ -393,7 +398,7 @@ func TestScoreRoundSeatsSnapshot(t *testing.T) {
 	f, rec := newEventFixture(t)
 	ctx := context.Background()
 	code, seats := f.fullGame()
-	f.mustStart(code, seats[0], 3)
+	f.mustStart(code, seats[0])
 	f.mustRecord(code, seats[0], 1, 1, 2)
 
 	// 3 号退出，替补补进 3 号，接着记第 2 局。

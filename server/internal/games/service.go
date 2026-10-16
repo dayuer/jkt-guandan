@@ -109,13 +109,7 @@ func (s *Service) List(ctx context.Context, viewerID, area, day string, limit, o
 		to = weekEnd
 	}
 
-	query := `
-		SELECT g.id, g.short_code, g.host_id, g.starts_at, g.area, g.venue, g.kind,
-		       COALESCE(g.note, ''), g.status, g.version, g.created_at,
-		       COALESCE(g.rescheduled_at, 0), COALESCE(g.host_since, 0), COALESCE(u.nickname, ''),
-		       (SELECT count(*) FROM seats s WHERE s.game_id = g.id)
-		  FROM games g
-		  LEFT JOIN users u ON u.id = g.host_id
+	query := summarySelect + `
 		 WHERE g.status IN ('open','full') AND g.starts_at >= ? AND g.starts_at < ?`
 	args := []any{from.Unix(), to.Unix()}
 	if area != "" {
@@ -131,6 +125,34 @@ func (s *Service) List(ctx context.Context, viewerID, area, day string, limit, o
 	}
 	defer rows.Close()
 
+	out, err := s.scanSummaries(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachSeats(ctx, out); err != nil {
+		return nil, err
+	}
+	if err := s.attachMyRole(ctx, viewerID, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// summarySelect 是列表类查询共用的 SELECT 前缀（首页列表、我的牌局、历史）。
+// 行数与 scanSummaries 一一对应，改这里要同时看那边。
+const summarySelect = `
+		SELECT g.id, g.short_code, g.host_id, g.starts_at, g.area, g.venue, g.kind,
+		       COALESCE(g.note, ''), g.status, g.version, g.created_at,
+		       COALESCE(g.rescheduled_at, 0), COALESCE(g.host_since, 0), COALESCE(u.nickname, ''),
+		       (SELECT count(*) FROM seats s WHERE s.game_id = g.id)
+		  FROM games g
+		  LEFT JOIN users u ON u.id = g.host_id`
+
+// scanSummaries 把 summarySelect 出来的行读成 Summary。座位还没挂（调用方再调 attachSeats）。
+//
+// MyRole 预置成 "none"：按身份算的字段（我的位置、候补第几位）由 attachMyRole 填；
+// 首页的实时事件是广播，不带这些字段，那边会在序列化时跳过。
+func (s *Service) scanSummaries(rows *sql.Rows) ([]Summary, error) {
 	var out []Summary
 	for rows.Next() {
 		var (
@@ -155,12 +177,6 @@ func (s *Service) List(ctx context.Context, viewerID, area, day string, limit, o
 		out = append(out, sum)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := s.attachSeats(ctx, out); err != nil {
-		return nil, err
-	}
-	if err := s.attachMyRole(ctx, viewerID, out); err != nil {
 		return nil, err
 	}
 	return out, nil

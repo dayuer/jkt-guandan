@@ -106,6 +106,7 @@ func TestRouteTable(t *testing.T) {
 		{"DELETE /api/me/devices/{id}", "user", "identity.(*handler).signOutDevice"},
 		{"DELETE /api/me", "user", "identity.(*handler).deleteMe"},
 		{"PUT /api/me/wa", "user", "identity.(*handler).putWA"},
+		{"PUT /api/me/nickname", "user", "identity.(*handler).putNickname"},
 		{"DELETE /api/me/wa", "user", "identity.(*handler).deleteWA"},
 		{"POST /api/claim", "user", "identity.(*handler).issueClaim"},
 		{"POST /api/claim/redeem", "public", "identity.(*handler).redeemClaim"},
@@ -124,6 +125,9 @@ func TestRouteTable(t *testing.T) {
 		{"POST /api/games/{code}/score", "user", "games.(*handler).startScore"},
 		{"POST /api/games/{code}/score/rounds", "user", "games.(*handler).recordRound"},
 		{"PUT /api/games/{code}/score/rounds/{no}", "user", "games.(*handler).editRound"},
+		{"GET /api/me/games", "user", "games.(*handler).mine"},
+		{"GET /api/me/games/history", "user", "games.(*handler).history"},
+		{"DELETE /api/me/games/history/{code}", "user", "games.(*handler).hideFromHistory"},
 		{"GET /ws", "public+deferidentity", "*realtime.handler"},
 		{"GET /g/{code}", "anonymous", "share.(*handler).ogPage"},
 		{"GET /g/{code}/og.png", "anonymous", "share.(*handler).ogImage"},
@@ -338,7 +342,7 @@ func (a *app) probe(c *http.Client, rt route.Route, code string) (int, string, s
 	case "POST /api/games/{code}/invites":
 		body = map[string]any{"user_ids": []string{"someone"}}
 	case "POST /api/games/{code}/score":
-		body = map[string]any{"a_fail_limit": 3}
+		body = map[string]any{}
 	case "POST /api/games/{code}/score/rounds":
 		body = map[string]any{"expected_round_no": 1, "head_seat": 1, "partner_place": 2}
 	case "PUT /api/games/{code}/score/rounds/{no}":
