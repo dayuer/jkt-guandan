@@ -4,55 +4,6 @@
 
 import { C, Ctx, Scroller, ease, ellipsize, fillRR, font, text, wrap } from "./ui";
 
-/**
- * 点输入框时该怎么动键盘。
- *
- * `wx.showKeyboard` 在**键盘已经开着**的时候再调会失败（真机报 `showKeyboard:fail`）。
- * 点第一个字段、再点第二个，或者同一个字段点两下，都会走到那条 —— 原来每次都重新
- * `showKeyboard`，于是必现一个「键盘没拉起来」的错误提示，第二个字段也没换成。
- *
- * 抽成纯函数是为了**能测**：真机上 showKeyboard 的成败没法在单测里造。
- *   none   同一个字段再点：键盘本来就在，什么都不用做
- *   update 换字段、键盘开着：换内容就行（`wx.updateKeyboard`）
- *   show   键盘没开：正常拉起来
- */
-export function keyboardAction(
-  st: { open: boolean; sameKey: boolean; settingsMatch: boolean },
-  hasUpdateKeyboard: boolean,
-): "none" | "update" | "reshow" | "show" {
-  if (st.open && st.sameKey) return "none";
-  // ⚠️ `wx.updateKeyboard` **只换文字**，`maxLength` / `multiple` / `confirmType` 还是上一个
-  // 字段的。开一局页从「地点」（40 字、单行、下一项）切到「备注」（200 字、多行）时，
-  // 备注会被限成 40 字单行 —— 所以三项必须**完全一样**才敢走 update（复审抓到的）。
-  if (st.open && hasUpdateKeyboard && st.settingsMatch) return "update";
-  // 设置不一样：只能先收起键盘，等 onKeyboardComplete 之后再按新设置重新拉。
-  if (st.open) return "reshow";
-  return "show";
-}
-
-/**
- * 键盘现在是不是真开着。
- *
- * 光信自己记的 `kbOpen` 会卡住：切后台、安卓返回键、或者基础库收起键盘却没触发
- * `onKeyboardComplete` 时它一直是 true，之后就**再也拉不起键盘**、还没有任何提示。
- * 所以必须「自己记的那个」和「系统给的高度」都说开着才算。
- */
-export function keyboardOpen(kbOpen: boolean, kbHeight: number): boolean {
-  return kbOpen && kbHeight > 0;
-}
-
-/** 两次编辑的键盘设置是不是一样（`updateKeyboard` 换不了这些，只能重新拉）。 */
-export function keyboardSettingsMatch(a: EditOptions, b: EditOptions): boolean {
-  return (a.maxLength ?? 40) === (b.maxLength ?? 40)
-    && !!a.multiple === !!b.multiple
-    && (a.confirmType || "done") === (b.confirmType || "done");
-}
-
-/** `showKeyboard` 的失败信息里，哪些是「键盘本来开着」这种**不是错误**的情况。 */
-export function benignKeyboardFail(errMsg: string): boolean {
-  return /already|已经/i.test(errMsg || "");
-}
-
 const TAP_SLOP = 8;
 /** 微信原生输入条的高度。先按 56 预留；#141 真机核对 onKeyboardHeightChange 的高度是否已经包含它，包含就改成 0。 */
 export const INPUT_BAR_H = 56;
@@ -97,6 +48,8 @@ export interface Sheet {
 }
 
 /** 弹层的运行时状态：内容超出可视高度时内部滚动（App 管）。 */
+import { KeyboardSession, type EditOptions } from "./keyboard";
+
 type OpenSheet = Sheet & { t0: number; h: number; top: number; scroll: Scroller; focusFor: string };
 
 export interface Touch0 {
@@ -105,17 +58,6 @@ export interface Touch0 {
   scr: { s: Scroller; axis: "x" | "y" } | null;
   moved: boolean;
   t0: number;
-}
-
-export interface EditOptions {
-  key: string;
-  value: string;
-  maxLength?: number;
-  multiple?: boolean;
-  confirmType?: "done" | "next" | "search" | "go" | "send";
-  onInput: (v: string) => void;
-  onConfirm?: (v: string) => void;
-  onDone?: (v: string) => void;
 }
 
 interface Anim { t0: number; dur: number; onFrame: (p: number) => void; done?: () => void }
@@ -140,12 +82,17 @@ export class App {
   pressed: string | null = null;
   private touch: Touch0 | null = null;
   private dirty = true;
-  kbHeight = 0;
-  /** 键盘是不是开着。`onKeyboardHeightChange` 不一定有，所以自己记一份。 */
-  private kbOpen = false;
-  /** 「设置不一样、要收起再拉」时挂这儿，等 onKeyboardComplete / 高度归零再重新拉。 */
-  private pendingEdit: EditOptions | null = null;
-  editing: EditOptions | null = null;
+  /** 键盘那摊事全在会话里（core/keyboard.ts）：事件顺序、收起再拉、超时兜底都在那儿测。 */
+  private keys: KeyboardSession = new KeyboardSession(wx, {
+    redraw: () => this.redraw(),
+    toast: (m) => this.toast(m),
+    setTimeout: (fn, ms) => setTimeout(fn, ms) as unknown,
+    clearTimeout: (id) => clearTimeout(id as any),
+  });
+  /** 正在编辑的字段（会话持有）。留个只读口给外面：create.ts 要拿它算「滚到哪」。 */
+  get editing(): EditOptions | null { return this.keys.editing }
+  /** 键盘高度（会话持有，`onKeyboardHeightChange` 给的）。visibleBottom / 焦点框都靠它。 */
+  get kbHeight(): number { return this.keys.kbHeight }
   /** 当帧画出来的激活字段（屏幕坐标），由 widgets.field 填；用来把它滚进可视区 */
   focusRect: { y: number; h: number } | null = null;
   /** 底部 Tab 栏由外面画（main.ts），这里只存回调 */
@@ -171,7 +118,6 @@ export class App {
     this.ctx = this.canvas.getContext("2d");
 
     this.bindTouches();
-    this.bindKeyboard();
     const loop = () => { this.frame(); requestAnimationFrame(loop); };
     requestAnimationFrame(loop);
   }
@@ -236,7 +182,7 @@ export class App {
   closeSheet(sheet?: Sheet) {
     const s = sheet ? this.sheets.find((x) => x === sheet) : this.sheets[this.sheets.length - 1];
     if (!s) return;
-    if (this.editing) wx.hideKeyboard({});
+    if (this.editing) this.blurKeyboard();
     this.sheets = this.sheets.filter((x) => x !== s);
     s.onClose?.();
     this.redraw();
@@ -251,97 +197,14 @@ export class App {
   }
   isPressed(id: string) { return this.pressed === id; }
 
-  // ── 键盘：拉起微信原生输入条，文字从回调里拿 ──
-  edit(opts: EditOptions) {
-    const prev = this.editing;
-    const action = keyboardAction(
-      {
-        // ⚠️ 光信自己记的 `kbOpen` 会卡住：切后台、安卓返回键、或者基础库收起键盘却没触发
-        // `onKeyboardComplete` 时，它一直是 true，之后就**再也拉不起键盘**、还没有任何提示
-        //（复审抓到的）。所以「开着」必须两个都说开着才算。
-        open: keyboardOpen(this.kbOpen, this.kbHeight),
-        sameKey: !!prev && prev.key === opts.key,
-        settingsMatch: !!prev && keyboardSettingsMatch(prev, opts),
-      },
-      !!wx.updateKeyboard,
-    );
-    this.editing = opts;
-    if (action === "reshow") {
-      // 设置不一样，update 换不了：先收起，等 onKeyboardComplete 再按新设置重新拉。
-      // 不收就直接 show 会 fail —— 那正是这次要修的毛病。
-      this.pendingEdit = opts;
-      wx.hideKeyboard({});
-      this.redraw();
-      return;
-    }
-    if (action === "update") {
-      // 键盘开着、换了个字段：**只换内容**。这里重新 showKeyboard 真机会失败
-      //（`showKeyboard:fail`），原来就弹一个「键盘没拉起来」的错误 —— 点第二个字段必现。
-      try { wx.updateKeyboard!({ value: opts.value || "" }) } catch { /* 换不了就算了，下面照样能用 */ }
-      this.redraw();
-      return;
-    }
-    if (action === "none") { this.redraw(); return } // 同一个字段再点一下：键盘本来就在
-    wx.showKeyboard({
-      defaultValue: opts.value || "",
-      maxLength: opts.maxLength || 40,
-      multiple: !!opts.multiple,
-      confirmHold: false,
-      confirmType: opts.confirmType || "done",
-      success: () => { this.kbOpen = true; },
-      fail: (e: any) => {
-        const msg = String((e && e.errMsg) || "");
-        // 「已经开着」不算错误：没有 updateKeyboard 的旧基础库会走到这里，不该吓用户
-        if (benignKeyboardFail(msg)) { this.kbOpen = true; return }
-        this.kbOpen = false;
-        this.toast("键盘没拉起来：" + msg);
-      },
-    });
-    this.redraw();
-  }
-  /** 之前因为「设置不一样」挂起的那个字段：键盘确实收起了，现在按它的设置重新拉。 */
-  private resumePending() {
-    const next = this.pendingEdit;
-    this.pendingEdit = null;
-    if (next) this.edit(next);
-  }
+  // ── 键盘：都在 core/keyboard.ts 的 KeyboardSession 里 ──
+  // 这里只留薄薄一层，供场景调用。事件顺序、收起再拉、超时兜底都在那边（带假 wx 的单测）。
+  edit(opts: EditOptions) { this.keys.focus(opts); }
 
-  isEditing(key: string) { return !!this.editing && this.editing.key === key; }
+  isEditing(key: string) { return this.keys.isEditing(key); }
 
-  private bindKeyboard() {
-    wx.onKeyboardInput((res: any) => { if (this.editing) { this.editing.onInput(res.value); this.redraw(); } });
-    wx.onKeyboardConfirm((res: any) => {
-      const ed = this.editing;
-      if (ed) { ed.onInput(res.value); ed.onConfirm?.(res.value); }
-      if (this.editing === ed) wx.hideKeyboard({});
-    });
-    wx.onKeyboardComplete((res: any) => {
-      const ed = this.editing;
-      this.editing = null;
-      this.kbOpen = false;
-      this.kbHeight = 0;
-      if (ed) { ed.onInput(res.value); ed.onDone?.(res.value); }
-      this.resumePending();
-      this.redraw();
-    });
-    if (wx.onKeyboardHeightChange) {
-      wx.onKeyboardHeightChange((res: any) => {
-        this.kbHeight = res.height || 0;
-        // 高度归零 = 键盘确实收起了。`onKeyboardComplete` 不一定来（切后台、安卓返回键），
-        // 所以这里也要清，否则 `kbOpen` 卡在 true 就再也拉不起来。
-        if (!this.kbHeight) { this.kbOpen = false; this.resumePending() }
-        this.redraw();
-      });
-    }
-    // 切后台：键盘状态一律作废。回来时用户再点字段会正常重拉。
-    wx.onHide(() => {
-      this.kbOpen = false;
-      this.editing = null;
-      this.kbHeight = 0;
-      this.pendingEdit = null;
-      this.redraw();
-    });
-  }
+  /** 收起键盘并作废会话状态（离开页面、关弹层）。**别直接调 wx.hideKeyboard** —— 那样会话不知道。 */
+  blurKeyboard() { this.keys.blur(); }
 
   private pick(x: number, y: number): Hit | null {
     for (let i = this.hits.length - 1; i >= 0; i--) {

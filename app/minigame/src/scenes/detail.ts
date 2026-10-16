@@ -301,7 +301,7 @@ export class Detail implements Scene {
           text(ctx, ellipsize(ctx, when(st.day, st.hour, st.minute), w - 84 - 80, font(15, "700")), 84, cy + 24, font(15, "700"), C.ink);
           text(ctx, "改", w - 48, cy + 24, font(14, "600"), C.red, "right");
           chevron(ctx, w - 38, cy + 24, C.red);
-          app.hit("ed-time", 20, cy, w - 40, 48, () => wx.hideKeyboard({}));
+          app.hit("ed-time", 20, cy, w - 40, 48, () => app.blurKeyboard());
           cy += 62;
         } else {
           cy += 6;
