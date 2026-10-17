@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dayuer/jkt-guandan/server/internal/ai"
 	"github.com/dayuer/jkt-guandan/server/internal/clock"
 	"github.com/dayuer/jkt-guandan/server/internal/ratelimit"
 	"github.com/dayuer/jkt-guandan/server/internal/rules"
@@ -43,6 +44,78 @@ var (
 	// 收掉的局只能取（复盘），不能再改 —— 复盘和第 6/7 件都依赖「收掉的局不再变」。
 	ErrPracticeEnded = errors.New("这局练习已经结束了")
 )
+
+// 实时事件（#88 第 4 件，§5.5）。REST 始终是事实来源，事件只是「告诉你哪里变了」；
+// 断线重连后一律重新 GET 当前局面。
+const (
+	EventStarted = "practice.started"
+	EventPlayed  = "practice.played"
+	EventEnded   = "practice.ended"
+)
+
+// UserTopic 是某个用户的订阅主题（和 identity 的事件同一个主题，只有这个人的设备订阅得到）。
+func UserTopic(userID string) string { return "user:" + userID }
+
+// Publisher 是实时事件的出口。业务包不依赖 realtime，main 里用一个几行的适配器接到 Hub。
+type Publisher interface {
+	Publish(topic, eventType string, data any)
+}
+
+// NopPublisher 什么也不做（测试 / 没接实时时用）。
+type NopPublisher struct{}
+
+func (NopPublisher) Publish(string, string, any) {}
+
+// Decider 是 AI 走一手的入口。默认是 ai.Decide；测试可以换成替身，用来造「AI 出错」「走到上限」
+// 这类正常 AI 不会出现的局面。
+type Decider func(v ai.View, cfg ai.Config) (ai.Decision, error)
+
+// defaultMaxAILoop 是一次请求里 AI 最多走几手。
+//
+// 正常一副牌不可能接近它（出牌 ≤ 108 次，两次出牌之间最多 3 次过牌）；它只是兜底：
+// 万一引擎/策略哪天破坏了「每次动作都有进度」这个不变量，不让一个请求在写事务里转死。
+const defaultMaxAILoop = 512
+
+// practiceEvent 是一条待发的事件；提交之后按这个顺序推出去。
+type practiceEvent struct {
+	typ  string
+	data any
+}
+
+// startedEvent 是 practice.started 的 data。
+type startedEvent struct {
+	Revision int64            `json:"revision"`
+	Seat     int              `json:"seat"`
+	Level    int              `json:"level"`
+	Counts   [rules.Seats]int `json:"counts"`
+	Turn     int              `json:"turn"`
+}
+
+// playedEvent 是 practice.played 的 data。
+//
+// `Seq` 是这一手在存档动作序列里的 1-based 下标 —— 一次请求里 AI 可能连走好几手，它们共用
+// 同一个 revision，客户端靠 seq 排序/去重。`Cards` 只有**刚打出来的那几张**（公开信息），
+// **别家的手牌一条都不出**。
+type playedEvent struct {
+	Revision int64            `json:"revision"`
+	Seq      int              `json:"seq"`
+	Seat     int              `json:"seat"`
+	Pass     bool             `json:"pass"`
+	Cards    []string         `json:"cards,omitempty"`
+	Kind     string           `json:"kind,omitempty"`
+	Rank     string           `json:"rank,omitempty"`
+	Counts   [rules.Seats]int `json:"counts"`
+	Turn     int              `json:"turn"`
+	DealOver bool             `json:"deal_over"`
+}
+
+// endedEvent 是 practice.ended 的 data。
+type endedEvent struct {
+	Revision int64            `json:"revision"`
+	Seq      int              `json:"seq"`
+	Counts   [rules.Seats]int `json:"counts"`
+	Turn     int              `json:"turn"`
+}
 
 // VersionConflict：客户端手里的 revision 旧了（或者有人并发改了）。**带上最新局面**，
 // 客户端拿它直接刷新就行（照 games 的 VersionConflict 那套）。
@@ -94,7 +167,8 @@ func moveKey(m Move) string {
 //   - 这一手不成立 → `*MoveRejected`（带引擎的原因码），**局面一点不动**；
 //   - 同一个 `Idempotency-Key` 重发 → 不重复出牌，返回现在的局面（可能比第一次新 —— 幂等说的是
 //     「这一手不落两次」，不是「响应冻住」）；
-//   - **不替 AI 走棋**：出完手之后 `turn` 可能落在 AI 座位上，那是第 4 件的事。
+//   - 玩家这一手落下之后，**在同一个事务里替 AI 连走到轮回玩家或这一副打完**（#88 第 4 件）；
+//     AI 那几手不各自加 revision —— `revision` 还是每个客户端请求 +1 一次。
 func (s *Service) Play(ctx context.Context, id, userID string, mv Move, expectedRev int64, idemKey string) (View, error) {
 	const route = "POST /api/practice/{id}/play"
 	var out View
@@ -143,6 +217,67 @@ func (s *Service) Play(ctx context.Context, id, userID string, mv Move, expected
 			}
 			return err
 		}
+
+		// 玩家这一手落下了；AI 的回合在**同一个事务**里走完（#88 第 4 件）。
+		// revision 每个客户端请求只 +1 一次，AI 那几手不是客户端动作。
+		newRev := row.Revision + 1
+		events := make([]practiceEvent, 0, 8)
+		record := func() {
+			moves := g.Moves()
+			m := moves[len(moves)-1]
+			ev := playedEvent{
+				Revision: newRev,
+				Seq:      len(moves),
+				Seat:     m.Seat,
+				Pass:     m.Pass,
+				Counts:   countsOf(&g),
+				Turn:     g.Turn(),
+				DealOver: g.Over(),
+			}
+			if !m.Pass {
+				ev.Cards = keysOf(m.Combo.Cards)
+				ev.Kind = m.Combo.Type.String()
+				ev.Rank = m.Combo.Rank.RankName()
+			}
+			events = append(events, practiceEvent{typ: EventPlayed, data: ev})
+		}
+		record()
+
+		// 只要没打完、而且轮到 AI 座位，就一直走 —— 走到轮回玩家或者这一副打完。
+		//
+		// 进度不变量：每一手要么出牌（四家总牌数严格减少），要么过牌（一圈的过牌有上限，
+		// 过完必须由最后出牌的人领出）。所以正常情况下这个循环远小于 maxAILoop；
+		// 超过上限说明引擎/策略违反了不变量，整个事务回滚，不留半截局面。
+		cfg := ai.DefaultConfig()
+		for i := 0; i < s.maxAILoop && !g.Over() && g.Turn() != row.Seat; i++ {
+			seat := g.Turn()
+			d, decideErr := s.decide(ai.ViewOf(&g, seat), cfg)
+			if decideErr != nil {
+				return fmt.Errorf("练习局 AI 决策失败：%w", decideErr)
+			}
+			if d.Pass {
+				err = g.Pass(seat)
+			} else {
+				err = g.Play(seat, d.Combo.Cards, d.Combo.Type, d.Combo.Rank)
+			}
+			if err != nil {
+				return fmt.Errorf("练习局 AI 出牌被拒（%d 号座）：%w", seat, err)
+			}
+			record()
+		}
+		if !g.Over() && g.Turn() != row.Seat {
+			return fmt.Errorf("练习局 AI 连续走了 %d 手还没轮回玩家（引擎或策略违反进度）", s.maxAILoop)
+		}
+		if g.Over() {
+			moves := g.Moves()
+			events = append(events, practiceEvent{typ: EventEnded, data: endedEvent{
+				Revision: newRev,
+				Seq:      len(moves),
+				Counts:   countsOf(&g),
+				Turn:     g.Turn(),
+			}})
+		}
+
 		state, err := json.Marshal(&g)
 		if err != nil {
 			return fmt.Errorf("练习局存档序列化失败：%w", err)
@@ -160,7 +295,14 @@ func (s *Service) Play(ctx context.Context, id, userID string, mv Move, expected
 		if err := idemSave(ctx, tx, userID, idemKey, route, fp, map[string]any{"id": id}, s.clk.Now()); err != nil {
 			return err
 		}
-		out = viewOf(&g, id, row.Revision+1, row.Seat, false)
+		// 提交之后才推（回滚就不推）；顺序就是落子的顺序。
+		tx.AfterCommit(func(context.Context) {
+			topic := UserTopic(row.UserID)
+			for _, ev := range events {
+				s.pub.Publish(topic, ev.typ, ev.data)
+			}
+		})
+		out = viewOf(&g, id, newRev, row.Seat, false)
 		return nil
 	})
 	if err != nil {
@@ -203,14 +345,38 @@ type Service struct {
 	st     *store.Store
 	clk    clock.Clock
 	opener *ratelimit.Limiter
+
+	pub       Publisher
+	decide    Decider
+	maxAILoop int
 }
 
-// NewService 建练习局服务。clk 为 nil 时用系统时钟。
-func NewService(st *store.Store, clk clock.Clock) *Service {
+// NewService 建练习局服务。clk 为 nil 时用系统时钟；pub 为 nil 时不发实时事件。
+func NewService(st *store.Store, clk clock.Clock, pub Publisher) *Service {
 	if clk == nil {
 		clk = clock.System{}
 	}
-	return &Service{st: st, clk: clk, opener: ratelimit.New(openPerMinute, openPerMinute, clk)}
+	if pub == nil {
+		pub = NopPublisher{}
+	}
+	return &Service{
+		st: st, clk: clk, opener: ratelimit.New(openPerMinute, openPerMinute, clk),
+		pub: pub, decide: ai.Decide, maxAILoop: defaultMaxAILoop,
+	}
+}
+
+// SetDecider 换掉 AI 的决策函数（测试用；nil 忽略）。
+func (s *Service) SetDecider(d Decider) {
+	if d != nil {
+		s.decide = d
+	}
+}
+
+// SetMaxAILoop 调整一次请求里 AI 最多走几手（测试用；<=0 忽略）。
+func (s *Service) SetMaxAILoop(n int) {
+	if n > 0 {
+		s.maxAILoop = n
+	}
 }
 
 // View 是给客户端看的局面：**只有自己的手牌 + 各家的张数**。
@@ -269,6 +435,16 @@ func (s *Service) Create(ctx context.Context, userID string) (View, error) {
 			id, userID, int(g.Level()), seat, string(state), now.Unix()); err != nil {
 			return fmt.Errorf("建练习局：%w", err)
 		}
+		// 落库成功之后才推（回滚就不推）。
+		tx.AfterCommit(func(context.Context) {
+			s.pub.Publish(UserTopic(userID), EventStarted, startedEvent{
+				Revision: 1,
+				Seat:     seat,
+				Level:    int(g.Level()),
+				Counts:   countsOf(g),
+				Turn:     g.Turn(),
+			})
+		})
 		return nil
 	})
 	if err != nil {
@@ -416,14 +592,21 @@ func viewOf(g *rules.Game, id string, revision int64, seat int, ended bool) View
 		Level:    int(g.Level()),
 		Seat:     seat,
 		Hand:     keysOf(g.Hand(seat)),
+		Counts:   countsOf(g),
 		Turn:     g.Turn(),
 		DealOver: g.Over(),
 		Ended:    ended,
 	}
-	for s := 1; s <= rules.Seats; s++ {
-		v.Counts[s-1] = len(g.Hand(s))
-	}
 	return v
+}
+
+// countsOf 是四家各剩几张（下标 0 是 1 号座）。张数是公开信息，接口和事件都只给这个。
+func countsOf(g *rules.Game) [rules.Seats]int {
+	var c [rules.Seats]int
+	for s := 1; s <= rules.Seats; s++ {
+		c[s-1] = len(g.Hand(s))
+	}
+	return c
 }
 
 func keysOf(cards []rules.Card) []string {
