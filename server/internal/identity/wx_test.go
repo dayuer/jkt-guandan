@@ -669,3 +669,33 @@ func TestWxLoginNicknameContentCheck(t *testing.T) {
 	wx.add("c2", "open-1", "")
 	f.wxLogin("c2", "老王")
 }
+
+// #147：小游戏新建身份时，称呼还要过本地敏感词表。这条是内容安全检测之外的**兜底**：
+// 没配 GUANDAN_WX_APPID（Guard 为 nil，这里正是）、微信超时或出错放行时，本地词表仍然拦得住。
+// 本地判定在调微信之前，所以被拒的 code 不会拿去换 openid。
+func TestWxLoginRejectsSensitiveNicknameWords(t *testing.T) {
+	f, wx := newWxFixture(t) // 不挂 Guard：模拟没配 AppID / 微信放行
+
+	for _, bad := range []string{"赌神", "judi 50rb", "小赌怡情"} {
+		code := "bad-" + bad
+		wx.add(code, "open-"+bad, "")
+		before := f.countRows(`SELECT COUNT(*) FROM users`)
+		r := f.mini(http.MethodPost, "/api/wx/login", map[string]string{"code": code, "nickname": bad}, nil)
+		e, _ := r.body["error"].(map[string]any)
+		if r.status != http.StatusUnprocessableEntity || e["code"] != "sensitive_word" || e["field"] != "nickname" {
+			t.Fatalf("称呼 %q 应 422 sensitive_word field=nickname：%d %s", bad, r.status, r.raw)
+		}
+		// 被拦的这一次不该建用户（前面的用例自己会建，所以比增量）。
+		if n := f.countRows(`SELECT COUNT(*) FROM users`); n != before {
+			t.Fatalf("称呼 %q 被拦时不该建用户：%d → %d", bad, before, n)
+		}
+		// 服务端在调微信之前就拦掉了：这个 code 还没被用掉，换个干净称呼还能换成 openid。
+		f.wxLogin(code, "老王")
+	}
+
+	// 姓「钱」是正常称呼。
+	wx.add("ok", "open-ok", "")
+	if r := f.wxLogin("ok", "钱哥"); r.status != http.StatusOK {
+		t.Fatalf("称呼「钱哥」应当能建：%d %s", r.status, r.raw)
+	}
+}

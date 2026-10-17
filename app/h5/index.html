@@ -8,7 +8,7 @@
     <!-- 页面底色 --paper；manifest 的 theme_color 必须同值，不然安卓 standalone 的状态栏颜色随入口变（#63 审查建议 4，pwa.test.ts 盯着）。 -->
     <meta name="theme-color" content="#F6EFE4" />
     <meta name="format-detection" content="telephone=no" />
-    <title>随时掼掼蛋</title>
+    <title>%APP_NAME%</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <!-- 用 .json 而不是 .webmanifest：Go 的 mime 表里没有后者，内嵌的静态服务会把它
          发成 application/octet-stream，Chrome 会因此拒绝这份 manifest。 -->

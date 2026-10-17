@@ -7,6 +7,9 @@
  * 服务端发过来的内容（#48 定的格式）：
  *   {title, body, tag, url, kind, game}
  * 其中 tag 是 outbox 的去重键，同一条提醒重发时设备上只显示一次。
+ *
+ * 通知标题里的应用名是个占位符（常量在 app/shared/src/appName.ts）：由 app/h5/vite.config.ts
+ * 的 app-name 插件在构建时（dev server 上也一样）替换。产品改名只改那一行。
  */
 
 self.addEventListener("install", () => {
@@ -28,10 +31,10 @@ async function showPush(event) {
     data = event.data ? event.data.json() : {};
   } catch {
     // 不是 JSON 就当纯文本处理，别把整条通知丢掉。
-    data = { title: "随时掼掼蛋", body: event.data ? event.data.text() : "" };
+    data = { title: "%APP_NAME%", body: event.data ? event.data.text() : "" };
   }
 
-  const title = data.title || "随时掼掼蛋";
+  const title = data.title || "%APP_NAME%";
   const url = data.url || "/";
 
   await self.registration.showNotification(title, {

@@ -219,3 +219,29 @@ func TestReservedNicknameRejectedEverywhere(t *testing.T) {
 		t.Fatalf("普通称呼应当能建：%d %s", r.status, r.raw)
 	}
 }
+
+// #147：改称呼也要过本地敏感词表，错误体和高亮字段和地点、备注一致。
+func TestChangeNicknameRejectsSensitiveWord(t *testing.T) {
+	f := newFixture(t, false)
+	f.createIdentity(f.http, "老王")
+
+	for _, bad := range []string{"赌神", "judi 50rb"} {
+		r := f.do(http.MethodPut, "/api/me/nickname", map[string]string{"nickname": bad})
+		e, _ := r.body["error"].(map[string]any)
+		if r.status != http.StatusUnprocessableEntity || e["code"] != "sensitive_word" || e["field"] != "nickname" {
+			t.Fatalf("称呼 %q 应 422 sensitive_word field=nickname：%d %s", bad, r.status, r.raw)
+		}
+	}
+	// 被拦时名字要原样保留，不能改一半。
+	if me := f.do(http.MethodGet, "/api/me", nil); me.userField("nickname") != "老王" {
+		t.Fatalf("被拦时称呼不该变：%s", me.raw)
+	}
+
+	// 姓「钱」不算敏感词。
+	if r := f.do(http.MethodPut, "/api/me/nickname", map[string]string{"nickname": "钱哥"}); r.status != http.StatusOK {
+		t.Fatalf("称呼「钱哥」应当可以改：%d %s", r.status, r.raw)
+	}
+	if me := f.do(http.MethodGet, "/api/me", nil); me.userField("nickname") != "钱哥" {
+		t.Fatalf("称呼应当改成钱哥：%s", me.raw)
+	}
+}

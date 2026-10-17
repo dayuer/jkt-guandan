@@ -244,3 +244,14 @@ describe("把推送显示成通知（用假事件真跑一遍 sw.js）", () => {
     expect(opened).toEqual(["/g/X1?a=1"]);
   });
 });
+
+describe("应用名只有一处写死（产品改名那一件）", () => {
+  // index.html / manifest.json / sw.js 编译不过去，只能写占位符，由 vite.config.ts 的
+  // app-name 插件在构建时换成 app/shared/src/appName.ts 里的常量。
+  // 这里钉住：谁要是把名字写死回去，改名时就会漏掉它 —— 而它偏偏是用户看得见的那几处。
+  it("三个静态文件里写的是 %APP_NAME% 占位符", () => {
+    expect(read("index.html")).toContain("<title>%APP_NAME%</title>");
+    expect(read("public/manifest.json")).toContain('"name": "%APP_NAME%"');
+    expect(swSource).toContain("%APP_NAME%");
+  });
+});

@@ -1,4 +1,4 @@
-// Package moderate 是 §14 的敏感词过滤：牌局的备注和地点命中词表时拒绝提交。
+// Package moderate 是 §14 的敏感词过滤：称呼、牌局的备注和地点命中词表时拒绝提交。
 //
 // 印尼对赌博管得严（UU 7/1974、KUHP），页面上虽然已经写了「不设彩头、不涉及任何金钱
 // 输赢」，但用户还是可能在备注里写「一把 50 块钱」「judi santai」。这里挡住的是
@@ -19,7 +19,11 @@ import (
 // ErrSensitive 是这一类错误的哨兵，调用方用 errors.Is 判断。
 var ErrSensitive = errors.New("moderate: 内容涉及金钱或赌博")
 
-// Hit 说明是哪个字段命中了哪个词。字段名用请求体里的 JSON 名（venue / note），
+// Message 是命中的时候给用户看的那句话。命中哪个词不告诉用户，只进日志（和微信那版一样）：
+// 说了反而等于教人怎么绕。牌局的地点、备注和称呼用的是同一句，前端不用区分来源。
+const Message = "请勿涉及金钱：这里只约纯娱乐局"
+
+// Hit 说明是哪个字段命中了哪个词。字段名用请求体里的 JSON 名（venue / note / nickname），
 // 前端据此把提示放在对应的输入框下面（原型 X1）。
 type Hit struct {
 	Field string
@@ -33,6 +37,18 @@ func (h *Hit) Error() string {
 // Unwrap 让 errors.Is(err, ErrSensitive) 成立。
 func (h *Hit) Unwrap() error { return ErrSensitive }
 
+// fieldExcept 是「某个词在某个字段里不查」的例外表（#147）。
+//
+// 目前只有一条：称呼里的单字「钱」。「钱」是百家姓里的常见姓，「老钱」「钱哥」
+// 「钱小姐」都是真实的人名，出现在称呼里远比出现在地点、备注里常见，误伤的代价
+// 也大得多——被拦的人不会再解释一遍，他直接换个名字走。
+//
+// 只跳过**这一个词条**：词表里「赌钱」「赢钱」「输钱」「赌」这些都照旧拦，
+// 所以「赌神」「judi 50rb」在称呼里照样过不去；地点、备注完全不受影响。
+var fieldExcept = map[string]map[string]bool{
+	"nickname": {"钱": true},
+}
+
 // Check 检查一个字段。没命中时返回 nil。
 func Check(field, text string) *Hit {
 	if strings.TrimSpace(text) == "" {
@@ -44,7 +60,11 @@ func Check(field, text string) *Hit {
 	// 所以去掉这些分隔符之后再比子串。
 	squeezed := squeeze(folded)
 
+	except := fieldExcept[field]
 	for _, w := range words {
+		if except[w.text] {
+			continue
+		}
 		if w.ascii {
 			// 拉丁词按整词比：「bet」不该命中「better」，也不该命中「alphabet」。
 			if hasWord(folded, w.text) {
@@ -160,8 +180,14 @@ func isASCII(s string) bool {
 // （提示里显示的还是他自己写的内容）。
 func squeeze(s string) string {
 	return strings.Map(func(r rune) rune {
+		// **所有** Unicode 空白都去掉，不只是 ASCII 空格和 \t\n\r：中文输入法里最顺手的是
+		// 全角空格 U+3000，微信里复制出来的还有不换行空格 U+00A0 —— 留一个在中间，
+		// 「赢　钱」就绕过了「赢钱」这一条（#147 复审的 B1）。
+		if unicode.IsSpace(r) {
+			return -1
+		}
 		switch r {
-		case ' ', '\t', '\n', '\r', '-', '_', '.', ',', '/', '\\', '|', '+', '*', '·', '、', '，':
+		case '-', '_', '.', ',', '/', '\\', '|', '+', '*', '·', '、', '，':
 			return -1
 		case '\u200b', '\u200c', '\u200d', '\ufeff': // 零宽字符（含 BOM）
 			return -1

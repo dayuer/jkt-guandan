@@ -153,3 +153,60 @@ func TestWordListIsSane(t *testing.T) {
 		seen[w] = true
 	}
 }
+
+// #147：称呼里的单字「钱」不查——它是百家姓里的常见姓（老钱、钱哥、钱小姐），
+// 在称呼里误伤的代价比地点、备注大得多。只跳过这一个词条，含「钱」的别的词照拦。
+func TestCheckFieldExceptionForSurnameQian(t *testing.T) {
+	// 称呼里放行：「钱」是姓，不是彩头。
+	for _, text := range []string{"钱", "钱哥", "老钱", "钱小姐", "钱明"} {
+		if hit := Check("nickname", text); hit != nil {
+			t.Errorf("称呼 %q 不该命中，却命中了 %q", text, hit.Word)
+		}
+	}
+
+	// 例外只针对单字「钱」：词表里其它词在称呼里照拦。
+	for _, tc := range []struct{ text, want string }{
+		{"赌钱", "赌"},   // 含「钱」，但不是单字那一条
+		{"赢钱", "赢钱"},  // 同上
+		{"赢　钱", "赢钱"}, // 全角空格 U+3000：中文输入法里最顺手，夹一个就绕过去了（#147 B1）
+		{"输 钱", "输钱"}, // 不换行空格 U+00A0：从微信里复制出来的
+		{"赌神", "赌"},
+		{"筹码", "筹码"},
+		{"judi 50rb", "judi"},
+	} {
+		hit := Check("nickname", tc.text)
+		if hit == nil {
+			t.Errorf("称呼 %q 应当命中 %q", tc.text, tc.want)
+			continue
+		}
+		if hit.Word != tc.want {
+			t.Errorf("称呼 %q 命中的是 %q，期望 %q", tc.text, hit.Word, tc.want)
+		}
+		if hit.Field != "nickname" {
+			t.Errorf("字段名是 %q，期望 nickname", hit.Field)
+		}
+	}
+
+	// 例外不外溢：地点、备注里的单字「钱」照旧拦。
+	for _, tc := range []struct{ field, text string }{
+		{"venue", "钱柜包厢"},
+		{"note", "钱哥定的场子"},
+	} {
+		if hit := Check(tc.field, tc.text); hit == nil || hit.Word != "钱" {
+			t.Errorf("%s %q 应当命中「钱」：%v", tc.field, tc.text, hit)
+		}
+	}
+
+	// 全角空格这个缺口在地点、备注里本来就有（旧问题）：夹一个 U+3000 就绕过去了。
+	// 称呼跳过「钱」以后它才变得要紧，但顺手把这三条一起钉住（#147 复审 B1）。
+	for _, tc := range []struct{ field, text, want string }{
+		{"nickname", "赢　钱", "赢钱"},
+		{"venue", "筹　码", "筹码"},
+		{"note", "下　注", "下注"},
+	} {
+		hit := Check(tc.field, tc.text)
+		if hit == nil || hit.Word != tc.want {
+			t.Errorf("%s %q 应当命中「%s」：%v", tc.field, tc.text, tc.want, hit)
+		}
+	}
+}

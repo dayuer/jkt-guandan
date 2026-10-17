@@ -106,6 +106,10 @@ _path_to_context() {
       echo 'local-ci/meta'; echo 'local-ci/e2e' ;;
     scripts/local-ci.sh|scripts/test-local-ci.sh|scripts/pre-merge-check.sh)
       echo 'local-ci/meta' ;;
+    # 共享层守门（#253）：它由 `make shared-check` 调用，跑在 `local-ci/test` 里 ——
+    # 只改它或它的自测时若不挂上来，就是「改了没人跑」（静默漏检）。
+    scripts/check-shared-imports*.mjs)
+      echo 'local-ci/test' ;;
   esac
 }
 

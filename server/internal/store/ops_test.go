@@ -357,6 +357,9 @@ func TestDeleteUserData(t *testing.T) {
 	mustExec(t, st, `INSERT INTO claim_tokens (token_hash, code, user_id, expires_at) VALUES (x'01', '1234', ?, 0)`, guest)
 	mustExec(t, st, `INSERT INTO follows (user_id, target_id, created_at) VALUES (?, ?, 0), (?, ?, 0)`, host, guest, guest, host)
 	mustExec(t, st, `INSERT INTO events (at, user_id, name) VALUES (0, ?, 'seat_taken')`, guest)
+	// 练习局（#88）：是他的个人数据，注销一并删掉（开着的、已结束的都算）。
+	mustExec(t, st, `INSERT INTO practice_games (id, user_id, level, seat, state, revision, created_at, ended_at)
+		VALUES ('p-open', ?, 2, 1, '{}', 1, 0, NULL), ('p-done', ?, 2, 2, '{}', 1, 0, 0)`, guest, guest)
 
 	if err := st.DeleteUserData(context.Background(), guest); err != nil {
 		t.Fatalf("删除: %v", err)
@@ -370,6 +373,7 @@ func TestDeleteUserData(t *testing.T) {
 		`SELECT count(*) FROM claim_tokens`:                     0,
 		`SELECT count(*) FROM follows`:                          0,
 		`SELECT count(*) FROM events WHERE user_id IS NOT NULL`: 0,
+		`SELECT count(*) FROM practice_games`:                   0,
 		`SELECT count(*) FROM seats WHERE game_id = 'g1'`:       2,
 	} {
 		if got := scalar(t, st, q); got != want {

@@ -52,6 +52,8 @@ var deleteStatements = []struct {
 	{"记分离座记录", `DELETE FROM score_seat_leavers WHERE user_id = ?`},
 	// 「我的牌局」历史里删掉的局（#211）：只是他自己的列表偏好。
 	{"隐藏的历史局", `DELETE FROM hidden_games WHERE user_id = ?`},
+	// 练习局（#88）：一个人的牌，和别人无关，注销就删（和「隐藏的历史局」同理）。
+	{"练习局", `DELETE FROM practice_games WHERE user_id = ?`},
 	// 他都不来了，别再推给他。
 	{"未发出的提醒", `DELETE FROM outbox WHERE user_id = ?`},
 	// 埋点留着做汇总，但不能再指回这个人（和 store.DeleteUserData 一致，§14）。
@@ -63,7 +65,7 @@ var deleteStatements = []struct {
 // 一次事务里做完所有事：
 //   - 还没结束的局：按正常退出离开（这个人在那些局里等于「不来了」）；
 //   - 已结束的局：座位行保留，称呼变成「已注销牌友」；
-//   - 个人数据：设备、推送订阅、认领令牌、微信关联、订阅消息次数、幂等键、邀请、星标、被移出记录、记分离座记录、未发出的提醒，埋点去掉 user_id；
+//   - 个人数据：设备、推送订阅、认领令牌、微信关联、订阅消息次数、幂等键、邀请、星标、被移出记录、记分离座记录、隐藏的历史局、练习局、未发出的提醒，埋点去掉 user_id；
 //   - 用户行保留（座位还引用着它），但称呼抹掉、WhatsApp 清空、写上 deleted_at。
 //
 // 重复调用是安全的：已经注销过就直接返回（前端可能重试）。
