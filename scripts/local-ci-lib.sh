@@ -23,7 +23,7 @@
 
 # 一条路径 → 零到多个 context（每行一个）。与原 ci.yml 的对应关系：
 #
-#   local-ci/test     go vet + 前端构建 + go test -race + 前端测试（= make test）
+#   local-ci/test     go vet + gofmt 检查 + 前端构建 + go test -race + 前端测试（= make test）
 #   local-ci/vuln     govulncheck
 #   local-ci/h5-audit npm audit --omit=dev（只在依赖清单变了时跑：通报每天在变，
 #                     与改动无关的红不该挂在别人的 PR 上）
@@ -149,7 +149,7 @@ CONTEXT_ORDER='local-ci/meta local-ci/nginx local-ci/test local-ci/rules local-c
 # 自测里有一条断言把 1 钉死了（精确等于 1 —— 只判"非 0"会把 127 当成通过）。
 context_command() {
   case "${1:-}" in
-    local-ci/test)     echo 'make test  # go vet + 前端构建 + go test -race + 前端测试' ;;
+    local-ci/test)     echo 'make test  # go vet + gofmt + 前端构建 + go test -race + 前端测试' ;;
     local-ci/vuln)     echo 'make vuln  # govulncheck' ;;
     local-ci/h5-audit) echo 'cd app/h5 && npm audit --omit=dev --registry=https://registry.npmjs.org' ;;
     local-ci/minigame) echo 'cd app/minigame && npm ci && npm run typecheck && npm test && npm run build' ;;

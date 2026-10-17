@@ -173,7 +173,28 @@ case " $(context_tools local-ci/e2e) " in
   *) bad 'e2e 的工具里有 python3（e2e-port.sh 要用）' '含 python3' "$(context_tools local-ci/e2e)" ;;
 esac
 
-eq 'test 就是 make test' 'make test  # go vet + 前端构建 + go test -race + 前端测试' "$(context_command local-ci/test)"
+eq 'test 就是 make test' 'make test  # go vet + gofmt + 前端构建 + go test -race + 前端测试' "$(context_command local-ci/test)"
+
+# #147 之后：`make test` 必须真的跑 gofmt 检查。main 上 4d4882c 那笔「chore: gofmt」按别的
+# 版本的 gofmt 把 play_test.go 改坏了，而 CI 不查 gofmt，就一直没人发现。这条断言钉住：
+# 描述改了、但依赖里没有 gofmt-check（或者反过来）都要红。
+# 注意不能用 `make -n test | grep -q`：本脚本开了 pipefail，grep -q 一命中就关管道，
+# make 吃 SIGPIPE，整条管道反而返回非 0（假红）。先落到变量里再 case 匹配。
+make_test_rules="$(make -n test 2>/dev/null)"
+case "$make_test_rules" in
+  *'/bin/gofmt'*) gofmt_wired=yes ;;
+  *) gofmt_wired=no ;;
+esac
+eq 'make test 真的会跑 gofmt 检查' 'yes' "$gofmt_wired"
+
+# #278 复审的阻塞项：**gofmt 自己出错时守门不能静默通过**。make 用不带 -e 的 sh -c 跑，
+# 命令替换里的失败会被吞掉、gofmt 的错误又走 stderr，于是「gofmt 不存在 / 文件有语法错误 /
+# 文件名被拆开 / 文件被删了」都表现为「输出为空 → 通过」。这里拿 GOFMT 指一个不存在的路径，
+# 断言 make gofmt-check 必须失败（make 会返回 2）。
+make gofmt-check GOFMT=/nonexistent/gofmt >/dev/null 2>&1
+gofmt_missing_rc=$?
+eq 'gofmt 不存在时 make gofmt-check 必须失败' 'yes' \
+  "$([ "$gofmt_missing_rc" -ne 0 ] && echo yes || echo no)"
 eq 'minigame 与原 ci.yml 一致' \
   'cd app/minigame && npm ci && npm run typecheck && npm test && npm run build' \
   "$(context_command local-ci/minigame)"

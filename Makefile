@@ -2,12 +2,12 @@
 GO ?= go
 NPM ?= npm
 
-.PHONY: help web-install web-build build vet go-test race-test vuln web-test shared-install shared-check test e2e run seed docker deploy-test restore-drill clean
+.PHONY: help web-install web-build build vet gofmt-check go-test race-test vuln web-test shared-install shared-check test e2e run seed docker deploy-test restore-drill clean
 
 help:
 	@echo "make build    构建二进制（会先构建前端，再用 embed 打进去）"
 	@echo "make run      开发模式跑起来：GUANDAN_DEV=1，监听 :8080，数据写在 ./.data"
-	@echo "make test     go vet + 后端测试（-race）+ 前端测试 + 共享层 typecheck"
+	@echo "make test     go vet + gofmt 检查 + 后端测试（-race）+ 前端测试 + 共享层 typecheck"
 	@echo "make e2e      浏览器端到端冒烟（Playwright + 无头 Chromium，先构建二进制）"
 	@echo "make vuln     govulncheck"
 	@echo "make seed     往 ./.data 写入设计稿里的示例数据"
@@ -30,6 +30,36 @@ build: web-build
 
 vet:
 	$(GO) vet ./...
+
+# gofmt 检查（#147 的 B2 和 main 上 4d4882c 那次回退，都是因为 CI 不查 gofmt）。
+# 用**工具链自带**的 gofmt，不用 PATH 里那个：两边 Go 版本不同，格式化结果也不同 ——
+# 4d4882c 那笔「chore: gofmt」正是被别的版本的 gofmt 改坏的，把对齐按显示宽度算了。
+# 文件清单走 git ls-files（仓库里 app/h5/embed.go 也有 Go 代码，不只是 server/），
+# 顺带避开 node_modules、dist 这些。
+#
+# 为什么写得这么啰嗦（#278 复审的阻塞项）：make 用不带 -e 的 sh -c 跑，**命令替换里的失败会被
+# 吞掉**，gofmt 的错误又走 stderr —— 于是「gofmt 不存在 / 文件有语法错误 / 文件名被拆开 /
+# 文件被删了」全都表现为「输出为空 → 通过」，守门等于没装。所以：
+#   - 先确认 gofmt 可执行；-z/-0 传路径，避免空格和非 ASCII 文件名被拆开（git 会给后者加引号）；
+#   - 命令替换后接 `|| exit`，gofmt 自己出错就红；
+#   - 文件列表为空时单独报错（gofmt -l 没参数会去读 stdin，不能让它空跑）。
+# GOFMT 可覆盖，自测就拿它模拟「gofmt 不存在」。
+GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
+
+gofmt-check:
+	@gofmt="$(GOFMT)"; \
+	if [ ! -x "$$gofmt" ]; then \
+		printf 'gofmt-check：找不到可执行的 gofmt（%s）。用 go env GOROOT 定位工具链。\n' "$$gofmt"; exit 2; \
+	fi; \
+	if [ "$$(git ls-files -- '*.go' | wc -l | tr -d ' ')" -eq 0 ]; then \
+		printf 'gofmt-check：git ls-files 没找到任何 .go 文件？\n'; exit 2; \
+	fi; \
+	out="$$(git ls-files -z -- '*.go' | xargs -0 "$$gofmt" -l)" || { \
+		printf 'gofmt-check：gofmt 自己出错了（见上面的 stderr），不能当作通过。\n'; exit 2; \
+	}; \
+	if [ -n "$$out" ]; then \
+		printf '这些文件没按 gofmt 格式化（用 %s -w 修）：\n%s\n' "$$gofmt" "$$out"; exit 1; \
+	fi
 
 # race 检测需要 CGO；发布构建仍然关掉 CGO（§9）。
 race-test:
@@ -61,7 +91,7 @@ shared-check: web-install shared-install
 	node --test scripts/check-shared-imports.test.mjs
 
 # 先构建前端再跑后端测试，这样 httpapi 的用例能真正验证内嵌进去的页面。
-test: vet web-build race-test web-test shared-check
+test: vet gofmt-check web-build race-test web-test shared-check
 
 # 浏览器端到端冒烟（#72）。第一次跑之前装一次浏览器：cd app/h5 && npx playwright install chromium
 # 端口每次运行单独分配（#228），本机几个会话同时跑也不会撞；要固定端口就自己设 E2E_PORT。
