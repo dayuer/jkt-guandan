@@ -122,7 +122,12 @@ build_from_text() {
   # 到不了 —— 放在 $work 里就能被 trap 上的 cleanup 一并收掉（#196 三轮复审）。
   dir="$(mktemp -d "$work/deploytest-df.XXXXXX")"
   printf '%s' "$1" > "$dir/Dockerfile"
-  docker_build_or_die -q -t "$2" "$dir" >/dev/null
+  # ⚠️ 这里**必须**用默认 builder，不能用本项目的 buildx builder（#279）：这些场景镜像的
+  # `FROM` 是**刚 build 出来的本地镜像**（`$GOOD` / `$REPO:migrated-base`），而 buildx 的
+  # docker-container driver 有独立的镜像库，看不见宿主 daemon 里的本地镜像 —— 它会去镜像源
+  # pull，然后 `pull access denied`。这些镜像只加一个 ENV，层是 KB 级，留在默认缓存里没关系；
+  # 真正占空间的是从源码构建的那几个（migrated-base / prod），它们走专用 builder。
+  ( unset CI_BUILDER; docker_build_or_die -q -t "$2" "$dir" >/dev/null )
   rm -rf "$dir"
 }
 

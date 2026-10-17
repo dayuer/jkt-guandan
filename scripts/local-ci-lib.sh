@@ -104,6 +104,9 @@ _path_to_context() {
     # e2e 的端口分配（#228）：e2e 靠它拿端口，meta 里有它的自测，两样都要跑。
     scripts/e2e-port.sh)
       echo 'local-ci/meta'; echo 'local-ci/e2e' ;;
+    # 本项目的 buildx builder（#279）：只影响 local-ci/docker 的构建方式。
+    scripts/ci-builder.sh|scripts/ci-buildkitd.toml)
+      echo 'local-ci/docker' ;;
     scripts/local-ci.sh|scripts/test-local-ci.sh|scripts/pre-merge-check.sh)
       echo 'local-ci/meta' ;;
     # 共享层守门（#253）：它由 `make shared-check` 调用，跑在 `local-ci/test` 里 ——
@@ -407,7 +410,16 @@ docker_build_retrying() {
     # 这个函数它也要用，所以不能用 bash 专有的写法。
     # 子壳里 `|| rc=$?` 是必须的：调用方开了 `set -e` 时，裸的失败命令会让子壳当场退出，
     # 那就写不到那个文件了。
-    ( rc=0; docker build "$@" 2>&1 || rc=$?; printf '%s' "$rc" > "$rcf" ) | tee "$log"
+    ( rc=0
+      if [ -n "${CI_BUILDER:-}" ]; then
+        # 本项目的 buildx builder（#279）：缓存落在它自己的卷里、上限 4 GiB。
+        # `--load` 是必须的 —— buildx 的结果默认只留在 builder 里，不 load 的话后面
+        # `docker run` 找不到镜像。
+        docker buildx build --builder "$CI_BUILDER" --load "$@" 2>&1 || rc=$?
+      else
+        docker build "$@" 2>&1 || rc=$?
+      fi
+      printf '%s' "$rc" > "$rcf" ) | tee "$log"
     rc="$(cat "$rcf")"
     if [ "$rc" -eq 0 ]; then rm -f "$rcf"; return 0; fi
     if [ "$(docker_failure_kind "$log")" != network ]; then rm -f "$rcf"; return 1; fi
@@ -460,7 +472,14 @@ run_context() {
       ( cd app/rules && npm ci && npm run typecheck && npm test ) || return 1 ;;
     local-ci/nginx)    scripts/check-nginx.sh deploy/nginx/guandan.synon.ai.conf || return 1 ;;
     local-ci/docker)
-      local sha="${LOCAL_CI_SHA:-$(git rev-parse HEAD)}" image rc log
+      local sha="${LOCAL_CI_SHA:-$(git rev-parse HEAD)}" image rc log CI_BUILDER
+      # 本项目的专用 buildx builder（#279）：缓存有上限、不和别的项目共用。
+      # 建不起来是环境问题（比如没装 buildx），别记成代码红。
+      if ! CI_BUILDER="$(scripts/ci-builder.sh)"; then
+        set_env_reason 'buildx builder 建不起来（没有 buildx？）'
+        return 2
+      fi
+      export CI_BUILDER   # test-deploy.sh 那几个脚本自己也 build 镜像，要跟着用同一个 builder
       # 镜像名带上进程号：同一台机器上几个会话同时跑，别互相覆盖同一个 tag。
       image="guandan:local-ci-$$"
       log="$(mktemp "${TMPDIR:-/tmp}/local-ci-docker.XXXXXX")"

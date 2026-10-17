@@ -13,7 +13,9 @@
 FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /src/app/h5
 COPY app/h5/package.json app/h5/package-lock.json ./
-RUN npm ci
+# npm 的缓存挂在 cache mount 里（#279）：跨提交复用，不占层、也不随提交数增长。
+# 这里的 cache mount 要求 BuildKit（docker 23+ 默认就是；local-ci 用 buildx 专用 builder）。
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY app/h5/ ./
 # #253：两端共用的纯逻辑住在 app/shared，H5 用相对路径 import 它（../../../shared/…）。
 # 镜像里目录结构跟仓库保持一致，所以照搬一份到 /src/app/shared（不然 tsc 找不到模块）。
@@ -24,14 +26,18 @@ RUN npm run build
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+# Go 的模块缓存和编译缓存都挂在 cache mount 里（#279）：BUILD 一变最后那条 go build 就重跑，
+# 没有这两个挂载的话每次都是**从零编译**，产物层还一份份攒进构建缓存。
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 COPY --from=web /src/app/h5/dist ./app/h5/dist
 # 构建号（§13.4）：CI 传提交 SHA，响应头 X-App-Build 和 /metrics 的 guandan_build_info 用它。
 ARG BUILD=dev
 ARG TARGETOS=linux
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -ldflags="-s -w -X github.com/dayuer/jkt-guandan/server/internal/buildinfo.Build=${BUILD}" \
       -o /out/guandan ./server/cmd/guandan
 # 让运行时的 /data 属于 nonroot，这样挂上 named volume 后进程写得进去（--read-only 时只有 /data 可写）
