@@ -145,6 +145,7 @@ func TestRouteTable(t *testing.T) {
 		{"DELETE /api/follows/{user_id}", "user", "friends.(*handler).unstar"},
 		{"POST /api/practice", "user", "practice.(*handler).create"},
 		{"GET /api/practice/{id}", "user", "practice.(*handler).get"},
+		{"POST /api/practice/{id}/play", "user", "practice.(*handler).play"},
 		{"POST /api/agent", "public", "agent.(*handler).draft"},
 		{"POST /api/events", "public", "telemetry.(*handler).events"},
 		{"POST /api/client-errors", "public", "telemetry.(*handler).clientError"},

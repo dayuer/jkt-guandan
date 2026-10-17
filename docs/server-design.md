@@ -531,7 +531,25 @@ CREATE TABLE hidden_games (
   （牌局必须不可预测）。
 - **不是自己的局返回 404**（不是 403）：id 是不透明的随机串，没必要让对方知道「这个 id 存在、
   但不是你的」。「不存在」和「不是你的」的响应**一模一样**。
-- **限流**：建局每人每分钟 30 次，超出 429 `rate_limited`。
+- **出牌**（`POST /api/practice/{id}/play`）：体 `{cards, kind, rank, expected_revision}` 或
+  `{pass:true, expected_revision}`。
+  - **一手不成立** → **409 + 引擎的原因码**（`error.code` 就是 `rules` 那七个封闭取值：
+    `not-your-turn` / `leading-cannot-pass` / `no-cards` / `cards-not-in-hand` / `bad-combo` /
+    `does-not-beat` / `game-over`），**局面一点不动** —— 客户端拿到的取值和它本地 `app/rules`
+    算出来的是同一套，提示文案可以共用；
+  - `expected_revision` 对不上（或并发改过）→ **409 `version_conflict`**，响应里带**最新局面**
+    （`practice` 键，和成功响应同形状），客户端直接刷新重来；少了这个字段是 400
+    （和 games 的 `If-Match` 同一个规矩：宁可不做，也不拿一个不知道自己是哪一版的请求去改局面）；
+  - `Idempotency-Key`（可选）重发 → **不落两次**，返回现在的局面（可能比第一次新 —— 幂等说的是
+    「这一手不落两次」，不是「响应冻住」）；同一个键用在别的请求上 → 422 `idempotency_key_reused`；
+  - 这一副打完了还出牌 → 409 `deal_over`（下一副是后面的事）；
+  - 这一局练习局已经被新局收掉（`ended`）→ 409 `practice_ended`，局面不动 —— 收掉的局只能取来复盘；
+  - `cards` 里同一张牌写两次 → 400 `bad_request`（调用方的错，不是「这一手不成立」，也不该变成 503）；
+  - **服务端不替 AI 走棋**：出完手 `turn` 可能落在 AI 座位上（AI 回合在下一件）。
+  - 局面里 `deal_over` 表示**这一副**打完了（和 `ended`＝这一局练习局收掉了不是一回事）——
+    客户端靠它决定弹结算还是继续出牌，不用猜 `turn == 0`。
+- **限流**：建局每人每分钟 30 次，超出 429 `rate_limited`。（出牌不限流：它的写量被
+  `expected_revision` 卡着 —— 只有轮到自己、且 revision 对得上才写得进去。）
 - **注销与合并身份**（§14）：注销（`DELETE /api/me`）和 admin 删数据**把练习局一起删** ——
   一个人的牌，没别人参与。合并身份时练习局**跟着走**（是这个人的历史，复盘要用），
   但搬之前**先把被并掉那个身份还没结束的那一局结束掉**：否则两边的「未结束局」会撞上
@@ -574,6 +592,7 @@ PUT/DELETE /api/follows/{user_id}     星标牌友
 GET  /api/friends                     牌友列表（含一起打过几局）
 POST /api/practice                    开一局练习局（#88）：发牌、落库，返回局面（只含自己的手牌）
 GET  /api/practice/{id}              练习局局面：断线回来 / 刷新 / 复盘（§5.7）
+POST /api/practice/{id}/play         出一手（或过牌）：服务端校验 + 推进（§5.7）
 POST /api/events                      埋点批量上报（#117，见下面「埋点」）
 POST /api/client-errors               前端错误上报（#117）
 DELETE /api/me                        注销并删除个人数据（§14）

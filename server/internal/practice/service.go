@@ -14,12 +14,16 @@ package practice
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/dayuer/jkt-guandan/server/internal/clock"
@@ -33,7 +37,159 @@ var (
 	ErrNotFound = errors.New("练习局不存在")
 	// ErrRateLimited：建局太频繁。
 	ErrRateLimited = errors.New("操作太频繁")
+	// ErrDealOver：这一副已经打完了（下一副是第 5 件的事，这里不偷偷开新副）。
+	ErrDealOver = errors.New("这一副已经打完了")
+	// ErrPracticeEnded：这一局练习局已经被新局收掉了（建新局时写了 ended_at）。
+	// 收掉的局只能取（复盘），不能再改 —— 复盘和第 6/7 件都依赖「收掉的局不再变」。
+	ErrPracticeEnded = errors.New("这局练习已经结束了")
 )
+
+// VersionConflict：客户端手里的 revision 旧了（或者有人并发改了）。**带上最新局面**，
+// 客户端拿它直接刷新就行（照 games 的 VersionConflict 那套）。
+type VersionConflict struct {
+	Latest View
+}
+
+func (e *VersionConflict) Error() string {
+	return "练习局已经被改过，请按最新的局面重来"
+}
+
+// MoveRejected：这一手在当前局面下不成立。`Reason` 是**引擎的封闭原因码**（rules 的 `RejectReason`，
+// 七个取值：not-your-turn / leading-cannot-pass / no-cards / cards-not-in-hand / bad-combo /
+// does-not-beat / game-over）—— 直接当接口的 `error.code` 发出去。
+//
+// 不另编一套文案码：客户端拿到的取值和它本地 `app/rules` 算出来的是**同一套**
+// （两端共用牌例之外的又一处白捡的一致），提示文案可以共用。
+type MoveRejected struct {
+	Reason string
+}
+
+func (e *MoveRejected) Error() string { return "这一手不成立：" + e.Reason }
+
+// Move 是玩家提交的一手：`Pass` 为真就是过牌，否则是打出 `Cards` 这几张、当 `Type`（`Rank`）那一种解读。
+type Move struct {
+	Pass  bool
+	Cards []rules.Card
+	Type  rules.ComboType
+	Rank  rules.Rank
+}
+
+// moveKey 把一手收成一个稳定的字符串，给幂等指纹用（同一个键 + 同一手 = 同一次提交）。
+func moveKey(m Move) string {
+	if m.Pass {
+		return "pass"
+	}
+	keys := make([]string, len(m.Cards))
+	for i, c := range m.Cards {
+		keys[i] = c.Key()
+	}
+	sort.Strings(keys)
+	return fmt.Sprintf("%s/%v/%v", strings.Join(keys, ","), m.Type, m.Rank)
+}
+
+// Play 出牌（或过牌）：校验 → 推进 → 写回存档。
+//
+//   - `expectedRev` 对不上（或者并发改过）→ `*VersionConflict`（带最新局面）；
+//   - 这一局已经被新局收掉（`ended_at` 写了）→ `ErrPracticeEnded`，**局面一点不动**；
+//   - 这一手不成立 → `*MoveRejected`（带引擎的原因码），**局面一点不动**；
+//   - 同一个 `Idempotency-Key` 重发 → 不重复出牌，返回现在的局面（可能比第一次新 —— 幂等说的是
+//     「这一手不落两次」，不是「响应冻住」）；
+//   - **不替 AI 走棋**：出完手之后 `turn` 可能落在 AI 座位上，那是第 4 件的事。
+func (s *Service) Play(ctx context.Context, id, userID string, mv Move, expectedRev int64, idemKey string) (View, error) {
+	const route = "POST /api/practice/{id}/play"
+	var out View
+	err := s.st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		row, err := loadTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if row.UserID != userID {
+			return ErrNotFound
+		}
+		// 幂等：同一个键 + 同一手重发 → 不重复出牌，直接把现在的局面回给他。
+		fp := idemFingerprint("id", id, "revision", expectedRev, "move", moveKey(mv))
+		replay, err := idemReplay(ctx, tx, userID, idemKey, route, fp)
+		if err != nil {
+			return err
+		}
+		if replay {
+			return s.viewNow(ctx, tx, row, &out)
+		}
+		// 收掉的局不再变（建新局时写了 ended_at）：只能取来复盘，不能出牌。
+		// 放在幂等重放之后 —— 已经成功过的那一手重发仍然要返回 200。
+		if !row.EndedAt.IsZero() {
+			return ErrPracticeEnded
+		}
+		if row.Revision != expectedRev {
+			return s.conflict(ctx, tx, id, &out)
+		}
+		var g rules.Game
+		if err := json.Unmarshal(row.State, &g); err != nil {
+			return fmt.Errorf("练习局 %s 的存档读不回来：%w", id, err)
+		}
+		if g.Over() {
+			return ErrDealOver
+		}
+		if mv.Pass {
+			err = g.Pass(row.Seat)
+		} else {
+			err = g.Play(row.Seat, mv.Cards, mv.Type, mv.Rank)
+		}
+		if err != nil {
+			// 引擎的拒绝原因是封闭取值，原样发出去（不在这里改成别的码）。
+			var ruleErr *rules.RuleError
+			if errors.As(err, &ruleErr) {
+				return &MoveRejected{Reason: string(ruleErr.Reason)}
+			}
+			return err
+		}
+		state, err := json.Marshal(&g)
+		if err != nil {
+			return fmt.Errorf("练习局存档序列化失败：%w", err)
+		}
+		// 乐观锁：读到的 revision 就是我写回去的前提。0 行 = 有人在我们中间动过。
+		res, err := tx.ExecContext(ctx,
+			`UPDATE practice_games SET state = ?, revision = revision + 1 WHERE id = ? AND revision = ?`,
+			string(state), id, row.Revision)
+		if err != nil {
+			return fmt.Errorf("写练习局：%w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return s.conflict(ctx, tx, id, &out)
+		}
+		if err := idemSave(ctx, tx, userID, idemKey, route, fp, map[string]any{"id": id}, s.clk.Now()); err != nil {
+			return err
+		}
+		out = viewOf(&g, id, row.Revision+1, row.Seat, false)
+		return nil
+	})
+	if err != nil {
+		return View{}, err
+	}
+	return out, nil
+}
+
+// viewNow 把**库里现在这一行**读出来收成 View（幂等重放时用：要的是「现在的局面」）。
+func (s *Service) viewNow(ctx context.Context, tx *store.Tx, row practiceRow, out *View) error {
+	var g rules.Game
+	if err := json.Unmarshal(row.State, &g); err != nil {
+		return fmt.Errorf("练习局 %s 的存档读不回来：%w", row.ID, err)
+	}
+	*out = viewOf(&g, row.ID, row.Revision, row.Seat, !row.EndedAt.IsZero())
+	return nil
+}
+
+// conflict 读最新的行、构成 409 的载荷（局面 + revision 都是最新的）。
+func (s *Service) conflict(ctx context.Context, tx *store.Tx, id string, out *View) error {
+	latest, err := loadTx(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.viewNow(ctx, tx, latest, out); err != nil {
+		return err
+	}
+	return &VersionConflict{Latest: *out}
+}
 
 // firstLevel 是练习局从打几开始：掼蛋从 2 打起（第十三条 一）。
 const firstLevel = rules.Two
@@ -69,7 +225,12 @@ type View struct {
 	Hand     []string         `json:"hand"`
 	Counts   [rules.Seats]int `json:"counts"` // 四家各剩几张，下标 0 是 1 号座
 	Turn     int              `json:"turn"`
-	Ended    bool             `json:"ended"`
+	// DealOver：**这一副**打完了（四家出完）。和 `Ended` 不是一回事 ——
+	// `Ended` 是「这一局练习局收掉了」（#88 第 1 件的收局），而一副打完只是这一副完了，
+	// 下一副还在后头（第 5 件：进贡 / 跨副）。客户端靠这个决定是弹结算还是继续出牌，
+	// 而不是自己去猜 `turn == 0`（0 是「没人该出牌」的内部约定，不该当成接口契约）。
+	DealOver bool `json:"deal_over"`
+	Ended    bool `json:"ended"`
 }
 
 // Create 建一局：发牌、摆好座位、落库，返回局面。
@@ -148,12 +309,23 @@ type practiceRow struct {
 	EndedAt  time.Time // 零值 = 还开着
 }
 
+// queryer 是「能查一行」的最小接口：读池（`*sql.DB`）和写事务（`*store.Tx`）都满足它。
+// 读一行的逻辑只写一份（`load` / `loadTx` 只是入口不同）。
+type queryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 func load(ctx context.Context, db *sql.DB, id string) (practiceRow, error) {
+	return loadTx(ctx, db, id)
+}
+
+// loadTx 读一行的当前状态（读池和写事务都能用 —— 写事务里读是为了拿自己那份快照）。
+func loadTx(ctx context.Context, q queryer, id string) (practiceRow, error) {
 	var (
 		r       practiceRow
 		endedAt sql.NullInt64
 	)
-	err := db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT id, user_id, seat, state, revision, ended_at FROM practice_games WHERE id = ?`, id).
 		Scan(&r.ID, &r.UserID, &r.Seat, &r.State, &r.Revision, &endedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -168,6 +340,71 @@ func load(ctx context.Context, db *sql.DB, id string) (practiceRow, error) {
 	return r, nil
 }
 
+// ── 幂等（照 games/score.go 那三件套抄过来）──
+//
+// 三个包各有一份（games 一份、这里一份）：它们读写的是同一张 `idempotency_keys`，口径必须一样 ——
+// 「同一个键用在别的路由/别的指纹上 → `ErrIdemKeyReused`」这条是**跨接口**成立的，
+// 所以指纹里要带上接口自己的参数（这里：局的 id + expected_revision + 这一手）。
+
+// errIdemKeyReused 和 games 那边同一个取值：422 idempotency_key_reused。
+var errIdemKeyReused = errors.New("idempotency_key_reused")
+
+// IdemKeyReused 给 handler 判断用（不导出那个内部的哨兵）。
+func IsIdemKeyReused(err error) bool { return errors.Is(err, errIdemKeyReused) }
+
+// idemReplay 判断这是不是同一个键的重发：命中（同路由 + 同指纹）返回 true；
+// 键被用在别处（别的路由或别的指纹）返回 errIdemKeyReused；键为空返回 false（调用方没打算幂等）。
+func idemReplay(ctx context.Context, tx *store.Tx, userID, key, route, fingerprint string) (bool, error) {
+	if key == "" {
+		return false, nil
+	}
+	// 和 games 的 idemReplay 同一口径：库里的指纹可能为空（旧版本写的），这时只比路由。
+	var (
+		gotRoute string
+		gotFP    sql.NullString
+	)
+	err := tx.QueryRowContext(ctx,
+		`SELECT route, fingerprint FROM idempotency_keys WHERE user_id = ? AND key = ?`, userID, key).
+		Scan(&gotRoute, &gotFP)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("查幂等键：%w", err)
+	case gotRoute != route, gotFP.Valid && gotFP.String != fingerprint:
+		return false, errIdemKeyReused
+	}
+	return true, nil
+}
+
+// idemFingerprint 把这次请求的参数按 `名=值` 的行拼成 sha256（用**解析后**的参数，
+// JSON 字段序/空白不影响）。参数是成对的 `名, 值, 名, 值…`，和 games 那边那份写法一致
+// （两边算出来的串不一样没关系：指纹只在自己这边做等值比较，跨接口靠 route 区分）。
+func idemFingerprint(kv ...any) string {
+	h := sha256.New()
+	for i := 0; i+1 < len(kv); i += 2 {
+		fmt.Fprintf(h, "%v=%v\n", kv[i], kv[i+1])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// idemSave 把这个键落库（摘要即可：重放时读的是**现在的局面**，不靠这里存的东西）。
+func idemSave(ctx context.Context, tx *store.Tx, userID, key, route, fingerprint string, summary any, now time.Time) error {
+	if key == "" {
+		return nil
+	}
+	body, err := json.Marshal(summary)
+	if err != nil {
+		return fmt.Errorf("幂等摘要序列化：%w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO idempotency_keys (key, user_id, route, fingerprint, status, response, created_at)
+		VALUES (?, ?, ?, ?, 200, ?, ?)`, key, userID, route, fingerprint, string(body), now.Unix()); err != nil {
+		return fmt.Errorf("存幂等键：%w", err)
+	}
+	return nil
+}
+
 // viewOf 把一局局面收成给客户端看的形状。
 //
 // **只取自己的手牌 + 各家的张数**：别家的牌一律不出这个函数（`g.Hand(s)` 谁的手牌都给得出来，
@@ -180,6 +417,7 @@ func viewOf(g *rules.Game, id string, revision int64, seat int, ended bool) View
 		Seat:     seat,
 		Hand:     keysOf(g.Hand(seat)),
 		Turn:     g.Turn(),
+		DealOver: g.Over(),
 		Ended:    ended,
 	}
 	for s := 1; s <= rules.Seats; s++ {
