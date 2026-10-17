@@ -186,6 +186,15 @@ case "$make_test_rules" in
   *) gofmt_wired=no ;;
 esac
 eq 'make test 真的会跑 gofmt 检查' 'yes' "$gofmt_wired"
+
+# #278 复审的阻塞项：**gofmt 自己出错时守门不能静默通过**。make 用不带 -e 的 sh -c 跑，
+# 命令替换里的失败会被吞掉、gofmt 的错误又走 stderr，于是「gofmt 不存在 / 文件有语法错误 /
+# 文件名被拆开 / 文件被删了」都表现为「输出为空 → 通过」。这里拿 GOFMT 指一个不存在的路径，
+# 断言 make gofmt-check 必须失败（make 会返回 2）。
+make gofmt-check GOFMT=/nonexistent/gofmt >/dev/null 2>&1
+gofmt_missing_rc=$?
+eq 'gofmt 不存在时 make gofmt-check 必须失败' 'yes' \
+  "$([ "$gofmt_missing_rc" -ne 0 ] && echo yes || echo no)"
 eq 'minigame 与原 ci.yml 一致' \
   'cd app/minigame && npm ci && npm run typecheck && npm test && npm run build' \
   "$(context_command local-ci/minigame)"

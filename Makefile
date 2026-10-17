@@ -36,11 +36,29 @@ vet:
 # 4d4882c 那笔「chore: gofmt」正是被别的版本的 gofmt 改坏的，把对齐按显示宽度算了。
 # 文件清单走 git ls-files（仓库里 app/h5/embed.go 也有 Go 代码，不只是 server/），
 # 顺带避开 node_modules、dist 这些。
+#
+# 为什么写得这么啰嗦（#278 复审的阻塞项）：make 用不带 -e 的 sh -c 跑，**命令替换里的失败会被
+# 吞掉**，gofmt 的错误又走 stderr —— 于是「gofmt 不存在 / 文件有语法错误 / 文件名被拆开 /
+# 文件被删了」全都表现为「输出为空 → 通过」，守门等于没装。所以：
+#   - 先确认 gofmt 可执行；-z/-0 传路径，避免空格和非 ASCII 文件名被拆开（git 会给后者加引号）；
+#   - 命令替换后接 `|| exit`，gofmt 自己出错就红；
+#   - 文件列表为空时单独报错（gofmt -l 没参数会去读 stdin，不能让它空跑）。
+# GOFMT 可覆盖，自测就拿它模拟「gofmt 不存在」。
+GOFMT ?= $(shell $(GO) env GOROOT)/bin/gofmt
+
 gofmt-check:
-	@out="$$("$$($(GO) env GOROOT)/bin/gofmt" -l $$(git ls-files '*.go'))"; \
+	@gofmt="$(GOFMT)"; \
+	if [ ! -x "$$gofmt" ]; then \
+		printf 'gofmt-check：找不到可执行的 gofmt（%s）。用 go env GOROOT 定位工具链。\n' "$$gofmt"; exit 2; \
+	fi; \
+	if [ "$$(git ls-files -- '*.go' | wc -l | tr -d ' ')" -eq 0 ]; then \
+		printf 'gofmt-check：git ls-files 没找到任何 .go 文件？\n'; exit 2; \
+	fi; \
+	out="$$(git ls-files -z -- '*.go' | xargs -0 "$$gofmt" -l)" || { \
+		printf 'gofmt-check：gofmt 自己出错了（见上面的 stderr），不能当作通过。\n'; exit 2; \
+	}; \
 	if [ -n "$$out" ]; then \
-		printf '这些文件没按 gofmt 格式化（用 $$(go env GOROOT)/bin/gofmt -w 修）：\n%s\n' "$$out"; \
-		exit 1; \
+		printf '这些文件没按 gofmt 格式化（用 %s -w 修）：\n%s\n' "$$gofmt" "$$out"; exit 1; \
 	fi
 
 # race 检测需要 CGO；发布构建仍然关掉 CGO（§9）。
