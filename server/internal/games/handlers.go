@@ -497,7 +497,7 @@ func writeGameError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error": map[string]any{
 				"code":    "sensitive_word",
-				"message": "请勿涉及金钱：这里只约纯娱乐局",
+				"message": moderate.Message,
 				"field":   hit.Field,
 			},
 		})

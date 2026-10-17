@@ -92,7 +92,7 @@ func (h *handler) putNickname(w http.ResponseWriter, r *http.Request) {
 
 	u, err := h.svc.ChangeNickname(r.Context(), current.User.ID, body.Nickname)
 	switch {
-	case writeUnsafeError(w, err):
+	case writeSensitiveError(w, err):
 		return
 	case errors.Is(err, ErrNicknameInvalid):
 		writeError(w, http.StatusBadRequest, "nickname_invalid", "称呼需要 1–12 个字符")
