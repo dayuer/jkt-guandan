@@ -80,9 +80,10 @@ func TestPracticePlayAdvances(t *testing.T) {
 	if again.raw != played.raw {
 		t.Fatalf("出牌响应和 GET 不一致：\n%s\n%s", played.raw, again.raw)
 	}
-	// 这一件不替 AI 走棋：turn 落在别人身上，但**局面已经落了库**。
-	if got := int(played.field("turn").(float64)); got == seat {
-		t.Fatalf("出完一手不该还轮到我（这一件不替 AI 走棋），turn=%d，我坐 %d", got, seat)
+	// 第 4 件起，AI 的回合在同一个请求里走完：要么轮回我，要么这一副打完。
+	dealOver, _ := played.field("deal_over").(bool)
+	if got := int(played.field("turn").(float64)); got != seat && !dealOver {
+		t.Fatalf("AI 走完该轮回我（或者这一副打完），turn=%d，我坐 %d，deal_over=%v", got, seat, dealOver)
 	}
 }
 
@@ -118,15 +119,13 @@ func TestPracticePlayRejectsAndKeepsState(t *testing.T) {
 		}
 	}
 
-	// ③ 出一手合法的，然后再出 → not-your-turn（这一件不替 AI 走棋，所以还轮不到我）
+	// ③ 出一条**合法**的，确认被拒的 ①② 没有把局面弄脏。
+	//
+	// 第 4 件起 AI 在同一个请求里走到轮回我，接口这一层已经造不出 `not-your-turn` 了
+	// （引擎那一套原因码仍由 rules 的用例覆盖）。
 	mv := leadingMove(t, hand, level)
 	if r := f.do(f.http, http.MethodPost, "/api/practice/"+id+"/play", playBody(mv, 1), nil); r.status != http.StatusOK {
 		t.Fatalf("先出一手合法的：%d %s", r.status, r.raw)
-	}
-	second := f.do(f.http, http.MethodPost, "/api/practice/"+id+"/play",
-		map[string]any{"pass": true, "expected_revision": 2}, nil)
-	if second.status != http.StatusConflict || second.errCode() != "not-your-turn" {
-		t.Fatalf("没轮到我时该 409 not-your-turn，实际 %d %s", second.status, second.raw)
 	}
 }
 
@@ -229,15 +228,24 @@ func TestPracticeStateRoundTripsMoves(t *testing.T) {
 		`SELECT state FROM practice_games WHERE id = ?`, id).Scan(&state); err != nil {
 		t.Fatalf("读存档：%v", err)
 	}
-	// 存档里是「初始局面 + 一手动作」的形状：动作序列非空。
+	// 存档里是「初始局面 + 动作序列」的形状：我这一手 + 第 4 件起 AI 连着走的几手。
 	var wire struct {
 		Moves []json.RawMessage `json:"moves"`
 	}
 	if err := json.Unmarshal([]byte(state), &wire); err != nil {
 		t.Fatalf("存档不是合法 JSON：%v", err)
 	}
-	if len(wire.Moves) != 1 {
-		t.Fatalf("存档里该正好记了 1 手，实际 %d", len(wire.Moves))
+	if len(wire.Moves) < 1 {
+		t.Fatal("存档里一手都没记")
+	}
+	// 第一手是我出的；后面的都是 AI（同一个事务里替它们走的）。
+	var first struct{ Seat int }
+	if err := json.Unmarshal(wire.Moves[0], &first); err != nil {
+		t.Fatalf("第一手不是合法 JSON：%v", err)
+	}
+	mySeat := int(created.field("seat").(float64))
+	if first.Seat != mySeat {
+		t.Fatalf("存档第一手该是我（%d 号座）出的，实际 %d 号座", mySeat, first.Seat)
 	}
 	var g rules.Game
 	if err := json.Unmarshal([]byte(state), &g); err != nil {

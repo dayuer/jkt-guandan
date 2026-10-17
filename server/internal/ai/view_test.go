@@ -145,6 +145,50 @@ func TestViewCheckerCatchesDecoys(t *testing.T) {
 	}
 }
 
+// ViewOf 是 View 那条红线的生产实现：给一个座位，只能拿到自己的手牌、各家**张数**和公开信息。
+// 结构上的白名单由 TestViewExposesNoOtherHands 钉；这条钉**填进去的值**。
+func TestViewOfExposesOnlyPublicInfo(t *testing.T) {
+	var hands [rules.Seats][]rules.Card
+	for s := 1; s <= rules.Seats; s++ {
+		c, err := rules.ParseKey(fmt.Sprintf("♠%d/0", s+2)) // 3、4、5、6 各一张
+		if err != nil {
+			t.Fatal(err)
+		}
+		hands[s-1] = []rules.Card{c}
+	}
+	g, err := rules.NewGame(rules.Two, hands, 1)
+	if err != nil {
+		t.Fatalf("摆一局：%v", err)
+	}
+
+	for seat := 1; seat <= rules.Seats; seat++ {
+		v := ViewOf(g, seat)
+		if !reflect.DeepEqual(v.Hand, hands[seat-1]) {
+			t.Errorf("%d 号座拿到的手牌不是自己的：%v", seat, v.Hand)
+		}
+		for s := 1; s <= rules.Seats; s++ {
+			if v.Counts[s] != len(hands[s-1]) {
+				t.Errorf("%d 号座看 %d 号座：张数该是 %d，得到 %d", seat, s, len(hands[s-1]), v.Counts[s])
+			}
+		}
+		if v.Seat != seat || v.Level != rules.Two {
+			t.Errorf("%d 号座的 View 元信息不对：seat=%d level=%v", seat, v.Seat, v.Level)
+		}
+	}
+
+	// 公开信息：1 号座领出一张之后，别的座位能看到「1 号座出了什么」，但看不到别人的手牌。
+	if err := g.Play(1, hands[0], rules.TypeSingle, hands[0][0].Rank); err != nil {
+		t.Fatalf("1 号座领出：%v", err)
+	}
+	v := ViewOf(g, 2)
+	if v.Leading || v.LastSeat != 1 || !reflect.DeepEqual(v.LastCombo.Cards, hands[0]) {
+		t.Errorf("2 号座该看到 1 号座刚出的那一手：leading=%v lastSeat=%d lastCombo=%v", v.Leading, v.LastSeat, v.LastCombo)
+	}
+	if !reflect.DeepEqual(v.Hand, hands[1]) {
+		t.Errorf("2 号座的手牌被带上了别人的牌：%v", v.Hand)
+	}
+}
+
 func TestViewPartnerAndOpponents(t *testing.T) {
 	cases := []struct {
 		seat      int
