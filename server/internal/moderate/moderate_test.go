@@ -168,6 +168,8 @@ func TestCheckFieldExceptionForSurnameQian(t *testing.T) {
 	for _, tc := range []struct{ text, want string }{
 		{"赌钱", "赌"},   // 含「钱」，但不是单字那一条
 		{"赢钱", "赢钱"},  // 同上
+		{"赢　钱", "赢钱"}, // 全角空格 U+3000：中文输入法里最顺手，夹一个就绕过去了（#147 B1）
+		{"输 钱", "输钱"}, // 不换行空格 U+00A0：从微信里复制出来的
 		{"赌神", "赌"},
 		{"筹码", "筹码"},
 		{"judi 50rb", "judi"},
@@ -192,6 +194,19 @@ func TestCheckFieldExceptionForSurnameQian(t *testing.T) {
 	} {
 		if hit := Check(tc.field, tc.text); hit == nil || hit.Word != "钱" {
 			t.Errorf("%s %q 应当命中「钱」：%v", tc.field, tc.text, hit)
+		}
+	}
+
+	// 全角空格这个缺口在地点、备注里本来就有（旧问题）：夹一个 U+3000 就绕过去了。
+	// 称呼跳过「钱」以后它才变得要紧，但顺手把这三条一起钉住（#147 复审 B1）。
+	for _, tc := range []struct{ field, text, want string }{
+		{"nickname", "赢　钱", "赢钱"},
+		{"venue", "筹　码", "筹码"},
+		{"note", "下　注", "下注"},
+	} {
+		hit := Check(tc.field, tc.text)
+		if hit == nil || hit.Word != tc.want {
+			t.Errorf("%s %q 应当命中「%s」：%v", tc.field, tc.text, tc.want, hit)
 		}
 	}
 }
