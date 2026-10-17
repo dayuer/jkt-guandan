@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/dayuer/jkt-guandan/server/internal/moderate"
 	"github.com/dayuer/jkt-guandan/server/internal/secheck"
 )
 
@@ -100,20 +101,35 @@ func writeWxLogin(w http.ResponseWriter, ident Identity, token string) {
 	})
 }
 
-// writeUnsafeError 处理内容安全检测没过：422 + field，和地点、备注的敏感词同一个错误码（#146），
-// 小游戏的表单和称呼弹层已经按它显示提示。不是这个错就返回 false，交给调用处继续判。
+// writeSensitiveError 处理「称呼没过内容检查」这一类：422 + field，和地点、备注同一个错误码，
+// 小游戏的表单和称呼弹层已经按 field 把提示放到输入框下面。不是这两类错就返回 false，
+// 交给调用处继续判。
 //
-// 「新建身份」（writeWxError）和「改称呼」（putNickname）共用，免得两边的错误体走样。
-func writeUnsafeError(w http.ResponseWriter, err error) bool {
-	if !errors.Is(err, secheck.ErrUnsafe) {
-		return false
+// 两个来源的错误体和状态码完全一样，只有提示语不同：
+//
+//   - 本地词表（moderate，#147）：和牌局的地点、备注同一句「请勿涉及金钱…」；
+//   - 微信内容安全（secheck，#146）：用微信那版措辞，同样不说命中了什么。
+//
+// 「新建身份」（writeWxError）、「H5 建号」（createMe）和「改称呼」（putNickname）共用，
+// 免得三边的错误体走样。
+func writeSensitiveError(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, moderate.ErrSensitive):
+		var hit *moderate.Hit
+		errors.As(err, &hit)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": map[string]any{"code": "sensitive_word", "message": moderate.Message, "field": hit.Field},
+		})
+		return true
+	case errors.Is(err, secheck.ErrUnsafe):
+		var unsafe *secheck.UnsafeError
+		errors.As(err, &unsafe)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": map[string]any{"code": "sensitive_word", "message": secheck.Message, "field": unsafe.Field},
+		})
+		return true
 	}
-	var unsafe *secheck.UnsafeError
-	errors.As(err, &unsafe)
-	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-		"error": map[string]any{"code": "sensitive_word", "message": secheck.Message, "field": unsafe.Field},
-	})
-	return true
+	return false
 }
 
 func writeWxError(w http.ResponseWriter, err error) {
@@ -125,8 +141,8 @@ func writeWxError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrNicknameReserved):
 		// 保留称呼（「已注销牌友」）：新建这条路上也要挡，和改称呼同一个错误码（#221）。
 		writeError(w, http.StatusBadRequest, "nickname_reserved", "这个称呼不能用")
-	case errors.Is(err, secheck.ErrUnsafe):
-		writeUnsafeError(w, err)
+	case errors.Is(err, secheck.ErrUnsafe), errors.Is(err, moderate.ErrSensitive):
+		writeSensitiveError(w, err)
 	case errors.Is(err, ErrWxCodeInvalid):
 		writeError(w, http.StatusBadRequest, "wx_code_invalid", "微信登录凭证无效，请重新登录")
 	case errors.Is(err, ErrWxUnavailable):

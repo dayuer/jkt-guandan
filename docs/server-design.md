@@ -321,7 +321,7 @@ CREATE TABLE hidden_games (
 - **小游戏身份**（#84）。小游戏没有 cookie，凭证走 `Authorization: Bearer`（§10.3 的唯一例外）。两个接口都是 `route.Anonymous`（不读 cookie、不写 cookie），只认微信 code：
   - `POST /api/wx/login {code, nickname?}`：服务端调 `code2Session` 换出 openid（绑了开放平台时还有 unionid），先按 `wx_unionid`、再按 `wx_openid:<appid>` 在 `user_links` 里找。找到：给这个人新挂一台 `ua = wx-minigame` 的设备，补写缺的关联（以前没有 unionid、这次有了）；没找到且没给称呼：`200 {"need_nickname":true}`；给了称呼（规则同 `POST /api/me`，也占用同一个每 IP 创建配额）：新建用户、设备和关联。成功返回 `200 {"user":{"id","nickname","created_at"},"device_token","device_id"}`。每 IP 每分钟 20 次。被封禁的用户、或者名下有被封的小游戏设备的用户 `403 banned`，不新建设备（§13.6，#145）。
   - `POST /api/wx/link {code, wx_code, confirm?}`：B2 兜底路径，H5 用 `POST /api/claim` 签发的 6 位认领码在小游戏里输入。防护和上面的凭码兑换完全一样（同网段、每 IP 每分钟 10 次且与 `/api/claim/redeem` 共用、全站失败预算、失败一律 `400 claim_invalid`）。这个微信已经关联了别人且没带 `confirm`：`409 claim_conflict` + `other_nickname`（认领码主人的称呼），码不消耗；确认时要重新 `wx.login` 拿新的 `wx_code`。成功后把 openid / unionid 关联都挂到认领码主人身上（原来关联的用户其他数据不动），新挂一台小游戏设备，返回同 `/api/wx/login`，并发 `claim.redeemed`。认领码主人、或这个微信原来关联的人被封禁或有被封的小游戏设备时 `403 banned`，码不消耗、关联不动（§13.6）。
-  - 错误码：`503 wx_disabled`（没配 `GUANDAN_WX_APPID` / `GUANDAN_WX_SECRET`）、`400 wx_code_invalid`、`503 wx_unavailable`（微信接口失败）、`400 nickname_invalid`、`429 rate_limited`。开发模式且没配 AppID 时，接受 `dev:<任意>` 形式的 code，`<任意>` 当 openid、appid 记成 `dev`，方便小游戏开发者工具连本机。
+  - 错误码：`503 wx_disabled`（没配 `GUANDAN_WX_APPID` / `GUANDAN_WX_SECRET`）、`400 wx_code_invalid`、`503 wx_unavailable`（微信接口失败）、`400 nickname_invalid`、`422 sensitive_word`（称呼命中词表或微信判为 risky，带 `field: "nickname"`，§14）、`429 rate_limited`。开发模式且没配 AppID 时，接受 `dev:<任意>` 形式的 code，`<任意>` 当 openid、appid 记成 `dev`，方便小游戏开发者工具连本机。
   - openid / unionid 不出现在响应和日志里。`DELETE /api/me` 和 `guandan admin user delete` 都删掉这个人的 `user_links`，同一个微信再来会建新用户。
   - 还没做：B1（带参数的小游戏码、`POST /api/wx/link {token, wx_code}`）。
 - **不提供面向用户的身份合并。** 代码里有 `mergeUsers`（`server/internal/identity/merge.go`），但目前只有测试调用它，`guandan admin` 也还没有合并子命令（§13.6）；任何用户能触发的路径都调不到它。将来做成 admin 命令时，语义以代码为准：
@@ -615,7 +615,7 @@ GET  /*                               内嵌的前端页面（单页应用，未
 **改称呼**（#210，「我的」页顶部那张卡片）。用户原话：「名称，我现在不能改，应该允许我修改」。
 
 - `PUT /api/me/nickname`（`route.User`）：请求 `{"nickname":"新名字"}`，成功返回 `200 {"user":{"id","nickname","created_at"}}`（和 `POST /api/me` 同一个 `user` 外形，前端拿到直接刷新缓存，不用再 GET 一次）。
-  - 校验和首次填称呼**是同一个函数**（`identity.NormalizeNickname`）：去掉首尾空白、控制字符和零宽/BiDi 格式字符，按**字符数**算 1–12 个（一个汉字算一个）。不合法返回 `400 nickname_invalid`。
+  - 校验和首次填称呼**是同一个函数**（`identity.NormalizeNickname`）：去掉首尾空白、控制字符和零宽/BiDi 格式字符，按**字符数**算 1–12 个（一个汉字算一个）。不合法返回 `400 nickname_invalid`；命中敏感词返回 `422 sensitive_word`，带 `field: "nickname"`（§14，称呼里只跳过单字「钱」）。
   - 小游戏用户照样送微信内容安全检测（场景 1 资料，§14 同 `POST /api/wx/login`）；`risky` 时返回 `422 sensitive_word`，带 `field: "nickname"`。H5 测试用户没有 openid，跳过。
   - 保留名：`已注销牌友` 是注销之后座位上显示的名字（§14），三条路（H5 新建、小游戏新建、改称呼）都不许用，返回 `400 nickname_reserved`。检查在 `NormalizeNickname` 里（#221 起新建也走它），先去零宽字符再比，绕不过去。
   - 已注销的人不能改：`UPDATE … WHERE id = ? AND deleted_at IS NULL`，匹配不到行时返回 `403 user_deleted`。注销会删掉设备和微信关联，正常认不出身份；这一步是防「设备上还留着 cookie」。
@@ -1033,7 +1033,7 @@ H5 的 JS 谁都能下载、阅读、改写，所以**前端藏不住任何秘�
 - 请求体用 `http.MaxBytesReader` 限制在 64 KB 以内，单条 WebSocket 消息限制在 4 KB。
 - 所有对外的 HTTP 调用都有自己的超时：推送 10 秒、Claude 30 秒、备份上传 5 分钟；只用自己配置过超时的 `http.Client`，不用 `http.DefaultClient`。
 - panic 恢复中间件：单个请求出问题，返回 500，不影响其他请求。后台任务的 panic 由 `supervise` 兜住。
-- **输入校验**放在接口入口：称呼 1–12 个字符，去掉控制字符和首尾空白，且不能是保留名「已注销牌友」（首次填称呼、小游戏新建、改称呼三条路共用 `identity.NormalizeNickname`）；地点不超过 40 个字符；备注不超过 200 个字符；开局时间必须在现在之后 10 分钟到 30 天之间；片区只接受固定列表里的值。
+- **输入校验**放在接口入口：称呼 1–12 个字符，去掉控制字符和首尾空白，不能是保留名「已注销牌友」，也不能命中敏感词（首次填称呼、小游戏新建、改称呼三条路共用 `identity.NormalizeNickname`，§14）；地点不超过 40 个字符；备注不超过 200 个字符；开局时间必须在现在之后 10 分钟到 30 天之间；片区只接受固定列表里的值。
 
 ### 12.3 过载保护
 
@@ -1158,17 +1158,22 @@ guandan restore <快照>                    从备份恢复（§13.3）
   - 提供隐私说明页面 `/privacy`，写明收集什么、用来做什么、保存多久、怎样删除；
   - `DELETE /api/me` 用于注销：删除称呼、WhatsApp 号码、设备、推送订阅、微信关联（`user_links`）和订阅消息次数（`wx_subscribe_quota`）、「我的牌局」里删掉的历史记录（`hidden_games`）；座位记录改成「已注销牌友」，这样历史局的人数统计不会出错；
   - 保留期限：设备 180 天未活跃就删除（§13.1）；埋点数据 1 年后删除；备份 30 天。
-- **赌博监管**：页面上已经写明「不涉及金钱输赢」。服务端对牌局备注和地点做敏感词过滤（赌、钱、筹码、judi、taruhan……），命中就拒绝提交，并提示「请勿涉及金钱」。词表放在仓库里，可以随时更新。
+- **赌博监管**：页面上已经写明「不涉及金钱输赢」。服务端对牌局备注、地点和**称呼**做敏感词过滤（赌、钱、筹码、judi、taruhan……），命中就拒绝提交，并提示「请勿涉及金钱」。词表放在仓库里，可以随时更新。
+  - 称呼也过滤（#147）：它和地点一样公开展示，还会被画进小游戏转发卡片、服务端海报和 OG 图。入口是 `identity.NormalizeNickname`，三条路都走它 —— H5 新建（`POST /api/me`）、小游戏新建（`POST /api/wx/login {nickname}`）、改称呼（`PUT /api/me/nickname`）。命中时返回 `422 sensitive_word`，带 `field: "nickname"`，提示语和地点、备注同一句。
+  - 称呼里**只跳过一个词条：单字「钱」**（`moderate.fieldExcept`）。「钱」是百家姓里的常见姓，「老钱」「钱哥」「钱小姐」都是真实称呼，误伤的代价比地点、备注里大得多；它是唯一被跳过的词条，所以「赌钱」「赢钱」「赌」「筹码」「judi」这些在称呼里照样拦得住。
+  - 已经入库的称呼不回溯检查（就地改词表不会让老用户的名字变红）。
+  - 本地词表对所有用户生效，不依赖微信 —— 没配 `GUANDAN_WX_APPID`、微信超时或出错放行时，它仍然拦。
 - **微信内容安全检测（#146，`internal/secheck`）**：微信要求有用户生成内容的小游戏接入内容安全检测。
   - **接口**：游戏专用版 `POST https://api.weixin.qq.com/wxa/game/content_spam/msg_sec_check`，请求体 `{openid, version: 2, scene, content}`，看 `result.suggest`（`risky` 拦，`pass` / `review` 放行）和 `result.label`。access_token 走 `internal/wxapi`（和订阅消息同一套）。单次超时 1 秒。
   - **范围**：服务端写入前同步检查，客户端不调。只查**小游戏用户**：请求者在 `user_links` 里有 `wx_openid:<appid>` 才查，没有（H5 测试用户）就跳过；H5 是测试版，小游戏上线后废弃，届时自然全覆盖。凭认领码关联过小游戏的 H5 用户也有 openid，他在 H5 上开局、改局同样会查。
     | 入口 | 字段 | scene |
     |---|---|---|
     | `POST /api/wx/login {nickname}` | 称呼（带了称呼就查，用的是刚换出来的 openid） | 1 资料 |
+    | `PUT /api/me/nickname` | 改称呼（按 user_id 找 openid） | 1 资料 |
     | `POST /api/games` | 地点、备注 | 3 论坛 |
     | `PATCH /api/games/{code}` | 改到的地点、备注（先确认是局头，别人发 PATCH 不触发调用） | 3 论坛 |
 
-    `POST /api/me` 只给 H5 新建身份（没有 openid），已有身份时不改称呼；`/api/wx/link` 不收任何用户文本（只是把微信挂到已有的 H5 身份上）；目前没有改称呼的接口。以后加了改称呼、或者 B1（#140）要在 `/api/wx/link` 里新建身份，都要接上 scene 1 的检查。
+    `POST /api/me` 只给 H5 新建身份（没有 openid），已有身份时不改称呼；`/api/wx/link` 不收任何用户文本（只是把微信挂到已有的 H5 身份上）。以后 B1（#140）要在 `/api/wx/link` 里新建身份，同样要接上 scene 1 的检查。
   - **结果**：`risky` 返回 `422`，错误码**复用 `sensitive_word`**，带 `field`（`nickname` / `venue` / `note`），提示「这段内容不适合发布，请修改后再试」，不告诉用户命中了哪一类。复用是为了让小游戏和 H5 现有的按字段提示直接生效，前端不用区分是本地词表还是微信拦的。本地词表（上一条）先查，过了才送微信。
   - **失败策略：放行**。微信出错、超时、`suggest` 不认识、查 openid 出错，都当作通过，记指标 `guandan_wx_sec_check_total{outcome}`（`pass` / `risky` / `review` / `error` / `timeout` / `no_openid`）和耗时 `guandan_wx_sec_check_duration_seconds`，并打 warn 日志。理由：这是约局工具，内容只在牌友之间传播；微信抖一下就让人开不了局，代价比偶尔漏过一条大；本地词表仍兜着金钱和赌博。`error` / `timeout` 比例明显升高时看日志里的 errcode。
   - **隐私**：送给微信的只有这段文本和 openid。日志只记场景、字段名、结论、label、耗时、errcode，**不记原文，也不记 openid**；微信的 errmsg 也不记（不保证不回显内容）。小游戏「隐私与数据」里写明了称呼、地点、备注会发给微信做内容安全检测。

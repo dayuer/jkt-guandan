@@ -19,6 +19,7 @@ import (
 	"github.com/dayuer/jkt-guandan/server/internal/config"
 	"github.com/dayuer/jkt-guandan/server/internal/httpapi"
 	"github.com/dayuer/jkt-guandan/server/internal/identity"
+	"github.com/dayuer/jkt-guandan/server/internal/moderate"
 	"github.com/dayuer/jkt-guandan/server/internal/realtime"
 	"github.com/dayuer/jkt-guandan/server/internal/route"
 	"github.com/dayuer/jkt-guandan/server/internal/store"
@@ -1083,6 +1084,63 @@ func TestNormalizeNicknameInvisible(t *testing.T) {
 		}
 		if err != nil || got != c.want {
 			t.Errorf("%s：得到 %q, %v，期望 %q", c.name, got, err, c.want)
+		}
+	}
+}
+
+// #147：称呼也过本地敏感词表（和地点、备注同一套）。返回 *moderate.Hit，
+// 字段名是 nickname，接口层据此把提示放到称呼输入框下面。
+func TestNormalizeNicknameModerates(t *testing.T) {
+	for _, bad := range []string{"赌神", "赌 神", "judi 50rb", "筹码", "小赌怡情"} {
+		got, err := identity.NormalizeNickname(bad)
+		if !errors.Is(err, moderate.ErrSensitive) {
+			t.Errorf("称呼 %q 应当命中敏感词，得到 %q, %v", bad, got, err)
+			continue
+		}
+		var hit *moderate.Hit
+		if !errors.As(err, &hit) || hit.Field != "nickname" {
+			t.Errorf("称呼 %q 的错误里应当带 field=nickname：%v", bad, err)
+		}
+	}
+
+	// 正常称呼不该误伤，包括姓「钱」的。
+	for _, ok := range []string{"老王", "Betty", "钱哥", "老钱", "钱明", "阿明"} {
+		if got, err := identity.NormalizeNickname(ok); err != nil || got != ok {
+			t.Errorf("称呼 %q 应当放行，得到 %q, %v", ok, got, err)
+		}
+	}
+
+	// 长度还是先报：太长时不该越过长度那条判成敏感词。
+	if _, err := identity.NormalizeNickname(strings.Repeat("赌", identity.NicknameMax+1)); err != identity.ErrNicknameInvalid {
+		t.Errorf("超长的敏感称呼应当先报长度：%v", err)
+	}
+}
+
+// #147：H5 和小游戏的新建这条路（POST /api/me）也要挡，不只是改称呼。
+func TestCreateIdentityRejectsSensitiveNickname(t *testing.T) {
+	f := newFixture(t, false)
+
+	// 每个用例换一个浏览器：认得出身份时 createMe 只刷新设备、不新建用户，
+	// 用同一个 client 的话后面的用例就走不到校验那条路上了。
+	for _, bad := range []string{"赌神", "judi 50rb", "筹码", "小赌怡情"} {
+		resp := f.doWith(f.newBrowser(), http.MethodPost, "/api/me", map[string]string{"nickname": bad})
+		e, _ := resp.body["error"].(map[string]any)
+		if resp.status != http.StatusUnprocessableEntity || e["code"] != "sensitive_word" || e["field"] != "nickname" {
+			t.Fatalf("称呼 %q 应 422 sensitive_word field=nickname：%d %s", bad, resp.status, resp.raw)
+		}
+		if n := f.countRows(`SELECT COUNT(*) FROM users`); n != 0 {
+			t.Fatalf("被拦时不该建用户，现有 %d 个", n)
+		}
+		if sc := resp.header.Values("Set-Cookie"); len(sc) != 0 {
+			t.Fatalf("被拦时不该下发 cookie：%v", sc)
+		}
+	}
+
+	// 干净的名字照常建号，包括姓「钱」的。
+	for _, ok := range []string{"老王", "钱哥"} {
+		resp := f.doWith(f.newBrowser(), http.MethodPost, "/api/me", map[string]string{"nickname": ok})
+		if resp.status != http.StatusOK || resp.userField("nickname") != ok {
+			t.Fatalf("称呼 %q 应当能建号：%d %s", ok, resp.status, resp.raw)
 		}
 	}
 }
