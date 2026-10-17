@@ -173,7 +173,19 @@ case " $(context_tools local-ci/e2e) " in
   *) bad 'e2e 的工具里有 python3（e2e-port.sh 要用）' '含 python3' "$(context_tools local-ci/e2e)" ;;
 esac
 
-eq 'test 就是 make test' 'make test  # go vet + 前端构建 + go test -race + 前端测试' "$(context_command local-ci/test)"
+eq 'test 就是 make test' 'make test  # go vet + gofmt + 前端构建 + go test -race + 前端测试' "$(context_command local-ci/test)"
+
+# #147 之后：`make test` 必须真的跑 gofmt 检查。main 上 4d4882c 那笔「chore: gofmt」按别的
+# 版本的 gofmt 把 play_test.go 改坏了，而 CI 不查 gofmt，就一直没人发现。这条断言钉住：
+# 描述改了、但依赖里没有 gofmt-check（或者反过来）都要红。
+# 注意不能用 `make -n test | grep -q`：本脚本开了 pipefail，grep -q 一命中就关管道，
+# make 吃 SIGPIPE，整条管道反而返回非 0（假红）。先落到变量里再 case 匹配。
+make_test_rules="$(make -n test 2>/dev/null)"
+case "$make_test_rules" in
+  *'/bin/gofmt'*) gofmt_wired=yes ;;
+  *) gofmt_wired=no ;;
+esac
+eq 'make test 真的会跑 gofmt 检查' 'yes' "$gofmt_wired"
 eq 'minigame 与原 ci.yml 一致' \
   'cd app/minigame && npm ci && npm run typecheck && npm test && npm run build' \
   "$(context_command local-ci/minigame)"

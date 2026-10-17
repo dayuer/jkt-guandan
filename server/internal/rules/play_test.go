@@ -445,9 +445,9 @@ func TestUnmarshalRejectsBadSave(t *testing.T) {
 
 	cases := map[string]string{
 		"动作不合法（改成出别人手里的牌）": strings.Replace(string(data), `"cards":["♠K/0"]`, `"cards":["♠A/0"]`, 1),
-		"轮到谁对不上":           strings.Replace(string(data), `"turn":2`, `"turn":3`, 1),
-		"出完的人对不上":          strings.Replace(string(data), `"finished":[]`, `"finished":[1]`, 1),
-		"级数写错":             strings.Replace(string(data), `"level":"2"`, `"level":"1"`, 1),
+		"轮到谁对不上":  strings.Replace(string(data), `"turn":2`, `"turn":3`, 1),
+		"出完的人对不上": strings.Replace(string(data), `"finished":[]`, `"finished":[1]`, 1),
+		"级数写错":    strings.Replace(string(data), `"level":"2"`, `"level":"1"`, 1),
 	}
 	for name, bad := range cases {
 		if bad == string(data) {

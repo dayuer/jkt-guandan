@@ -2,12 +2,12 @@
 GO ?= go
 NPM ?= npm
 
-.PHONY: help web-install web-build build vet go-test race-test vuln web-test shared-install shared-check test e2e run seed docker deploy-test restore-drill clean
+.PHONY: help web-install web-build build vet gofmt-check go-test race-test vuln web-test shared-install shared-check test e2e run seed docker deploy-test restore-drill clean
 
 help:
 	@echo "make build    构建二进制（会先构建前端，再用 embed 打进去）"
 	@echo "make run      开发模式跑起来：GUANDAN_DEV=1，监听 :8080，数据写在 ./.data"
-	@echo "make test     go vet + 后端测试（-race）+ 前端测试 + 共享层 typecheck"
+	@echo "make test     go vet + gofmt 检查 + 后端测试（-race）+ 前端测试 + 共享层 typecheck"
 	@echo "make e2e      浏览器端到端冒烟（Playwright + 无头 Chromium，先构建二进制）"
 	@echo "make vuln     govulncheck"
 	@echo "make seed     往 ./.data 写入设计稿里的示例数据"
@@ -30,6 +30,18 @@ build: web-build
 
 vet:
 	$(GO) vet ./...
+
+# gofmt 检查（#147 的 B2 和 main 上 4d4882c 那次回退，都是因为 CI 不查 gofmt）。
+# 用**工具链自带**的 gofmt，不用 PATH 里那个：两边 Go 版本不同，格式化结果也不同 ——
+# 4d4882c 那笔「chore: gofmt」正是被别的版本的 gofmt 改坏的，把对齐按显示宽度算了。
+# 文件清单走 git ls-files（仓库里 app/h5/embed.go 也有 Go 代码，不只是 server/），
+# 顺带避开 node_modules、dist 这些。
+gofmt-check:
+	@out="$$("$$($(GO) env GOROOT)/bin/gofmt" -l $$(git ls-files '*.go'))"; \
+	if [ -n "$$out" ]; then \
+		printf '这些文件没按 gofmt 格式化（用 $$(go env GOROOT)/bin/gofmt -w 修）：\n%s\n' "$$out"; \
+		exit 1; \
+	fi
 
 # race 检测需要 CGO；发布构建仍然关掉 CGO（§9）。
 race-test:
@@ -61,7 +73,7 @@ shared-check: web-install shared-install
 	node --test scripts/check-shared-imports.test.mjs
 
 # 先构建前端再跑后端测试，这样 httpapi 的用例能真正验证内嵌进去的页面。
-test: vet web-build race-test web-test shared-check
+test: vet gofmt-check web-build race-test web-test shared-check
 
 # 浏览器端到端冒烟（#72）。第一次跑之前装一次浏览器：cd app/h5 && npx playwright install chromium
 # 端口每次运行单独分配（#228），本机几个会话同时跑也不会撞；要固定端口就自己设 E2E_PORT。
