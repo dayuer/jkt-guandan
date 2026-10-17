@@ -811,7 +811,7 @@ describe("性质：随机对局（完整的一场：发牌 → 进贡 → 出牌
     expect(tr.receiver(3), "一样大：3 号座顺时针贡给 2 号座").toBe(2);
 
     // 各自还给贡给自己的人。还的牌都不超过 10（♣5、♠4 在读法 A 和读法 B 下都算），
-    // 所以这条用例不碰「还什么」那个还没拍板的读法。
+    // 所以这条用例不碰「还什么」那个读法（已按读法 A 拍板，见 testdata/rules/README.md）。
     tr.returnCard(4, returnable(tributeHands(tr)[3]!, TWO));
     tr.returnCard(2, returnable(tributeHands(tr)[1]!, TWO));
     expect(tr.done()).toBe(true);

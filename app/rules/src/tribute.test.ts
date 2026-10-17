@@ -9,8 +9,8 @@
 //   - **被拒的动作不许改局面**：进贡/还牌和出牌一样是玩家给的牌，引擎只校验 —— 校验失败必须
 //     哪都没动。
 //
-// 「不超过 10」按**牌面数字**算（读法 A，仓库所有者还没拍板，见 testdata/rules/tribute.json 顶部
-// 与 README 的「待确认」一节）：打 7 时 ♠7、♥7 牌面是 7，能还。
+// 「不超过 10」按**牌面数字**算（读法 A，**仓库所有者 2026-10-16 已确认**，见 testdata/rules/tribute.json
+// 顶部与 README 的「已拍板的读法」一节）：打 7 时 ♠7、♥7 牌面是 7，能还。
 import { describe, expect, it } from "vitest";
 import { SEVEN, cardKey, type Card, type Rank } from "./card";
 import { partnerSeat } from "./play";
