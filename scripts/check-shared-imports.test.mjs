@@ -60,6 +60,10 @@ const RED = [
   ["子目录里的文件", { "nested/deep.ts": 'import { x } from "./store";\n' }, "./store"],
   [".tsx 文件", { "view.tsx": 'import { x } from "./store";\nexport const V = () => x;\n' }, "./store"],
   [".mts 文件", { "mod.mts": 'import { x } from "./store";\n' }, "./store"],
+  [".js 文件", { "legacy.js": 'import { x } from "./store";\nexport const v = x;\n' }, "./store"],
+  ["非字面量的动态 import", one("export const p = import(name);\n"), "不是字符串字面量"],
+  ["非字面量的 require", one("export const p = require(name);\n"), "不是字符串字面量"],
+  ["非字面量的 import = require", one("import x = require(name);\n"), "不是字符串字面量"],
 ];
 
 for (const [name, files, specifier] of RED) {
@@ -118,8 +122,11 @@ test("CLI 跑真仓库时通过（含退出码这条契约）", () => {
   assert.ok(out.includes("共享层守门通过"), out);
 });
 
-test("真仓库里那棵树是干净的（10 个源文件）", () => {
+test("真仓库里那棵树是干净的", () => {
   const r = runCli(path.join(repoRoot, "app/shared/src"), { cwd: repoRoot });
   assert.equal(r.code, 0, r.stderr);
-  assert.ok(r.stdout.includes("扫了 10 个文件"), r.stdout);
+  // 不写死文件数：共享层加一个文件（比如产品名的常量）不该让这条自测红。
+  // 只要求它真扫到了东西 —— 扫 0 个文件说明守门等于没跑，那才是真问题。
+  const scanned = Number(/扫了 (\d+) 个文件/.exec(r.stdout)?.[1] ?? "0");
+  assert.ok(scanned > 0, `守门一个文件都没扫到：${r.stdout}`);
 });

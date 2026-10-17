@@ -91,7 +91,7 @@ eq '共用牌例改动：两端都要跑' \
 # 别的检查脚本都各自挂着一项，这个漏挂就同样是「改了没人跑」。
 eq '共享层守门脚本改动要跑 test' \
   'local-ci/test' \
-  "$(printf 'scripts/check-shared-imports.mjs\n' | scope_contexts)"
+  "$(printf 'scripts/check-shared-imports.mjs\nscripts/check-shared-imports.test.mjs\n' | scope_contexts)"
 
 # Go 端牌例读取器里的条款号正则被 app/rules 的 rule-sync.test.ts 逐字比对（#87 配套）：
 # 只改它也要跑 rules；原来服务端那四项照旧（它本身是 Go 测试）。

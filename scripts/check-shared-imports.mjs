@@ -29,7 +29,9 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts"];
+// `.js` 系列也扫：共享层虽然只写 TS，但真有谁放了个 .js 进来，它同样会被 import 链带上，
+// 不扫就是静默漏检（复审提的）。
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
 let tsCache = null;
 /** 找一个**带 JS API** 的 typescript：app/h5 那份是 native 版，没有 createSourceFile，跳过。 */
@@ -68,6 +70,8 @@ function collect(dir) {
 
 function scriptKindOf(ts, file) {
   if (file.endsWith(".tsx")) return ts.ScriptKind.TSX;
+  if (file.endsWith(".jsx")) return ts.ScriptKind.JSX;
+  if (file.endsWith(".js") || file.endsWith(".mjs") || file.endsWith(".cjs")) return ts.ScriptKind.JS;
   return ts.ScriptKind.TS;
 }
 
@@ -145,21 +149,29 @@ function checkFile(ts, file, violations) {
 
     if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
       const ref = node.moduleReference.expression;
-      if (ref && ts.isStringLiteral(ref) && !node.isTypeOnly) {
-        checkSpecifier(ref, "`import x = require(…)` 是值依赖，共享层里别用");
+      if (!ref) return;
+      if (!ts.isStringLiteral(ref)) {
+        report(node, "`import x = require(…)` 的模块名不是字符串字面量，守门看不出来 —— 共享层别这么写");
+        return;
       }
+      if (!node.isTypeOnly) checkSpecifier(ref, "`import x = require(…)` 是值依赖，共享层里别用");
       return;
     }
 
     if (ts.isCallExpression(node)) {
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      // 模块名不是字面量时守门看不出来它引的是谁 —— 一样要红（复审提的漏检）：
+      // 共享层里的 import/require 只许写死的字符串。
+      const checkCall = (why) => {
         const arg = node.arguments[0];
-        if (arg && ts.isStringLiteral(arg)) checkSpecifier(arg, "动态 import 一定是值依赖");
+        if (arg && ts.isStringLiteral(arg)) checkSpecifier(arg, why);
+        else report(node, "模块名不是字符串字面量，守门看不出来 —— 共享层的 import 只许写死的字符串");
+      };
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        checkCall("动态 import 一定是值依赖");
         return;
       }
       if (ts.isIdentifier(node.expression) && node.expression.text === "require") {
-        const arg = node.arguments[0];
-        if (arg && ts.isStringLiteral(arg)) checkSpecifier(arg, "`require(…)` 一定是值依赖");
+        checkCall("`require(…)` 一定是值依赖");
         return;
       }
     }
