@@ -8,6 +8,7 @@ import { leaveGame, listGames, type GameSummary } from "../lib/api";
 import { cardDay, kindLabel, missingLabel, slashDate, timeHM, dayShort } from "../lib/fmt";
 import { realtime } from "../lib/realtime";
 import { currentUser } from "../lib/session";
+import { APP_NAME } from "../../../shared/src/appName.mts";
 import type { Notice } from "../../../shared/src/status";
 import { dismissNotice, observeNotices, summaryView } from "../lib/notice";
 import { promotedSheet } from "./sheets";
@@ -138,7 +139,7 @@ export class Home implements Scene {
       text(ctx, "离线 · 15 秒刷新", PAD + 148, a.navY, font(11), C.ink4);
     }
     const titleY = a.menu.bottom + 26;
-    text(ctx, "随时掼掼蛋", PAD, titleY, font(28, "900", true), C.red);
+    text(ctx, APP_NAME, PAD, titleY, font(28, "900", true), C.red);
     text(ctx, "找人凑一桌，就差你一个", PAD, titleY + 28, font(13), C.ink3);
     // 小牌顶边离胶囊底至少 8（适配稿 1.2）：牌的中心在 y + 24，半高 24
     this.drawMiniCards(ctx, W - 86, a.contentTop + 4);

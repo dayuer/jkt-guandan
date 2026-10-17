@@ -1,5 +1,5 @@
 /*
- * 随时掼掼蛋 · 设计令牌（design tokens）
+ * 设计令牌（design tokens）
  * 来源：design/guandan-offline/掼蛋约局H5.html（Claude Design 导出）中出现频率最高的取值。
  * impl 直接引入 app/h5/：所有颜色、圆角、阴影、字号、动效都从这里取，不在组件里写死数值。
  */
@@ -36,7 +36,7 @@
 
   /* 字号：取自设计稿源码（括号里是在源码中的出现次数或位置） */
   --fs-hero: 44px;         /* 详情页大时间：900 44px/1.1 */
-  --fs-onboard: 40px;      /* 引导页「随时掼掼蛋」：900 40px/1.15 */
+  --fs-onboard: 40px;      /* 引导页大字（应用名，见 app/shared/src/appName.ts）：900 40px/1.15 */
   --fs-display: 28px;      /* 首页大标题：900 28px/1.1 */
   --fs-sheet: 20px;        /* 弹层主标题（sheetTitle）：900 20px */
   --fs-h2: 20px;           /* 区块标题 */

@@ -1,7 +1,40 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import preact from "@preact/preset-vite";
 import { defineConfig, type Plugin } from "vitest/config";
+import { APP_NAME } from "./src/appName.ts";
+
+/**
+ * 静态文件里的应用名（产品改名那一件）：`index.html`、`public/manifest.json`、`public/sw.js`
+ * 编译不过去，所以那边写占位符 `%APP_NAME%`，在这里替换成 `app/shared/src/appName.ts` 那一个常量。
+ * 构建时：`transformIndexHtml` 管 HTML，`closeBundle` 管拷进 dist 的那两个 public 文件
+ * （它们不走 rollup 的 bundle 图）；dev server 上没有产物，所以另挂一层中间件按需替换。
+ */
+function appName(): Plugin {
+  const fill = (text: string) => text.replaceAll("%APP_NAME%", APP_NAME);
+  const publicFiles = ["manifest.json", "sw.js"];
+  const readPublic = (name: string) => readFileSync(fileURLToPath(new URL(`./public/${name}`, import.meta.url)), "utf8");
+  return {
+    name: "app-name",
+    transformIndexHtml: (html) => fill(html),
+    // public/ 里的文件不走 rollup 的 bundle 图（vite 是原样拷进 dist 的），
+    // 所以只能在拷完之后改盘上的那两个文件 —— 和上面 keepDistPlaceholder 一个路子。
+    closeBundle() {
+      for (const name of publicFiles) {
+        const file = fileURLToPath(new URL(`./dist/${name}`, import.meta.url));
+        writeFileSync(file, fill(readFileSync(file, "utf8")));
+      }
+    },
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const name = publicFiles.find((f) => (req.url ?? "").split("?")[0] === `/${f}`);
+        if (!name) return next();
+        res.setHeader("content-type", name.endsWith(".json") ? "application/json" : "text/javascript");
+        res.end(fill(readPublic(name)));
+      });
+    },
+  };
+}
 
 /**
  * dist 里的 .gitkeep 是给 Go 的 embed 用的：没有它，全新 clone 上 `go build`
@@ -18,7 +51,7 @@ function keepDistPlaceholder(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [preact(), keepDistPlaceholder()],
+  plugins: [preact(), appName(), keepDistPlaceholder()],
   build: {
     outDir: "dist",
     emptyOutDir: true,

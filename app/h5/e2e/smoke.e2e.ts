@@ -1,4 +1,5 @@
 import { expect, request, test, type APIRequestContext, type Page } from "@playwright/test";
+import { APP_NAME } from "../../shared/src/appName.mts";
 
 /**
  * 浏览器端到端冒烟（#72），全部在 375×667 下跑（分享面板另外看 375×560）。
@@ -370,7 +371,7 @@ test("我的页有 Tab 栏，点「牌局」回到首页", async ({ page }) => {
   await tabbar.getByRole("button", { name: /牌局/ }).click();
 
   await expect(page).toHaveURL(new RegExp(`${ORIGIN.replace("/", "\\/")}/?$`));
-  await expect(page.locator("h1")).toContainText("随时掼掼蛋");
+  await expect(page.locator("h1")).toContainText(APP_NAME);
   await expect(page.locator(".tab.on")).toHaveText(/牌局/);
 });
 
@@ -404,7 +405,7 @@ test("底部「牌友」能进 F1，标题对，约 TA 面板能打开", async (
   await page.goto("/");
   await page.locator(".tabbar .tab", { hasText: "牌友" }).click();
   await expect(page).toHaveURL(/\/friends$/);
-  await expect(page).toHaveTitle("牌友 · 随时掼掼蛋");
+  await expect(page).toHaveTitle(`牌友 · ${APP_NAME}`);
   await expect(page.locator(".tabbar .tab.on")).toContainText("牌友");
 
   const bar = await barBox(page, ".tabbar");
@@ -470,7 +471,7 @@ test("学牌：首页 Tab 能进学牌列表，规则速览能渲染、答题后
   await page.goto("/");
   await page.locator(".tabbar button", { hasText: "学牌" }).click();
   await expect(page).toHaveURL(/\/learn$/);
-  await expect(page).toHaveTitle("学牌 · 随时掼掼蛋");
+  await expect(page).toHaveTitle(`学牌 · ${APP_NAME}`);
   await expect(page.locator(".tabbar .tab.on")).toContainText("学牌");
   await expect(page.locator(".lesson")).toHaveCount(3);
 

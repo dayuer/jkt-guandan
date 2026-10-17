@@ -4,6 +4,7 @@ import { NoticeBanner, PromotedSheet } from "../components/StatusNotices";
 import { initial } from "../components/Table";
 import { kindLabel, missingLabel, slashDate, timeHM } from "../format";
 import { acknowledge, fromSummary, observe, type Notice } from "../status";
+import { APP_NAME } from "../title";
 import { OfflineDot, useRealtime } from "../useRealtime";
 
 type Day = "today" | "tomorrow" | "weekend" | "";
@@ -118,7 +119,7 @@ export function Home({ me, onOpen, onCreate, toast }: Props) {
         {/* 标题、定位、日期和片区筛选是一整块，钉在顶部不跟着列表滚（#111）。 */}
         <div class={`home-top${scrolled ? " scrolled" : ""}`} data-testid="home-top">
         <div class="head">
-          <h1>随时掼掼蛋</h1>
+          <h1>{APP_NAME}</h1>
           <p class="sub">
             📍 Jakarta · 找人凑一桌，就差你一个 <OfflineDot />
           </p>
