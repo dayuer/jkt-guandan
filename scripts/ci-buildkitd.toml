@@ -1,0 +1,14 @@
+# 本项目专用 buildkitd 的配置（由 scripts/ci-builder.sh 用来创建 `guandan-ci` 这个 builder）。
+#
+# 为什么要专用 builder（#279）：local-ci/docker 每次 `--build-arg BUILD=<sha>` 都会把最后的
+# go build 层重建一遍，`COPY . .` 那层更是每个提交都不同 —— 缓存一直堆在**默认 builder** 里，
+# 它和这台机器上别的项目共用，清理只能全局 `docker builder prune`（会误伤别人），于是只涨不清。
+# 换成容器化的 buildkitd，缓存就落在它自己的卷里，下面这条 GC 策略把上限钉死。
+#
+# all = true 表示「所有类型的缓存都受这条策略管」；keepBytes 是硬上限。
+# 4 GiB 的来由：一次冷构建的峰值约 1.3 GiB（见 #279 实测），留三倍余量够跨几次提交复用。
+[worker.oci]
+  enabled = true
+  [[worker.oci.gcpolicy]]
+    all = true
+    keepBytes = 4294967296

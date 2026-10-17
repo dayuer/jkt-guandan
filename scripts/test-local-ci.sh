@@ -187,6 +187,11 @@ case "$make_test_rules" in
 esac
 eq 'make test 真的会跑 gofmt 检查' 'yes' "$gofmt_wired"
 
+# #279：本项目的 buildx builder（缓存有上限）只影响 docker 那项 —— 它不改任何代码，
+# 只改「怎么 build 镜像」。挂错了范围要么白跑，要么该跑的时候没跑。
+eq 'buildx builder 的脚本只触发 docker 那项' 'local-ci/docker' \
+  "$(printf 'scripts/ci-builder.sh\nscripts/ci-buildkitd.toml\n' | scope_contexts)"
+
 # #278 复审的阻塞项：**gofmt 自己出错时守门不能静默通过**。make 用不带 -e 的 sh -c 跑，
 # 命令替换里的失败会被吞掉、gofmt 的错误又走 stderr，于是「gofmt 不存在 / 文件有语法错误 /
 # 文件名被拆开 / 文件被删了」都表现为「输出为空 → 通过」。这里拿 GOFMT 指一个不存在的路径，
@@ -800,6 +805,13 @@ cat > "$FD2/docker" <<'DK'
 case "$1" in
   info)  exit 0 ;;                                    # 前置检查：守护进程在
   build) printf 'ERROR: failed to authorize: dial tcp: lookup auth.docker.io: i/o timeout\n' >&2; exit 1 ;;
+  # #279 起 docker 那项走 `docker buildx build --builder guandan-ci`（scripts/ci-builder.sh），
+  # 所以这里也要把 buildx 的路造出来，否则假 docker 会让构建「成功」、网络失败场景测不到。
+  buildx)
+    case "$2" in
+      inspect) exit 0 ;;                              # builder 已存在
+      build) printf 'ERROR: failed to authorize: dial tcp: lookup auth.docker.io: i/o timeout\n' >&2; exit 1 ;;
+    esac ;;
   rmi)   exit 0 ;;
 esac
 exit 0
