@@ -23,7 +23,7 @@ var ErrSensitive = errors.New("moderate: 内容涉及金钱或赌博")
 // 说了反而等于教人怎么绕。牌局的地点、备注和称呼用的是同一句，前端不用区分来源。
 const Message = "请勿涉及金钱：这里只约纯娱乐局"
 
-// Hit 说明是哪个字段命中了哪个词。字段名用请求体里的 JSON 名（venue / note），
+// Hit 说明是哪个字段命中了哪个词。字段名用请求体里的 JSON 名（venue / note / nickname），
 // 前端据此把提示放在对应的输入框下面（原型 X1）。
 type Hit struct {
 	Field string
@@ -180,8 +180,14 @@ func isASCII(s string) bool {
 // （提示里显示的还是他自己写的内容）。
 func squeeze(s string) string {
 	return strings.Map(func(r rune) rune {
+		// **所有** Unicode 空白都去掉，不只是 ASCII 空格和 \t\n\r：中文输入法里最顺手的是
+		// 全角空格 U+3000，微信里复制出来的还有不换行空格 U+00A0 —— 留一个在中间，
+		// 「赢　钱」就绕过了「赢钱」这一条（#147 复审的 B1）。
+		if unicode.IsSpace(r) {
+			return -1
+		}
 		switch r {
-		case ' ', '\t', '\n', '\r', '-', '_', '.', ',', '/', '\\', '|', '+', '*', '·', '、', '，':
+		case '-', '_', '.', ',', '/', '\\', '|', '+', '*', '·', '、', '，':
 			return -1
 		case '\u200b', '\u200c', '\u200d', '\ufeff': // 零宽字符（含 BOM）
 			return -1

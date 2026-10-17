@@ -351,12 +351,12 @@ function nickSheet(app: App) {
       app.closeSheet(s);
       app.toast("改好了");
     } catch (err) {
-      // 服务端的说明已经够用户看懂（「称呼需要 1–12 个字符」「这个称呼不能用」）；
-      // 内容安全那条回的是 422，把原文写成自己的话。
+      // 服务端的说明已经够用户看懂（「称呼需要 1–12 个字符」「这个称呼不能用」）。
+      // 内容安全那条也**照原文显示**：#147 起本地词表也会返回 422 sensitive_word，
+      // 而且是在调微信之前就拦下的 —— 一律说「过不了微信的内容检测」就不准了
+      //（本地拦的是「请勿涉及金钱：这里只约纯娱乐局」）。
       error = err instanceof ApiError
-        ? (err.code === "sensitive_word" ? "这个名字过不了微信的内容检测，换一个吧"
-          : err.code === "rate_limited" ? "这一小时改得太多次了，过一会儿再来"
-          : err.message)
+        ? (err.code === "rate_limited" ? "这一小时改得太多次了，过一会儿再来" : err.message)
         : "没改成，稍后再试";
     } finally {
       busy = false; app.redraw();
