@@ -39,6 +39,9 @@ var (
 	ErrRateLimited = errors.New("操作太频繁")
 	// ErrDealOver：这一副已经打完了（下一副是第 5 件的事，这里不偷偷开新副）。
 	ErrDealOver = errors.New("这一副已经打完了")
+	// ErrPracticeEnded：这一局练习局已经被新局收掉了（建新局时写了 ended_at）。
+	// 收掉的局只能取（复盘），不能再改 —— 复盘和第 6/7 件都依赖「收掉的局不再变」。
+	ErrPracticeEnded = errors.New("这局练习已经结束了")
 )
 
 // VersionConflict：客户端手里的 revision 旧了（或者有人并发改了）。**带上最新局面**，
@@ -87,6 +90,7 @@ func moveKey(m Move) string {
 // Play 出牌（或过牌）：校验 → 推进 → 写回存档。
 //
 //   - `expectedRev` 对不上（或者并发改过）→ `*VersionConflict`（带最新局面）；
+//   - 这一局已经被新局收掉（`ended_at` 写了）→ `ErrPracticeEnded`，**局面一点不动**；
 //   - 这一手不成立 → `*MoveRejected`（带引擎的原因码），**局面一点不动**；
 //   - 同一个 `Idempotency-Key` 重发 → 不重复出牌，返回现在的局面（可能比第一次新 —— 幂等说的是
 //     「这一手不落两次」，不是「响应冻住」）；
@@ -110,6 +114,11 @@ func (s *Service) Play(ctx context.Context, id, userID string, mv Move, expected
 		}
 		if replay {
 			return s.viewNow(ctx, tx, row, &out)
+		}
+		// 收掉的局不再变（建新局时写了 ended_at）：只能取来复盘，不能出牌。
+		// 放在幂等重放之后 —— 已经成功过的那一手重发仍然要返回 200。
+		if !row.EndedAt.IsZero() {
+			return ErrPracticeEnded
 		}
 		if row.Revision != expectedRev {
 			return s.conflict(ctx, tx, id, &out)
@@ -349,19 +358,20 @@ func idemReplay(ctx context.Context, tx *store.Tx, userID, key, route, fingerpri
 	if key == "" {
 		return false, nil
 	}
+	// 和 games 的 idemReplay 同一口径：库里的指纹可能为空（旧版本写的），这时只比路由。
 	var (
-		gotRoute, gotFP string
+		gotRoute string
+		gotFP    sql.NullString
 	)
 	err := tx.QueryRowContext(ctx,
 		`SELECT route, fingerprint FROM idempotency_keys WHERE user_id = ? AND key = ?`, userID, key).
 		Scan(&gotRoute, &gotFP)
-	if errors.Is(err, sql.ErrNoRows) {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
 		return false, nil
-	}
-	if err != nil {
+	case err != nil:
 		return false, fmt.Errorf("查幂等键：%w", err)
-	}
-	if gotRoute != route || gotFP != fingerprint {
+	case gotRoute != route, gotFP.Valid && gotFP.String != fingerprint:
 		return false, errIdemKeyReused
 	}
 	return true, nil

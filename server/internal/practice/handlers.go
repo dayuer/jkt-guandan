@@ -108,11 +108,19 @@ func parseMove(cards []string, kind, rank string, pass bool) (Move, error) {
 		return Move{}, errors.New("出牌要给 cards（不出请 pass:true）")
 	}
 	out := make([]rules.Card, 0, len(cards))
+	// 同一张牌写两次是**调用方的错**，在这里就挡成 400：引擎的「手里有没有」按 ID 查 map，
+	// 不数次数，重复的牌会漏到 Recognize 才报「出现了两次」，而那是个没有原因码的普通 error
+	// （#88 第 3 件复审 B2：原来落进 default，成了 503 + ERROR 日志）。
+	seen := make(map[int]bool, len(cards))
 	for _, k := range cards {
 		c, err := rules.ParseKey(k)
 		if err != nil {
 			return Move{}, fmt.Errorf("牌 %q：%w", k, err)
 		}
+		if seen[c.ID] {
+			return Move{}, fmt.Errorf("牌 %q 写了两次：同一张牌不能出两次", k)
+		}
+		seen[c.ID] = true
 		out = append(out, c)
 	}
 	t, err := rules.ParseComboType(kind)
@@ -157,6 +165,9 @@ func writeServiceError(w http.ResponseWriter, what string, err error) {
 		writeError(w, http.StatusConflict, rejected.Reason, "这一手不成立（"+rejected.Reason+"）")
 	case errors.Is(err, ErrDealOver):
 		writeError(w, http.StatusConflict, "deal_over", err.Error())
+	case errors.Is(err, ErrPracticeEnded):
+		// 已经收掉的练习局（建了新局）只能复盘，不能再出牌。
+		writeError(w, http.StatusConflict, "practice_ended", "这局练习已经结束了，开一局新的吧")
 	case IsIdemKeyReused(err):
 		writeError(w, http.StatusUnprocessableEntity, "idempotency_key_reused", "这个幂等键已经用在别的请求上了")
 	case errors.Is(err, ErrNotFound):

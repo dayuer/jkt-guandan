@@ -330,3 +330,91 @@ func TestPracticePlayRejectsFinishedDeal(t *testing.T) {
 		t.Fatal("刚建好的局不该是 deal_over")
 	}
 }
+
+// 已经收掉的练习局不能再出牌（#88 第 3 件复审 B1）：建新局会把旧局的 ended_at 写上，
+// 旧局只能取来复盘，不能改。检查放在幂等重放之后（重发同一手仍然是 200）。
+func TestPracticePlayRejectsEndedGame(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "打牌的人")
+	first := f.do(f.http, http.MethodPost, "/api/practice", map[string]any{}, nil)
+	id, _ := first.field("id").(string)
+	level := rules.Rank(first.field("level").(float64))
+	mv := leadingMove(t, handCards(t, first), level)
+
+	// 建第二局 → 第一局被收掉。
+	if r := f.do(f.http, http.MethodPost, "/api/practice", map[string]any{}, nil); r.status != http.StatusOK {
+		t.Fatalf("建第二局：%d %s", r.status, r.raw)
+	}
+	ended := f.do(f.http, http.MethodGet, "/api/practice/"+id, nil, nil)
+	if !ended.field("ended").(bool) {
+		t.Fatalf("第一局该被收掉：%s", ended.raw)
+	}
+
+	// 拿第一局的合法手牌和 revision 再出 → 409 practice_ended，局面不动。
+	got := f.do(f.http, http.MethodPost, "/api/practice/"+id+"/play", playBody(mv, 1), nil)
+	if got.status != http.StatusConflict || got.errCode() != "practice_ended" {
+		t.Fatalf("已结束的局该 409 practice_ended，实际 %d %s", got.status, got.raw)
+	}
+	now := f.do(f.http, http.MethodGet, "/api/practice/"+id, nil, nil)
+	if now.raw != ended.raw {
+		t.Fatalf("被拒之后局面不该变：\n%s\n%s", ended.raw, now.raw)
+	}
+}
+
+// 同一张牌提交两次是**调用方的错**：必须 400，不能落进 default 变成 503 + ERROR 日志
+// （#88 第 3 件复审 B2）。引擎的「手里有没有」按 ID 查 map、不数次数，所以在 HTTP 层就挡。
+func TestPracticePlayRejectsDuplicateCards(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "打牌的人")
+	created := f.do(f.http, http.MethodPost, "/api/practice", map[string]any{}, nil)
+	id, _ := created.field("id").(string)
+	c := handCards(t, created)[0]
+
+	got := f.do(f.http, http.MethodPost, "/api/practice/"+id+"/play", map[string]any{
+		"cards": []string{c.Key(), c.Key()}, "kind": "pair", "rank": c.Rank.RankName(),
+		"expected_revision": 1,
+	}, nil)
+	if got.status != http.StatusBadRequest || got.errCode() != "bad_request" {
+		t.Fatalf("重复的牌该 400 bad_request，实际 %d %s", got.status, got.raw)
+	}
+	now := f.do(f.http, http.MethodGet, "/api/practice/"+id, nil, nil)
+	if now.raw != created.raw {
+		t.Fatalf("被拒之后局面不该变：\n%s\n%s", created.raw, now.raw)
+	}
+}
+
+// 交一张**不在手里**的牌 → 409 cards-not-in-hand，局面不动（#88 第 3 件复审 N1）。
+// 这是这个接口最要紧的防作弊口径：引擎的在手检查要是被放宽，这条必须红。
+func TestPracticePlayRejectsCardsNotInHand(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "打牌的人")
+	created := f.do(f.http, http.MethodPost, "/api/practice", map[string]any{}, nil)
+	id, _ := created.field("id").(string)
+	inHand := map[string]bool{}
+	for _, k := range toStrings(created.field("hand")) {
+		inHand[k] = true
+	}
+	var outside rules.Card
+	found := false
+	for _, c := range rules.NewDeck() {
+		if !inHand[c.Key()] {
+			outside, found = c, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("27 张手牌之外应该有牌")
+	}
+
+	got := f.do(f.http, http.MethodPost, "/api/practice/"+id+"/play", map[string]any{
+		"cards": []string{outside.Key()}, "kind": "single", "rank": outside.Rank.RankName(),
+		"expected_revision": 1,
+	}, nil)
+	if got.status != http.StatusConflict || got.errCode() != "cards-not-in-hand" {
+		t.Fatalf("不在手里的牌该 409 cards-not-in-hand，实际 %d %s", got.status, got.raw)
+	}
+	now := f.do(f.http, http.MethodGet, "/api/practice/"+id, nil, nil)
+	if now.raw != created.raw {
+		t.Fatalf("被拒之后局面不该变：\n%s\n%s", created.raw, now.raw)
+	}
+}
