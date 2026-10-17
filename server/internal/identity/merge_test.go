@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
@@ -48,7 +49,7 @@ func TestMergeUsersMovesSeatsAndKeepsEarlierSeat(t *testing.T) {
 
 	var kept string
 	err = st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		kept, err = mergeUsers(ctx, tx, "u-other", "u-primary")
+		kept, err = mergeUsers(ctx, tx, "u-other", "u-primary", time.Unix(1000, 0))
 		return err
 	})
 	if err != nil {
@@ -127,7 +128,7 @@ func TestMergeUsersMovesFollows(t *testing.T) {
 		exec(`INSERT INTO follows (user_id, target_id, created_at) VALUES (?, ?, 1)`, f[0], f[1])
 	}
 	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		_, err := mergeUsers(ctx, tx, "u-other", "u-primary")
+		_, err := mergeUsers(ctx, tx, "u-other", "u-primary", time.Unix(1000, 0))
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -178,7 +179,7 @@ func TestMergeUsersMovesScoreRecords(t *testing.T) {
 	      VALUES ('g1', 1, 1, 2, 'u-other', 0, 'u-other', 1, 'u-other', 'u-other', 'u-other', 'u-other')`)
 	exec(`INSERT INTO score_seat_leavers (game_id, seat_no, user_id, left_at) VALUES ('g1', 3, 'u-other', 2)`)
 	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		_, err := mergeUsers(ctx, tx, "u-other", "u-primary")
+		_, err := mergeUsers(ctx, tx, "u-other", "u-primary", time.Unix(1000, 0))
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -238,7 +239,7 @@ func TestMergeUsersMovesHiddenGames(t *testing.T) {
 	exec(`INSERT INTO hidden_games (user_id, game_id, hidden_at) VALUES ('u-other', 'g3', 3)`) // 两边都删过 → 只留一条
 
 	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
-		_, err := mergeUsers(ctx, tx, "u-other", "u-primary")
+		_, err := mergeUsers(ctx, tx, "u-other", "u-primary", time.Unix(1000, 0))
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -263,5 +264,84 @@ func TestMergeUsersMovesHiddenGames(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("合并后的隐藏记录 %v，期望 %v", got, want)
 		}
+	}
+}
+
+// 合并身份时练习局（#88）跟着走，而且**并入方那一局开着的要先结束**：
+// `practice_games_one_open_per_user`（`user_id WHERE ended_at IS NULL`）会把「我正开着一局 +
+// 他也没结束一局」这种搬法挡下来，所以搬之前先给并入方那局写上结束时间。
+// 主身份自己开着的局**不动**（他先来的，那局还在打）。
+func TestMergeUsersMovesPracticeGames(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+			_, err := tx.ExecContext(ctx, q, args...)
+			return err
+		}); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	for i, id := range []string{"u-primary", "u-other"} {
+		exec(`INSERT INTO users (id, nickname, created_at) VALUES (?, ?, ?)`, id, id, 100+i)
+	}
+	newPractice := func(id, user string, ended any) {
+		exec(`INSERT INTO practice_games (id, user_id, level, seat, state, revision, created_at, ended_at)
+		      VALUES (?, ?, 2, 1, '{}', 1, 1, ?)`, id, user, ended)
+	}
+	newPractice("p-primary-open", "u-primary", nil) // 主身份开着的 → 不动
+	newPractice("p-other-open", "u-other", nil)     // 并入方开着的 → 要结束
+	newPractice("p-other-done", "u-other", 500)     // 并入方已结束的 → 原样搬
+
+	if err := st.Write(ctx, func(ctx context.Context, tx *store.Tx) error {
+		_, err := mergeUsers(ctx, tx, "u-other", "u-primary", time.Unix(1000, 0))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := st.Read().Query(
+		`SELECT id || '|' || user_id || '|' || COALESCE(ended_at, -1) FROM practice_games ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, s)
+	}
+	want := []string{
+		"p-other-done|u-primary|500",  // 搬过来，结束时间不动
+		"p-other-open|u-primary|1000", // 搬过来，而且被结束（写的就是合并时的时间）
+		"p-primary-open|u-primary|-1", // 主身份自己那局不受影响
+	}
+	if len(got) != len(want) {
+		t.Fatalf("合并后的练习局 %v，期望 %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("合并后的练习局 %v，期望 %v", got, want)
+		}
+	}
+	// 「一人同时只有一局」仍然成立（两条路径各一条：主身份那局 + 并入方被结束的那局）。
+	var open int
+	if err := st.Read().QueryRow(
+		`SELECT count(*) FROM practice_games WHERE user_id = 'u-primary' AND ended_at IS NULL`).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if open != 1 {
+		t.Fatalf("合并后主身份开着的练习局该只有 1 局，实际 %d 局", open)
 	}
 }

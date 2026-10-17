@@ -74,7 +74,7 @@ func (s *Store) CancelGame(ctx context.Context, shortCode string, now time.Time)
 
 // DeleteUserData 删除一个用户的个人数据（§14，guandan admin user delete，以后 DELETE /api/me 也用它）：
 //   - 称呼改成「已注销牌友」，清空 WhatsApp 号码；用户行和座位记录保留，历史局的人数统计不受影响；
-//   - 删除设备、推送订阅、认领令牌、微信关联、订阅消息次数、星标关系、邀请记录、候补；
+//   - 删除设备、推送订阅、认领令牌、微信关联、订阅消息次数、星标关系、邀请记录、候补、隐藏的历史局、练习局；
 //   - 埋点去掉 user_id。
 func (s *Store) DeleteUserData(ctx context.Context, userID string) error {
 	return s.Write(ctx, func(ctx context.Context, tx *Tx) error {
@@ -97,6 +97,7 @@ func (s *Store) DeleteUserData(ctx context.Context, userID string) error {
 			`DELETE FROM waitlist WHERE user_id = ?`,
 			`DELETE FROM score_seat_leavers WHERE user_id = ?`,
 			`DELETE FROM hidden_games WHERE user_id = ?`,
+			`DELETE FROM practice_games WHERE user_id = ?`,
 			`UPDATE events SET user_id = NULL WHERE user_id = ?`,
 		} {
 			if _, err := tx.ExecContext(ctx, q, userID); err != nil {
