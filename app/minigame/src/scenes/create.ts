@@ -3,16 +3,18 @@
 
 import type { App, Scene, Sheet } from "../core/app";
 import { C, Ctx, Scroller, ease, font, text } from "../core/ui";
-import { PAD, button, chip, chipsWrap, disclaimer, errorLine, field, nav, sheetHeader } from "../core/widgets";
+import { MIN_LEAD, PAD, button, chip, chipsWrap, disclaimer, errorLine, field, nav, nextSlot, sheetButtons, sheetHeader, timePicker } from "../core/widgets";
 import { ApiError, createGame, inviteError, inviteFriends, inviteSummary, newIdempotencyKey, subscribeRetry, type Friend } from "../lib/api";
 import { currentUser } from "../lib/session";
-import { wibAt, weekday } from "../lib/fmt";
+import { slashDate, timeHM, wibAt, weekday } from "../lib/fmt";
 import { AREAS } from "./home";
 import type { Nav } from "./nav";
 import { friendPicker, requireIdentity } from "./sheets";
 
 const KINDS = [{ value: "classic", label: "经典" }, { value: "no-level", label: "不升级" }, { value: "teaching", label: "带新手" }];
 const BAR_H = 76;
+/** 自定义时间能选今天起几天：服务端上限 30 天（validate.go MaxLeadTime），第 29 天 23:45 也在里面 */
+const HORIZON_DAYS = 30;
 
 function presets(): { label: string; unix: number }[] {
   return [0, 1, 2].map((d) => {
@@ -24,6 +26,8 @@ function presets(): { label: string; unix: number }[] {
 export class Create implements Scene {
   private times = presets();
   private startsAt = this.times[0].unix;
+  /** 「自定义」选过的时间；和某个预设一样时不记，让预设亮着 */
+  private custom: number | null = null;
   private area = AREAS[0];
   private venue = "";
   private kind = "classic";
@@ -69,7 +73,10 @@ export class Create implements Scene {
       y += 36;
     };
     label("什么时候");
-    y = chipsWrap(a, ctx, "time", PAD, y, fw, this.times.map((t) => t.label), (i) => this.times[i].unix === this.startsAt, (i) => { this.startsAt = this.times[i].unix; this.changed(); }) + 14;
+    const c = this.custom, n = this.times.length;
+    const timeLabels = [...this.times.map((t) => t.label), c === null ? "自定义" : `${weekday(c)} ${slashDate(c)} ${timeHM(c)}`];
+    y = chipsWrap(a, ctx, "time", PAD, y, fw, timeLabels, (i) => (i < n ? this.times[i].unix : c) === this.startsAt,
+      (i) => { if (i === n) this.pickTime(); else this.setTime(this.times[i].unix); }) + 14;
     label("哪个片区");
     y = chipsWrap(a, ctx, "area", PAD, y, fw, AREAS, (i) => AREAS[i] === this.area, (i) => { this.area = AREAS[i]; this.changed(); }) + 14;
     label("具体地点");
@@ -155,6 +162,36 @@ export class Create implements Scene {
         button(a, ctx, "cancel-keep", 20, cy, bw, 50, "继续填", "soft", () => a.closeSheet(s));
         button(a, ctx, "cancel-quit", 32 + bw, cy, bw, 50, "不开了", "danger", () => { a.closeSheet(s); this.nav.back(); });
         return cy + 50 + 20 - y;
+      },
+    };
+    a.openSheet(s);
+  }
+
+  private setTime(unix: number) {
+    if (unix === this.startsAt) return;
+    this.startsAt = unix; this.changed();
+  }
+
+  /** 「自定义」：和「改一下这一局」同一套三行胶囊；默认选中当前时间，它已经来不及了就选最近能开的一档。 */
+  private pickTime() {
+    const a = this.app;
+    const p = timePicker(a, this.startsAt >= Math.floor(Date.now() / 1000) + MIN_LEAD ? this.startsAt : nextSlot(), "ct", HORIZON_DAYS);
+    const s: Sheet = {
+      scrollerAt: (x, y) => p.scrollerAt(x, y),
+      step: p.step,
+      draw: (ctx, y, w) => {
+        let cy = sheetHeader(ctx, y, w, "什么时候开", `最早 10 分钟后，最晚 ${HORIZON_DAYS} 天内`) + 6;
+        cy = p.draw(ctx, cy) + 10;
+        const u = p.unix(), late = u < Math.floor(Date.now() / 1000) + MIN_LEAD;
+        cy = sheetButtons(a, ctx, cy, w, [
+          { label: late ? "这个时间来不及了" : `就 ${weekday(u)} ${slashDate(u)} ${timeHM(u)}`, style: "primary", disabled: late, onTap: () => {
+            this.custom = this.times.some((t) => t.unix === u) ? null : u;
+            this.setTime(u);
+            a.closeSheet(s); a.redraw();
+          } },
+          { label: "算了", style: "link", onTap: () => a.closeSheet(s) },
+        ], "ct-sb");
+        return cy - y + 8;
       },
     };
     a.openSheet(s);

@@ -3,6 +3,7 @@
 
 import type { App, Sheet } from "./app";
 import { C, Ctx, Scroller, card, circle, ellipsize, fillRR, font, measure, paragraph, strokeRR, text, wrap } from "./ui";
+import { slashDate, weekday, wibAt, wibParts } from "../lib/fmt";
 
 export const PAD = 16;
 
@@ -214,6 +215,84 @@ export function chipRow(
   if (x - ROW_GAP > W + 0.5) fade(W - 32, 32, true);
   if (o.scroll.pos > 0.5) fade(x0, 20, false);
   return y + ROW_H + 10;
+}
+
+/** 服务端要求开局时间至少在 10 分钟后（server/internal/games/validate.go MinLeadTime）。 */
+export const MIN_LEAD = 10 * 60;
+const nowSec = () => Math.floor(Date.now() / 1000);
+
+/** 选项网格（今天起 8 天 × 9–23 点 × 0/15/30/45 分）里最早一个离现在至少 MIN_LEAD 的时间。 */
+export function nextSlot(now = nowSec()): number {
+  for (let d = 0; d < 8; d++) for (let h = 9; h <= 23; h++) for (const m of [0, 15, 30, 45]) {
+    const t = wibAt(d, h, m, now);
+    if (t >= now + MIN_LEAD) return t;
+  }
+  return wibAt(1, 9, 0, now); // 走不到：明天 9 点一定在网格里且够远
+}
+
+/**
+ * 哪天 / 几点 / 几分 三行胶囊（适配稿 3.2）：「改一下这一局」和开一局的「自定义」共用。
+ * start 是默认选中的时间；它不在选项范围里（比如早上 8 点的局）就插到那一行最前面。
+ * id 是胶囊热区前缀：`${id}-day` / `${id}-h` / `${id}-m`。dayCount：今天起几天可选。
+ */
+export function timePicker(app: App, start: number, id: string, dayCount = 8) {
+  const parts = wibParts(start);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const dayName = (i: number) => { const t = wibAt(i, 12, 0); return i === 0 ? "今天" : i === 1 ? "明天" : `${weekday(t)} ${slashDate(t)}`; };
+  const inRange = (d: number) => d >= 0 && d < dayCount;
+  const days = Array.from({ length: dayCount }, (_, i) => i);
+  if (!inRange(parts.dayOffset)) days.unshift(parts.dayOffset);
+  const hours = Array.from({ length: 15 }, (_, i) => 9 + i);
+  if (!hours.includes(parts.hour)) hours.unshift(parts.hour);
+  const minutes = [0, 15, 30, 45];
+  if (!minutes.includes(parts.minute)) minutes.unshift(parts.minute);
+  const st = { day: parts.dayOffset, hour: parts.hour, minute: parts.minute };
+  const isOrig = (day: number, hour: number) => day === parts.dayOffset && hour === parts.hour;
+  /** 今天已经过去的钟点（这个钟点最晚的 :45 也过了）不能选；原来的值除外。 */
+  const hourOff = (day: number, hour: number) => day === 0 && !isOrig(day, hour) && wibAt(0, hour, 45) <= nowSec();
+  const rows = { day: new Scroller(), hour: new Scroller(), minute: new Scroller() };
+  const rowY = { day: 0, hour: 0, minute: 0 };
+  const labels = {
+    day: () => days.map((d) => (!inRange(d) ? `${weekday(wibAt(d, 12, 0))} ${slashDate(wibAt(d, 12, 0))}` : dayName(d))),
+    hour: () => hours.map((h) => `${h}点`),
+    minute: () => minutes.map((m) => `:${pad(m)}`),
+  };
+  let scrolled = false, jumpHour = false;
+  const scrollInto = (ctx: Ctx, k: "day" | "hour" | "minute") => {
+    const on = k === "day" ? days.indexOf(st.day) : k === "hour" ? hours.indexOf(st.hour) : minutes.indexOf(st.minute);
+    rows[k].setMax(1e6); // 真正的最大值在 chipRow 里设；chipRowScrollFor 已经夹在范围里
+    rows[k].scrollTo(chipRowScrollFor(app, ctx, labels[k](), on));
+  };
+  const pickDay = (i: number) => {
+    st.day = days[i];
+    // 切回今天时，选中的钟点已经过了：跳到下一个能选的，并滚进可视区
+    if (hourOff(st.day, st.hour)) {
+      const next = hours.find((h) => h > st.hour && !hourOff(st.day, h)) ?? hours.find((h) => !hourOff(st.day, h));
+      if (next !== undefined) { st.hour = next; jumpHour = true; }
+    }
+  };
+  return {
+    st, parts, inRange, days, hours, minutes, labels, dayName, hourOff, pickDay,
+    unix: () => wibAt(st.day, st.hour, st.minute),
+    scrollerAt(x: number, y: number): { s: Scroller; axis: "x" } | null {
+      if (x < ROW_X0) return null;
+      for (const k of ["day", "hour", "minute"] as const) if (y >= rowY[k] - 4 && y <= rowY[k] + 40) return { s: rows[k], axis: "x" };
+      return null;
+    },
+    step: () => rows.day.step() || rows.hour.step() || rows.minute.step(),
+    /** 画三行，返回下一行的 y。 */
+    draw(ctx: Ctx, y: number): number {
+      if (!scrolled) { scrollInto(ctx, "day"); scrollInto(ctx, "hour"); scrollInto(ctx, "minute"); scrolled = true; }
+      if (jumpHour) { scrollInto(ctx, "hour"); jumpHour = false; }
+      rowY.day = y;
+      y = chipRow(app, ctx, `${id}-day`, y, "哪天", labels.day(), days.indexOf(st.day), pickDay, { scroll: rows.day });
+      rowY.hour = y;
+      y = chipRow(app, ctx, `${id}-h`, y, "几点", labels.hour(), hours.indexOf(st.hour), (i) => { st.hour = hours[i]; },
+        { scroll: rows.hour, disabled: (i) => hourOff(st.day, hours[i]) });
+      rowY.minute = y;
+      return chipRow(app, ctx, `${id}-m`, y, "几分", labels.minute(), minutes.indexOf(st.minute), (i) => { st.minute = minutes[i]; }, { scroll: rows.minute });
+    },
+  };
 }
 
 export function segmented(app: App, ctx: Ctx, id: string, x: number, y: number, w: number, items: string[], active: number, onPick: (i: number) => void, h = 44) {
