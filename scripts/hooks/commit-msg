@@ -1,0 +1,19 @@
+#!/bin/sh
+# Reject AI attribution lines in the commit message (COORDINATION.md:34).
+#
+# Installed by scripts/install-hooks.sh. This is early feedback only: the CI
+# check is the gate that every PR actually passes.
+set -eu
+
+msg="${1:-}"
+[ -n "$msg" ] || { echo "commit-msg: missing message file path" >&2; exit 1; }
+[ -f "$msg" ] || { echo "commit-msg: message file $msg not found" >&2; exit 1; }
+
+# Prefer an installed checker. This project does not vendor it; it ships
+# with the yardmaster project (cmd/ym-check-trailers).
+if command -v ym-check-trailers >/dev/null 2>&1; then
+  exec ym-check-trailers --message-file "$msg"
+fi
+# Fail closed: a hook that cannot check would silently let the trailer through.
+echo "commit-msg: ym-check-trailers is not installed; build it from the yardmaster project (cmd/ym-check-trailers) or install the ym tools" >&2
+exit 1
