@@ -5,7 +5,7 @@
 // 和复审时人工比对；这里把两份源码当文本读进来，抽出正则原串直接比 —— Go 改了而 TS 没跟上
 // （或者反过来），这条当场红。scripts/local-ci-lib.sh 里，改 Go 那个文件也会触发 local-ci/rules。
 //
-// 比的是源码里的字面量，不碰 fixtures.ts 本身（第 2 步在改它）。
+// 比的是源码里的字面量（`fixtures.ts?raw`），不依赖它的运行时导出。
 import { describe, expect, it } from "vitest";
 import goSrc from "../../../../server/internal/rules/fixtures_test.go?raw";
 import tsSrc from "./fixtures.ts?raw";
