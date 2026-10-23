@@ -426,3 +426,39 @@ func TestPracticePlayRejectsCardsNotInHand(t *testing.T) {
 		t.Fatalf("被拒之后局面不该变：\n%s\n%s", created.raw, now.raw)
 	}
 }
+
+// 局被新局收掉之后，用**同一个幂等键**重发已经成功过的那一手，仍然返回 200
+// （#88 第 3 件复审跟进）。这条钉的是现有顺序：`Play` 先查幂等重放、再判 `ended` ——
+// 把 ended 检查挪到回放之前，这条会红。
+func TestPracticePlayReplaysAfterEnded(t *testing.T) {
+	f := newServer(t)
+	f.signUp(f.http, "打牌的人")
+	created := f.do(f.http, http.MethodPost, "/api/practice", map[string]any{}, nil)
+	id, _ := created.field("id").(string)
+	level := rules.Rank(created.field("level").(float64))
+	mv := leadingMove(t, handCards(t, created), level)
+	key := map[string]string{"Idempotency-Key": "结束后重发-1"}
+
+	first := f.do(f.http, http.MethodPost, "/api/practice/"+id+"/play", playBody(mv, 1), key)
+	if first.status != http.StatusOK {
+		t.Fatalf("先出一手：%d %s", first.status, first.raw)
+	}
+
+	// 建第二局 → 第一局被收掉。
+	if r := f.do(f.http, http.MethodPost, "/api/practice", map[string]any{}, nil); r.status != http.StatusOK {
+		t.Fatalf("建第二局：%d %s", r.status, r.raw)
+	}
+	ended := f.do(f.http, http.MethodGet, "/api/practice/"+id, nil, nil)
+	if !ended.field("ended").(bool) {
+		t.Fatalf("第一局该被收掉：%s", ended.raw)
+	}
+
+	// 同一个键、同一手重发 → 不重复出牌，返回现在的局面（ended=true，revision 不变）。
+	replay := f.do(f.http, http.MethodPost, "/api/practice/"+id+"/play", playBody(mv, 1), key)
+	if replay.status != http.StatusOK {
+		t.Fatalf("结束后用同一个幂等键重发该仍然 200，实际 %d %s", replay.status, replay.raw)
+	}
+	if replay.raw != ended.raw {
+		t.Fatalf("重发该返回现在的局面：\n%s\n%s", ended.raw, replay.raw)
+	}
+}
