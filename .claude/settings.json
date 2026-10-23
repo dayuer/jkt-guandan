@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PATH=$HOME/.local/bin:$PATH sh -c 'exec \"${CLAUDE_PROJECT_DIR:-.}/scripts/protocol-context.sh\"'"
+          },
+          {
+            "type": "command",
+            "command": "export PATH=\"$HOME/.local/bin:$PATH\"; command -v ym >/dev/null 2>&1 && ym register-session --pid $PPID --role \"${AGENT_ROLE:-agent}\" || true"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "export PATH=\"$HOME/.local/bin:$PATH\"; command -v ym >/dev/null 2>&1 && ym unregister-session || true"
+          }
+        ]
+      }
+    ]
+  }
+}
