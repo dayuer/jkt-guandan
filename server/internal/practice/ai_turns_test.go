@@ -12,13 +12,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/rand/v2"
 	"net/http"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/dayuer/jkt-guandan/server/internal/ai"
 	"github.com/dayuer/jkt-guandan/server/internal/rules"
+	"github.com/dayuer/jkt-guandan/server/internal/store"
 )
 
 type recordedEvent struct {
@@ -245,24 +249,32 @@ func TestPracticePlayEventsReplayToView(t *testing.T) {
 		t.Fatalf("出一手：%d %s", final.status, final.raw)
 	}
 
-	evs := pub.ofType("practice.played")
-	if len(evs) == 0 {
-		t.Fatal("一条 practice.played 都没有")
+	type played struct {
+		Revision int64    `json:"revision"`
+		Seq      int      `json:"seq"`
+		Seat     int      `json:"seat"`
+		Pass     bool     `json:"pass"`
+		Cards    []string `json:"cards"`
+		Kind     string   `json:"kind"`
+		Rank     string   `json:"rank"`
 	}
-	var revision int64
-	for i, ev := range evs {
-		var d struct {
-			Revision int64    `json:"revision"`
-			Seq      int      `json:"seq"`
-			Seat     int      `json:"seat"`
-			Pass     bool     `json:"pass"`
-			Cards    []string `json:"cards"`
-			Kind     string   `json:"kind"`
-			Rank     string   `json:"rank"`
-		}
+	var evs []played
+	for _, ev := range pub.ofType("practice.played") {
+		var d played
 		if err := json.Unmarshal([]byte(ev.raw), &d); err != nil {
 			t.Fatalf("事件 data 不是合法 JSON：%v", err)
 		}
+		evs = append(evs, d)
+	}
+	// 玩家一手 + 至少一手 AI；少于两条这个用例就空转了。
+	if len(evs) <= 1 {
+		t.Fatalf("该至少有两条 practice.played（我 + AI），实际 %d 条", len(evs))
+	}
+	// 客户端收到的顺序不可靠：打乱之后按 seq 排回来再重放。
+	rand.Shuffle(len(evs), func(i, j int) { evs[i], evs[j] = evs[j], evs[i] })
+	sort.Slice(evs, func(i, j int) bool { return evs[i].Seq < evs[j].Seq })
+	var revision int64
+	for i, d := range evs {
 		if d.Seq != i+1 {
 			t.Fatalf("第 %d 条事件的 seq 该是 %d，实际 %d", i, i+1, d.Seq)
 		}
@@ -435,7 +447,8 @@ func equalStringSets(a, b []string) bool {
 
 // AI 循环失败 → 整个请求回滚：我这一手也不落库，幂等键也不落。
 func TestPracticePlayRollsBackWhenAIFails(t *testing.T) {
-	f := newServer(t)
+	pub := &recordPublisher{}
+	f := newServerWithPublisher(t, pub)
 	f.signUp(f.http, "打牌的人")
 	created := f.do(f.http, http.MethodPost, "/api/practice", map[string]any{}, nil)
 	id, _ := created.field("id").(string)
@@ -453,6 +466,9 @@ func TestPracticePlayRollsBackWhenAIFails(t *testing.T) {
 	r := f.do(f.http, http.MethodPost, "/api/practice/"+id+"/play", playBody(cands[0], 1), key)
 	if r.status != http.StatusServiceUnavailable || r.errCode() != "unavailable" {
 		t.Fatalf("AI 失败该 503 unavailable，实际 %d %s", r.status, r.raw)
+	}
+	if got := pub.all(); len(got) != 1 || got[0].typ != "practice.started" {
+		t.Fatalf("回滚之后不该推任何事件（只该有建局那条 started），实际 %d 条", len(got))
 	}
 	if rev := f.revisionOf(t, id); rev != 1 {
 		t.Fatalf("回滚之后 revision 该还是 1，实际 %d", rev)
@@ -531,5 +547,133 @@ func TestPracticePlayReplayDoesNotRepublish(t *testing.T) {
 	}
 	if got := len(pub.ofType("practice.played")); got != n {
 		t.Fatalf("重放不该再推事件：之前 %d 条，现在 %d 条", n, got)
+	}
+}
+
+// AI 的一手被**引擎**拒绝（不是 Decider 报错）→ 同样整笔回滚：stub 让 AI 出一张玩家手里的牌。
+func TestPracticePlayRollsBackWhenEngineRejectsAIMove(t *testing.T) {
+	pub := &recordPublisher{}
+	f := newServerWithPublisher(t, pub)
+	f.signUp(f.http, "打牌的人")
+	created := f.do(f.http, http.MethodPost, "/api/practice", map[string]any{}, nil)
+	id, _ := created.field("id").(string)
+	seat := int(created.field("seat").(float64))
+	g := f.stateGame(t, id)
+	cands, err := rules.Moves(g.Hand(seat), g.Level(), nil)
+	if err != nil || len(cands) == 0 {
+		t.Fatalf("算我领出的合法出法：%v", err)
+	}
+	mine := cands[0]
+	// 找一张我这一手没出、还留在我手里的牌 —— AI 座位手里不可能有它。
+	var stolen rules.Card
+	found := false
+	for _, c := range g.Hand(seat) {
+		if !slices.Contains(mine.Cards, c) {
+			stolen, found = c, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("我手里找不到一张不在这一手里的牌")
+	}
+
+	f.practice.SetDecider(func(ai.View, ai.Config) (ai.Decision, error) {
+		return ai.Decision{Combo: rules.Combo{Cards: []rules.Card{stolen}, Type: rules.TypeSingle, Rank: stolen.Rank}}, nil
+	})
+	r := f.do(f.http, http.MethodPost, "/api/practice/"+id+"/play", playBody(mine, 1), nil)
+	if r.status != http.StatusServiceUnavailable || r.errCode() != "unavailable" {
+		t.Fatalf("AI 出牌被引擎拒绝该 503 unavailable，实际 %d %s", r.status, r.raw)
+	}
+	if rev := f.revisionOf(t, id); rev != 1 {
+		t.Fatalf("回滚之后 revision 该还是 1，实际 %d", rev)
+	}
+	if g := f.stateGame(t, id); len(g.Moves()) != 0 {
+		t.Fatalf("回滚之后存档里不该有动作（我这一手也不落），实际 %d 手", len(g.Moves()))
+	}
+	if got := pub.all(); len(got) != 1 || got[0].typ != "practice.started" {
+		t.Fatalf("回滚之后不该推任何事件（只该有建局那条 started），实际 %d 条", len(got))
+	}
+}
+
+// 玩家先出完 → 一次请求里 AI 替他把这一副打完（方案 §6 第 6 条）。
+// 用 rules.NewGame 摆局面：我只剩 1 张、由我领出；三家 AI 各 3 张不连的单牌。
+func TestPracticePlayerFinishesFirstAIFinishesDeal(t *testing.T) {
+	pub := &recordPublisher{}
+	f := newServerWithPublisher(t, pub)
+	f.signUp(f.http, "打牌的人")
+	created := f.do(f.http, http.MethodPost, "/api/practice", map[string]any{}, nil)
+	id, _ := created.field("id").(string)
+	seat := int(created.field("seat").(float64))
+
+	key := func(k string) rules.Card {
+		c, err := rules.ParseKey(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	var hands [rules.Seats][]rules.Card
+	suits := []string{"♠", "♥", "♣"}
+	next := 0
+	for s := 1; s <= rules.Seats; s++ {
+		if s == seat {
+			hands[s-1] = []rules.Card{key("♦3/0")}
+			continue
+		}
+		su := suits[next]
+		next++
+		hands[s-1] = []rules.Card{key(su + "4/0"), key(su + "6/0"), key(su + "8/0")}
+	}
+	g, err := rules.NewGame(rules.Two, hands, seat)
+	if err != nil {
+		t.Fatalf("摆局面：%v", err)
+	}
+	state, err := json.Marshal(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.Write(context.Background(), func(ctx context.Context, tx *store.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE practice_games SET state = ? WHERE id = ?`, string(state), id)
+		return err
+	}); err != nil {
+		t.Fatalf("写回存档：%v", err)
+	}
+	before := len(pub.all())
+
+	last := rules.Combo{Cards: []rules.Card{key("♦3/0")}, Type: rules.TypeSingle, Rank: rules.Three}
+	r := f.do(f.http, http.MethodPost, "/api/practice/"+id+"/play", playBody(last, 1), nil)
+	if r.status != http.StatusOK {
+		t.Fatalf("出最后一张：%d %s", r.status, r.raw)
+	}
+	if !r.field("deal_over").(bool) {
+		t.Fatalf("一次请求里 AI 该替我把这一副打完：%s", r.raw)
+	}
+
+	moves := f.stateGame(t, id).Moves()
+	evs := pub.all()[before:]
+	if len(evs) != len(moves)+1 {
+		t.Fatalf("该是每一手一条 played + 一条 ended：%d 手，%d 条事件", len(moves), len(evs))
+	}
+	if len(moves) < 2 {
+		t.Fatalf("我之后 AI 至少该走一手，实际一共 %d 手", len(moves))
+	}
+	for i, ev := range evs {
+		var d struct {
+			Seq  int `json:"seq"`
+			Seat int `json:"seat"`
+		}
+		if err := json.Unmarshal([]byte(ev.raw), &d); err != nil {
+			t.Fatalf("事件 data 不是合法 JSON：%v", err)
+		}
+		if i == len(evs)-1 {
+			if ev.typ != "practice.ended" || d.Seq != len(moves) {
+				t.Fatalf("最后一条该是 practice.ended、seq=%d，实际 %s seq=%d", len(moves), ev.typ, d.Seq)
+			}
+			continue
+		}
+		if ev.typ != "practice.played" || d.Seq != i+1 || d.Seat != moves[i].Seat {
+			t.Fatalf("第 %d 条该是 seq=%d、%d 号座的 played，实际 %s seq=%d seat=%d",
+				i, i+1, moves[i].Seat, ev.typ, d.Seq, d.Seat)
+		}
 	}
 }
