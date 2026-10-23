@@ -29,8 +29,8 @@
 //
 // ⚠️ 这里原先写的是「不在客户端做、服务端算好下发」—— **那是错的**：#87 的范围里明写了升级和
 // 过 A 的规则、目标里写了「完整判定……胜负」。把「服务端主持练习局」错读成了「客户端不用算结算」。
-// 「下一副要不要进贡」那层包装还没加（`ScoreState` 里已经够了：`playing_level` / `match_rounds` /
-// `match_over`），是下一步。
+// 「下一副要不要进贡」那层包装已经在 `./scoring` 的 `nextHand` 里（`ScoreState` 里的
+// `playing_level` / `match_rounds` / `match_over` 够了）。
 //
 // 「两端共用牌例」这条口径仍然成立：`tribute.json` **不含**升级（升级有自己的共用用例，见上）。
 import { ACE, BIG_JOKER, TEN, TWO, isJoker, type Card, type Rank } from "./card";
