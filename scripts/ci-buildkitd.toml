@@ -9,7 +9,7 @@
 # 上限看 maxUsedSpace：buildkit 的回收目标 keepBytes = max(maxUsedSpace, reservedSpace)，
 # 超过它才 prune（cache/manager.go 的 calculateKeepBytes）。
 # 显式写了 gcpolicy 时，没写的字段就是 0 —— 只写 maxUsedSpace 已经是硬上限；
-# 「磁盘 10% / 最小 10GB」那套默认值只在整份配置一条 gcpolicy 都没有时才用
+# 「磁盘的 10%、最多 10GB」那套默认值只在整份配置一条 gcpolicy 都没有时才用
 # （cmd/buildkitd/main.go 的 getGCPolicy：len(cfg.GCPolicy)==0 才调 DefaultGCPolicy）。
 # reservedSpace 只在比 maxUsedSpace 大时才起作用（keepBytes 取两者的 max）；
 # 当前 1GB < 4GB，所以这一行不改变行为，留在 1GB 只是把意图写清楚。
