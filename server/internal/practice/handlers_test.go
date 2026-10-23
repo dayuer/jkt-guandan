@@ -28,14 +28,18 @@ import (
 const testOrigin = "https://guandan.test"
 
 type fixture struct {
-	t    *testing.T
-	srv  *httptest.Server
-	st   *store.Store
-	clk  *clock.Fake
-	http *http.Client
+	t        *testing.T
+	srv      *httptest.Server
+	st       *store.Store
+	clk      *clock.Fake
+	http     *http.Client
+	practice *practice.Service // 测试要注入 Decider / 调小 AI 循环上限时用
 }
 
-func newServer(t *testing.T) *fixture {
+func newServer(t *testing.T) *fixture { return newServerWithPublisher(t, nil) }
+
+// newServerWithPublisher 让测试能接一个记录用的 Publisher（实时事件的用例）。
+func newServerWithPublisher(t *testing.T, pub practice.Publisher) *fixture {
 	t.Helper()
 
 	st, err := store.Open(t.TempDir())
@@ -49,7 +53,7 @@ func newServer(t *testing.T) *fixture {
 
 	clk := clock.NewFake(time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC))
 	identSvc := identity.NewService(st, clk, true)
-	practiceSvc := practice.NewService(st, clk)
+	practiceSvc := practice.NewService(st, clk, pub)
 
 	srv := httptest.NewTLSServer(httpapi.New(httpapi.Options{
 		Config:   config.Config{DataDir: t.TempDir(), Dev: true, PublicURL: testOrigin},
@@ -60,7 +64,7 @@ func newServer(t *testing.T) *fixture {
 	}))
 	t.Cleanup(srv.Close)
 
-	f := &fixture{t: t, srv: srv, st: st, clk: clk}
+	f := &fixture{t: t, srv: srv, st: st, clk: clk, practice: practiceSvc}
 	f.http = f.newBrowser()
 	return f
 }
