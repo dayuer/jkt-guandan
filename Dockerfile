@@ -4,7 +4,8 @@
 # 注意 Go 版本：设计里写的是 golang:1.23-alpine，但
 #   1) 当前的 modernc.org/sqlite 要求 go ≥ 1.26；
 #   2) 1.27.1 的标准库有 6 个可达的 http2 漏洞（GO-2026-6603/6609/6611/6612/6613/6617），1.27.2 才修掉；
-# 所以这里用 golang:1.27-alpine，go.mod 里是 go 1.27.2。govulncheck 现在干净。
+# 2b) 1.27.2 还有 GO-2026-6859（net/http）和 GO-2026-6809（crypto/x509），1.27.4 才修掉；
+# 所以这里用 golang:1.27-alpine，go.mod 里是 go 1.27.4。govulncheck 现在干净。
 
 # 前两个阶段固定在构建机的平台上跑（$BUILDPLATFORM），Go 交叉编译到目标平台：
 # 在 Apple Silicon 上为 amd64 服务器构建时（scripts/deploy.sh），不用走 QEMU 模拟。
