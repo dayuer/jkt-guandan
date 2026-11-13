@@ -83,10 +83,10 @@ scripts/deploy.sh          # 构建 → 传镜像和静态文件 → 换容器 �
 
 ## 关于 Go 版本
 
-设计文档写的是 Go 1.23+，实际用到 **go 1.27.2**：
+设计文档写的是 Go 1.23+，实际用到 **go 1.27.4**：
 
 - `modernc.org/sqlite` 现在要求 go ≥ 1.26；
-- 1.27.1 的标准库有 6 个可达的 http2 漏洞（`GO-2026-6603` 等），1.27.2 才修掉，
+- 1.27.1 的标准库有 6 个可达的 http2 漏洞（`GO-2026-6603` 等），1.27.2 才修掉；1.27.2 的 `net/http`（GO-2026-6859）和 `crypto/x509`（GO-2026-6809）又各有一条可达漏洞，1.27.4 修掉全部，
   而本地 CI 里 `govulncheck`（`local-ci/vuln`）是必过检查。
 
-所以 `go.mod` 是 `go 1.27.2`，Dockerfile 用 `golang:1.27-alpine`。
+所以 `go.mod` 是 `go 1.27.4`，Dockerfile 用 `golang:1.27-alpine`（镜像取 1.27.x 最新补丁版；若镜像未到 1.27.4，构建时 GOTOOLCHAIN=auto 会自行下载）。

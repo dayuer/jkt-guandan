@@ -218,7 +218,7 @@ func run() error {
 			Routes: appRoutes(appDeps{
 				identity: identitySvc, games: gamesSvc, notify: notifySvc, ws: wsHandler,
 				friends:   friends.NewService(st, clk),
-				practice:  practice.NewService(st, clk),
+				practice:  practice.NewService(st, clk, hubPublisher{hub}),
 				share:     share.Options{Games: gamesSvc, PublicURL: cfg.PublicURL, Clock: clk, Dist: webDist()},
 				agent:     agent.Options{Model: agentModel(cfg), Clock: clk},
 				telemetry: telemetry.Options{Store: st, Clock: clk},

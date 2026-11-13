@@ -38,6 +38,28 @@ type View struct {
 // Partner 是自己的搭档：1、3 一方，2、4 一方（和 scoring、rules 同一个口径）。
 func (v View) Partner() int { return rules.PartnerSeat(v.Seat) }
 
+// ViewOf 把一局牌收成 seat 这个座位**能看到的** View。
+//
+// 它是 `View` 那条红线的唯一生产实现：只读自己的手牌、各家**张数**和公开信息
+// （轮次、这一圈的领出/上一手），别家的手牌一律不进 View。练习局和任何未来的调用方都走它，
+// 不要自己拿 `*Game` 拼 —— 那会把「AI 看不见别家牌」悄悄变成一句口号。
+func ViewOf(g *rules.Game, seat int) View {
+	v := View{
+		Level:   g.Level(),
+		Seat:    seat,
+		Hand:    g.Hand(seat),
+		Done:    g.Finished(),
+		Leading: g.Leading(),
+	}
+	for s := 1; s <= rules.Seats; s++ {
+		v.Counts[s] = len(g.Hand(s))
+	}
+	if lastSeat, combo, ok := g.LastPlay(); ok {
+		v.LastSeat, v.LastCombo = lastSeat, combo
+	}
+	return v
+}
+
 // Opponents 是对方两家。
 func (v View) Opponents() []int {
 	out := make([]int, 0, rules.Seats-2)

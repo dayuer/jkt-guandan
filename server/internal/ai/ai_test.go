@@ -33,27 +33,6 @@ type aiStats struct {
 	bombedPartner int // 用炸弹压队友的次数（必须 0）
 }
 
-// viewOf 从引擎里**只取牌桌上人人看得见的**信息拼出 View：自己那手牌 + 各家的张数。
-//
-// ⚠️ 这里刻意只读别家手牌的**长度**（张数是公开的），不把别家的牌放进 View —— View 里根本没有
-// 那个字段（`view_test.go` 用反射钉着）。
-func viewOf(g *rules.Game, seat int) View {
-	v := View{
-		Level:   g.Level(),
-		Seat:    seat,
-		Hand:    g.Hand(seat),
-		Done:    g.Finished(),
-		Leading: g.Leading(),
-	}
-	for s := 1; s <= rules.Seats; s++ {
-		v.Counts[s] = len(g.Hand(s))
-	}
-	if lastSeat, combo, ok := g.LastPlay(); ok {
-		v.LastSeat, v.LastCombo = lastSeat, combo
-	}
-	return v
-}
-
 // playWithAI 把一副牌打完，四个座位都交给 AI。
 //
 // 用四个 AI（而不是「一个真人 + 三个 AI」）是因为这样能走到更多局面 —— 练习局里只有一个真人，
@@ -70,7 +49,7 @@ func playWithAI(rng *rand.Rand, level rules.Rank, hands [rules.Seats][]rules.Car
 			return g, st, errors.New("这一副打不完（步数超上限）—— 引擎卡住了")
 		}
 		seat := g.Turn()
-		v := viewOf(g, seat)
+		v := ViewOf(g, seat)
 		d, err := Decide(v, cfg)
 		if err != nil {
 			return g, st, err
@@ -689,7 +668,7 @@ func TestAIDecideIsDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v := viewOf(g, g.Turn())
+	v := ViewOf(g, g.Turn())
 	cfg := DefaultConfig()
 	first, err := Decide(v, cfg)
 	if err != nil {

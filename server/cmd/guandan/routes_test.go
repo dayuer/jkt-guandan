@@ -75,7 +75,7 @@ func newApp(t *testing.T) *app {
 		Config: cfg, Store: st, Clock: clk, Identity: identitySvc,
 		Routes: appRoutes(appDeps{
 			identity: identitySvc, games: gamesSvc, notify: notifySvc, friends: friends.NewService(st, clk),
-			practice: practice.NewService(st, clk),
+			practice: practice.NewService(st, clk, nil),
 			ws: realtime.Handler(realtime.Options{
 				Hub: hub, AllowOrigin: cfg.AllowsOrigin, CookieFree: identitySvc.CookieFree, Identify: realtimeIdentify,
 				Revalidate: func(ctx context.Context, p realtime.Principal) bool {
