@@ -1,0 +1,19 @@
+# Yardmaster policy for dayuer/jkt-guandan (owner-approved 2026-10-24).
+#
+# enabled stays false: autopilot is not in use; ym-gate still reads this file.
+enabled = false
+policy_version = "1"
+
+# GitHub Actions is off repo-wide; CI is scripts/local-ci.sh posting commit
+# statuses (docs/agents/COORDINATION.md §4.2). ym-gate only knows Actions runs,
+# so up_to_date checks mergeability only. The master still requires every
+# local-ci status on the head to be success before merging
+# (scripts/pre-merge-check.sh).
+# shortcut: ci="none" ignores local-ci statuses in the gate, switch back to
+# "required" once dayuer/yardmaster#300 makes the gate read commit statuses.
+ci = "none"
+
+protected_paths = [
+  "app/h5/src/tokens.css",
+  "design/guandan-h5/tokens.css",
+]

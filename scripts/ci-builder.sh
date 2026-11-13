@@ -8,7 +8,9 @@
 # 用法：CI_BUILDER="$(scripts/ci-builder.sh)"   # 打印 builder 名（guandan-ci），没有就建
 #       docker buildx build --builder "$CI_BUILDER" --load -t … .
 #
-# 已存在就直接复用；`docker buildx rm guandan-ci` 可以彻底清掉本项目的缓存。
+# 已存在就直接复用。⚠️ buildx 只在 `create` 时读 ci-buildkitd.toml —— 改了 GC 策略
+# **不会**作用于已有的 builder，要先 `docker buildx rm guandan-ci`（顺带清掉缓存），
+# 再跑一次本脚本重建。
 set -eu
 NAME=guandan-ci
 if ! docker buildx inspect "$NAME" >/dev/null 2>&1; then

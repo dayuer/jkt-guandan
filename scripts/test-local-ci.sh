@@ -802,6 +802,9 @@ esac
 FD2=$(mktemp -d)
 cat > "$FD2/docker" <<'DK'
 #!/bin/sh
+# #279 复审：把收到的参数记下来，用来断言「真的走了 buildx build --builder guandan-ci」——
+# 只看退出码的话，把 lib 里那个 if 改成 if false 也照样全绿。
+[ -n "${ARGLOG:-}" ] && printf '%s\n' "$*" >> "$ARGLOG"
 case "$1" in
   info)  exit 0 ;;                                    # 前置检查：守护进程在
   build) printf 'ERROR: failed to authorize: dial tcp: lookup auth.docker.io: i/o timeout\n' >&2; exit 1 ;;
@@ -819,10 +822,14 @@ DK
 chmod +x "$FD2/docker"
 # ⚠️ **不能写成 `out=$(… capture_to_log …)`**：命令替换本身就是子壳，`ENV_REASON`
 # 一样带不出来 —— 那样这条会**假红**（代码是对的）。重定向到文件再看。
-PATH="$FD2:$PATH" DOCKER_BUILD_RETRY_BASE=0 capture_to_log local-ci/docker "$CL/ctx.log" run_context local-ci/docker > "$CL/ctxout.txt" 2>&1
+PATH="$FD2:$PATH" ARGLOG="$CL/args.txt" DOCKER_BUILD_RETRY_BASE=0 capture_to_log local-ci/docker "$CL/ctx.log" run_context local-ci/docker > "$CL/ctxout.txt" 2>&1
 rc=$?
 out="$(cat "$CL/ctxout.txt")"
 eq '真调用方式：拉镜像网络问题 → 2（环境未就绪）' '2' "$rc"
+# #279 复审：退出码对不代表「走的是专用 builder」—— lib 里那个 if 改成 if false，
+# 上面这条照样绿。这里钉住真实的命令行参数。
+eq '真调用方式：构建走 buildx build --builder guandan-ci --load' 'yes' \
+  "$(grep -q '^buildx build --builder guandan-ci --load ' "$CL/args.txt" && echo yes || echo no)"
 eq '真调用方式：原因是「拉镜像失败」（改用文件带出来，不再被丢在子壳里）' \
   '拉镜像失败（网络或镜像源）' "$ENV_REASON"
 desc="$(env_not_ready_desc "$ENV_REASON" 'docker build + scripts/container-smoke.sh')$(log_note "$CL/ctx.log")"
@@ -836,6 +843,24 @@ case "$(cat "$CL/ctx.docker.txt" 2>/dev/null)" in
   *) bad '现场里注明了快照是清理之后拍的' '含「自己清理之后」' "$(cat "$CL/ctx.docker.txt" 2>/dev/null)" ;;
 esac
 rm -rf "$FD2"
+
+# #279 复审：`scripts/ci-builder.sh` 建不起 builder 时必须返回 2（环境未就绪），
+# 不能记成代码红；否则「本机没装 buildx」会变成 PR 上的一条 failure。
+FD3=$(mktemp -d)
+cat > "$FD3/docker" <<'DK'
+#!/bin/sh
+case "$1" in
+  info) exit 0 ;;                                     # 前置检查：守护进程在
+  buildx) case "$2" in inspect) exit 1 ;; *) exit 0 ;; esac ;;
+esac
+exit 0
+DK
+chmod +x "$FD3/docker"
+PATH="$FD3:$PATH" run_context local-ci/docker > "$CL/nobuilder.txt" 2>&1
+rc=$?
+eq 'buildx inspect 失败 → 2（环境未就绪，不是代码红）' '2' "$rc"
+eq '建不起 builder → 原因写明' 'buildx builder 建不起来（没有 buildx？）' "$ENV_REASON"
+rm -rf "$FD3"
 
 # 日志文件权限：别人不该读到（Linux 上没 TMPDIR 时默认落在共享的 /tmp）。
 eq '日志文件权限是 600（别人读不到）' 'rw-------' "$(ls -l "$CL/ctx.log" 2>/dev/null | cut -c2-10)"

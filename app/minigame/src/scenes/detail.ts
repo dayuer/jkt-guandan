@@ -3,12 +3,12 @@
 
 import type { App, Scene, Sheet } from "../core/app";
 import { C, Ctx, Scroller, card, circle, ease, ellipsize, fillRR, font, initial, measure, strokeRR, text, wrap } from "../core/ui";
-import { PAD, ROW_X0, banner, button, chevron, chipRow, chipRowScrollFor, disclaimer, errorLine, field, icon, nav, sheetButtons, sheetHeader, simpleSheet, type BtnStyle } from "../core/widgets";
+import { PAD, banner, button, chevron, disclaimer, errorLine, field, icon, nav, sheetButtons, sheetHeader, simpleSheet, timePicker, type BtnStyle } from "../core/widgets";
 import {
   ApiError, cancelGame, getGame, getScore, inviteError, inviteFriends, inviteSummary, joinGame, kickPlayer, leaveGame, newIdempotencyKey, startScore, subscribeRetry, updateGame,
   type GameDetail, type GamePatch, type Seat,
 } from "../lib/api";
-import { dayLabel, kindLabel, timeHM, wibAt, wibParts, weekday, slashDate } from "../lib/fmt";
+import { dayLabel, kindLabel, timeHM, wibAt, weekday, slashDate } from "../lib/fmt";
 import { realtime } from "../lib/realtime";
 import { currentUser } from "../lib/session";
 import { track } from "../lib/telemetry";
@@ -233,49 +233,14 @@ export class Detail implements Scene {
 
   private openEdit() {
     const app = this.app, base = this.detail!;
-    const parts = wibParts(base.game.starts_at);
+    const p = timePicker(app, base.game.starts_at, "ed"), { st: pick, parts, labels, dayName } = p;
     const pad = (n: number) => String(n).padStart(2, "0");
-    const dayName = (i: number) => { const t = wibAt(i, 12, 0); return i === 0 ? "今天" : i === 1 ? "明天" : `${weekday(t)} ${slashDate(t)}`; };
     const dayLong = (i: number) => { const t = wibAt(i, 12, 0); return i <= 1 ? `${dayName(i)} ${weekday(t)} ${slashDate(t)}` : dayName(i); };
-    // 选项：哪天今天起 8 天、几点 9–23、几分 4 个。原来的值不在范围里（比如早上 8 点的局），插到那一行最前面，默认选中（适配稿 3.2）
-    const days = Array.from({ length: 8 }, (_, i) => i);
-    if (parts.dayOffset < 0 || parts.dayOffset > 7) days.unshift(parts.dayOffset);
-    const hours = Array.from({ length: 15 }, (_, i) => 9 + i);
-    if (!hours.includes(parts.hour)) hours.unshift(parts.hour);
-    const minutes = [0, 15, 30, 45];
-    if (!minutes.includes(parts.minute)) minutes.unshift(parts.minute);
-    const st = {
-      day: parts.dayOffset, hour: parts.hour, minute: parts.minute,
-      venue: base.game.venue, err: null as null | { field: string; message: string }, busy: false,
-    };
-    const isOrig = (day: number, hour: number) => day === parts.dayOffset && hour === parts.hour;
-    /** 今天已经过去的钟点（这个钟点最晚的 :45 也过了）不能选；原来的值除外。 */
-    const hourOff = (day: number, hour: number) => day === 0 && !isOrig(day, hour) && wibAt(0, hour, 45) <= Math.floor(Date.now() / 1000);
-    const rows = { day: new Scroller(), hour: new Scroller(), minute: new Scroller() };
-    const rowY = { day: 0, hour: 0, minute: 0 };
-    const labels = {
-      day: () => days.map((d) => (d < 0 || d > 7 ? `${weekday(wibAt(d, 12, 0))} ${slashDate(wibAt(d, 12, 0))}` : dayName(d))),
-      hour: () => hours.map((h) => `${h}点`),
-      minute: () => minutes.map((m) => `:${pad(m)}`),
-    };
-    let scrolled = false, jumpHour = false;
-    const scrollInto = (ctx: Ctx, k: "day" | "hour" | "minute") => {
-      const on = k === "day" ? days.indexOf(st.day) : k === "hour" ? hours.indexOf(st.hour) : minutes.indexOf(st.minute);
-      rows[k].setMax(1e6); // 真正的最大值在 chipRow 里设；chipRowScrollFor 已经夹在范围里
-      rows[k].scrollTo(chipRowScrollFor(app, ctx, labels[k](), on));
-    };
-    const pickDay = (i: number) => {
-      st.day = days[i];
-      // 切回今天时，选中的钟点已经过了：跳到下一个能选的，并滚进可视区
-      if (hourOff(st.day, st.hour)) {
-        const next = hours.find((h) => h > st.hour && !hourOff(st.day, h)) ?? hours.find((h) => !hourOff(st.day, h));
-        if (next !== undefined) { st.hour = next; jumpHour = true; }
-      }
-    };
-    const when = (day: number, h: number, m: number) => `${day < 0 || day > 7 ? labels.day()[0] : dayLong(day)} ${pad(h)}:${pad(m)}`;
+    const st = { venue: base.game.venue, err: null as null | { field: string; message: string }, busy: false };
+    const when = (day: number, h: number, m: number) => `${!p.inRange(day) ? labels.day()[0] : dayLong(day)} ${pad(h)}:${pad(m)}`;
     const save = () => {
       const patch: GamePatch = {};
-      const next = wibAt(st.day, st.hour, st.minute);
+      const next = p.unix();
       if (next !== base.game.starts_at) patch.starts_at = next;
       if (st.venue.trim() && st.venue.trim() !== base.game.venue) patch.venue = st.venue.trim();
       if (Object.keys(patch).length === 0) { app.closeSheet(sheet); return; }
@@ -283,40 +248,31 @@ export class Detail implements Scene {
     };
     const sheet: Sheet = {
       scrollerAt: (x, y) => {
-        if (app.isEditing("edit-venue") || x < ROW_X0) return null;
-        for (const k of ["day", "hour", "minute"] as const) if (y >= rowY[k] - 4 && y <= rowY[k] + 40) return { s: rows[k], axis: "x" };
-        return null;
+        if (app.isEditing("edit-venue")) return null;
+        return p.scrollerAt(x, y);
       },
-      step: () => rows.day.step() || rows.hour.step() || rows.minute.step(),
+      step: p.step,
       draw: (ctx, y, w) => {
         const editingVenue = app.isEditing("edit-venue");
         let cy = sheetHeader(ctx, y, w, "改一下这一局", editingVenue ? undefined : "改完会通知座位上的人，他们那边的提醒也会跟着更新");
-        if (!scrolled) { scrollInto(ctx, "day"); scrollInto(ctx, "hour"); scrollInto(ctx, "minute"); scrolled = true; }
-        if (jumpHour) { scrollInto(ctx, "hour"); jumpHour = false; }
-        const changed = wibAt(st.day, st.hour, st.minute) !== base.game.starts_at;
+        const changed = p.unix() !== base.game.starts_at;
         if (editingVenue) {
           // 编辑地点时三行收成一行摘要，点它收起键盘、展开胶囊（适配稿 3.3）
           cy += 4;
           const pressed = app.isPressed("ed-time");
           fillRR(ctx, 20, cy, w - 40, 48, 12, pressed ? C.beige : C.paper);
           text(ctx, "时间", 36, cy + 24, font(13, "700"), C.ink2);
-          text(ctx, ellipsize(ctx, when(st.day, st.hour, st.minute), w - 84 - 80, font(15, "700")), 84, cy + 24, font(15, "700"), C.ink);
+          text(ctx, ellipsize(ctx, when(pick.day, pick.hour, pick.minute), w - 84 - 80, font(15, "700")), 84, cy + 24, font(15, "700"), C.ink);
           text(ctx, "改", w - 48, cy + 24, font(14, "600"), C.red, "right");
           chevron(ctx, w - 38, cy + 24, C.red);
           app.hit("ed-time", 20, cy, w - 40, 48, () => app.blurKeyboard());
           cy += 62;
         } else {
           cy += 6;
-          rowY.day = cy;
-          cy = chipRow(app, ctx, "ed-day", cy, "哪天", labels.day(), days.indexOf(st.day), pickDay, { scroll: rows.day });
-          rowY.hour = cy;
-          cy = chipRow(app, ctx, "ed-h", cy, "几点", labels.hour(), hours.indexOf(st.hour), (i) => { st.hour = hours[i]; },
-            { scroll: rows.hour, disabled: (i) => hourOff(st.day, hours[i]) });
-          rowY.minute = cy;
-          cy = chipRow(app, ctx, "ed-m", cy, "几分", labels.minute(), minutes.indexOf(st.minute), (i) => { st.minute = minutes[i]; }, { scroll: rows.minute });
+          cy = p.draw(ctx, cy);
           const orig = when(parts.dayOffset, parts.hour, parts.minute);
-          const now = when(st.day, st.hour, st.minute);
-          const was = st.day === parts.dayOffset ? `${pad(parts.hour)}:${pad(parts.minute)}` : orig;
+          const now = when(pick.day, pick.hour, pick.minute);
+          const was = pick.day === parts.dayOffset ? `${pad(parts.hour)}:${pad(parts.minute)}` : orig;
           text(ctx, ellipsize(ctx, changed ? `改成 ${now}（原来 ${was}）` : `还是 ${now}（没改）`, w - 40, font(12)), 20, cy + 8, font(12), C.ink3);
           cy += 30;
         }

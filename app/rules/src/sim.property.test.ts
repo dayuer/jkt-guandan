@@ -32,7 +32,7 @@ import { describe, expect, it } from "vitest";
 import { ACE, BIG_JOKER, TEN, TWO, cardKey, isJoker, newDeck, type Card, type Rank } from "./card";
 import { HANDS_EACH, SEATS, deal, permShuffler } from "./deal";
 import { moves } from "./moves";
-import { Game, RuleError, nextSeat, partnerSeat, type GameResult } from "./play";
+import { Game, RuleError, newGame, nextSeat, partnerSeat, type GameResult, type Move } from "./play";
 import { cardPower, isWild } from "./power";
 import { nextHand, type RoundFact, type Side } from "./scoring";
 import { Tribute } from "./tribute";
@@ -232,7 +232,13 @@ function probeIllegal(g: Game, seat: number, step: number, level: Rank): void {
 }
 
 /** 打完已经摆好的这一副：从 `g` 现在的局面一路走到分出上游。 */
-function playDeal(rng: Rng, level: Rank, g: Game, m: SimModel): { steps: number; borrowed: number; ledger: string } {
+function playDeal(
+  rng: Rng,
+  level: Rank,
+  g: Game,
+  m: SimModel,
+  onStep?: (g: Game) => void,
+): { steps: number; borrowed: number; ledger: string } {
   let steps = 0;
   while (!g.over()) {
     if (++steps > MAX_STEPS_PER_DEAL) {
@@ -260,6 +266,7 @@ function playDeal(rng: Rng, level: Rank, g: Game, m: SimModel): { steps: number;
       modelStep(m, seat, mv.cards.length);
     }
     expectMatch(`第 ${steps} 步（${seat} 号座${pass ? "过牌" : "出牌"}）之后`, m, g);
+    onStep?.(g);
   }
 
   // 守恒：出掉的 + 手里的 = 一副牌的张数（每张牌要么在某家手里、要么已经打出去）。
@@ -279,6 +286,37 @@ function dealLedger(g: Game, m: SimModel): string {
     mv.pass ? `${mv.seat}:过` : `${mv.seat}:${(mv.combo?.cards ?? []).map(cardKey).join("+")}`,
   );
   return `${moves.join(" ")} | 出完=${m.done.join(",")}`;
+}
+
+/**
+ * 从「这一副开打时的四手牌 + 首圈领出人 + 动作日志」重建一副牌 —— 就是存档读回。
+ *
+ * 动作日志里的 `combo` 是**引擎认出来的**那一种解读；重放时把它的类型和牌面再声明回去，
+ * 引擎会认出同一手（`pick` 按类型 + 牌面唯一匹配）。四大天王的牌面是 0，声明时用「不给」
+ * 表示只有一种解读。
+ */
+function replayDeal(level: Rank, hands: readonly Card[][], leader: number, log: readonly Move[]): Game {
+  const g = newGame(level, hands, leader);
+  for (const mv of log) {
+    if (mv.pass) g.pass(mv.seat);
+    else g.play(mv.seat, mv.combo!.cards, mv.combo!.type, mv.combo!.rank === 0 ? undefined : mv.combo!.rank);
+  }
+  return g;
+}
+
+/** 一副牌的全部可见状态：重建出来的局必须和原局逐项对上。 */
+function dealSnapshot(g: Game) {
+  return {
+    level: g.playingLevel,
+    turn: g.turn(),
+    over: g.over(),
+    leading: g.leading(),
+    last: g.lastPlay(),
+    finished: g.finished(),
+    hands: [1, 2, 3, 4].map((s) => g.hand(s)),
+    moves: g.moves(),
+    result: g.result(),
+  };
 }
 
 /**
@@ -570,7 +608,11 @@ interface MatchLog {
  * 打完一场：从 2 打起，每副「发牌 →（该进贡就进贡还贡）→ 打完 → 算下一副打几」，
  * 一路打到过 A 或者打满上限。
  */
-function playMatch(rng: Rng, maxDeals = MAX_DEALS_PER_MATCH): MatchLog {
+function playMatch(
+  rng: Rng,
+  maxDeals = MAX_DEALS_PER_MATCH,
+  hooks?: { onDeal?(level: Rank, g: Game): void; onStep?(g: Game): void },
+): MatchLog {
   const log: MatchLog = { over: false, deals: 0, steps: 0, tributeDeals: 0, doubleEqualSeat23: 0, doubleEqualSeat14: 0, resistedDeals: 0, borrowed: 0, levels: [], ledger: [] };
   const ref = newRefMatch();
   const facts: RoundFact[] = [];
@@ -637,10 +679,11 @@ function playMatch(rng: Rng, maxDeals = MAX_DEALS_PER_MATCH): MatchLog {
       expect(g.turn(), "首圈领出的人").toBe(rt.leader);
     }
     log.levels.push(level);
+    hooks?.onDeal?.(level, g);
 
     // 模型从**这一副真正开打时的**手牌和领出人起算（进贡还完之后的那一副）。
     const m = newSimModel([g.hand(1), g.hand(2), g.hand(3), g.hand(4)], g.turn());
-    const { steps, borrowed, ledger } = playDeal(rng, level, g, m);
+    const { steps, borrowed, ledger } = playDeal(rng, level, g, m, hooks?.onStep);
     log.deals++;
     log.steps += steps;
     log.borrowed += borrowed;
@@ -743,6 +786,36 @@ describe("性质：随机对局（完整的一场：发牌 → 进贡 → 出牌
       expect(line.length, "每条账都该有动作").toBeGreaterThan(10);
     }
     expect(a, "同一个种子两遍该完全一样").toStrictEqual(b);
+  });
+
+  it("存档读回：newGame + 重放动作日志，重建的局面逐项一致（含进贡后的下一副）", () => {
+    // #87 正文要求「局面状态可以序列化（断线恢复、复盘）」；Go 那边是 `wireGame` + round-trip，
+    // TS 这边的等价物就是**动作日志**（`Game.moves()`）。这里在多副随机对局里，每 10 步
+    // （以及一副打完时）用开局手牌 + 领出人 + 已有动作重建一副，和原局面逐项比。
+    let restores = 0;
+    let tributeDeals = 0;
+    for (const seed of [1, 2, 3]) {
+      /** 这一副开打时的状态（进贡还完之后），`onDeal` 里记下，`onStep` 拿去重放。 */
+      let start: { level: Rank; hands: Card[][]; leader: number } | null = null;
+      const log = playMatch(seededRandom(seed), 3, {
+        onDeal: (level, g) => {
+          start = { level, hands: [1, 2, 3, 4].map((s) => g.hand(s)), leader: g.turn() };
+        },
+        onStep: (g) => {
+          if (!g.over() && g.moves().length % 10 !== 0) return;
+          expect(start, "onDeal 该在 onStep 之前").not.toBeNull();
+          const rebuilt = replayDeal(start!.level, start!.hands, start!.leader, g.moves());
+          expect(dealSnapshot(rebuilt), `种子 ${seed} 第 ${g.moves().length} 步：读回来的局面`).toStrictEqual(
+            dealSnapshot(g),
+          );
+          restores++;
+        },
+      });
+      tributeDeals += log.tributeDeals;
+    }
+    // 不能空跑：既要真的读过档，也要覆盖到「进贡之后的下一副」（第 2 副起）。
+    expect(restores, "真的读回过").toBeGreaterThan(0);
+    expect(tributeDeals, "覆盖到进贡后的下一副").toBeGreaterThan(0);
   });
 
   it("进贡还贡：贡来的进了收贡人手里、还回去的进了进贡人手里（一手固定的牌，期望值手写）", () => {

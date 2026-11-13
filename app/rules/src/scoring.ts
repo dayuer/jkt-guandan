@@ -11,9 +11,6 @@
 //
 // 为什么搬：引擎不该住在小游戏里（H5 只是个试验田，小游戏上线后废弃；引擎两边都要用），
 // 而且原来那份文件还反向 `import` 了 `app/h5` 的 `UserRef` —— 见 `app/rules/README.md` 的上游映射。
-//
-// **还没做的**：打几、下一副要不要进贡那层（服务端的 `NextHand`）还没搬过来 —— 它要的信息
-// `ScoreState` 里已经有了（`playing_level` / `match_rounds` / `match_over`），下一步加。
 
 export type Team = "" | "red" | "black";
 export type Side = "red" | "black";

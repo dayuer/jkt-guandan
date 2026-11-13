@@ -5,10 +5,22 @@
 # 它和这台机器上别的项目共用，清理只能全局 `docker builder prune`（会误伤别人），于是只涨不清。
 # 换成容器化的 buildkitd，缓存就落在它自己的卷里，下面这条 GC 策略把上限钉死。
 #
-# all = true 表示「所有类型的缓存都受这条策略管」；keepBytes 是硬上限。
-# 4 GiB 的来由：一次冷构建的峰值约 1.3 GiB（见 #279 实测），留三倍余量够跨几次提交复用。
+# all = true 表示「所有类型的缓存都受这条策略管」。
+# 上限看 maxUsedSpace：buildkit 的回收目标 keepBytes = max(maxUsedSpace, reservedSpace)，
+# 超过它才 prune（cache/manager.go 的 calculateKeepBytes）。
+# 显式写了 gcpolicy 时，没写的字段就是 0 —— 只写 maxUsedSpace 已经是硬上限；
+# 「磁盘的 10%、最多 10GB」那套默认值只在整份配置一条 gcpolicy 都没有时才用
+# （cmd/buildkitd/main.go 的 getGCPolicy：len(cfg.GCPolicy)==0 才调 DefaultGCPolicy）。
+# reservedSpace 只在比 maxUsedSpace 大时才起作用（keepBytes 取两者的 max）；
+# 当前 1GB < 4GB，所以这一行不改变行为，留在 1GB 只是把意图写清楚。
+# keepBytes 已废弃但仍兼容：getGCPolicy 会把它回填成 reservedSpace，所以这次换字段
+# 是行为不变的写法升级，不是修 bug。
+# 4GB 的来由：一次冷构建的峰值约 1.3 GiB（见 #279 实测），留三倍余量够跨几次提交复用。
+# ⚠️ 改这个文件不会作用于已存在的 builder：buildx 只在 `buildx create` 时读它，
+#    要 `docker buildx rm guandan-ci` 之后让 ci-builder.sh 重建才生效。
 [worker.oci]
   enabled = true
   [[worker.oci.gcpolicy]]
     all = true
-    keepBytes = 4294967296
+    reservedSpace = "1GB"
+    maxUsedSpace = "4GB"
